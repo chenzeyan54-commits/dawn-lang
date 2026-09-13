@@ -48,21 +48,23 @@ def main():
             ("callee-module-alias", "for (_, sig) in map.entries(cx.module_fn_sigs) { by_key = index_signature(by_key, sig) }", ""),
             ("callee-conflict", "if previous != sig { map.insert(into, key, CalleeConflict) } else { into }", "into"),
         ]),
+        # The two code-point tables, and the assertion text they re-sliced, are
+        # gone with the positions they answered for. What is left is the
+        # question a saved body actually asks: are these two declarations the
+        # same tokens, and are they the same bytes.
         ("source_projection", "source projection ", [
-            ("same-boundary-table", "ends: ends, old_text: old_text,", "ends: starts, old_text: old_text,"),
-            ("changed-token", "a.kind != b.kind || str.slice(old_text, a.lo, a.hi) != str.slice(new_text, b.lo, b.hi)", "false"),
-            ("stale-assertion", "Some(Some(str.slice(p.new_text, nlo, nhi)))", "Some(Some(text))"),
-            ("unchecked-assertion-origin", "str.slice(p.old_text, start, hi) != text", "false"),
-            ("indexed-source-domain", "let starts = map.fold(local.starts, empty, (out, key, value) =>\n      map.insert(out, key + old_lo, value + new_lo))",
-             "let starts = map.fold(local.starts, empty, (out, key, value) =>\n      map.insert(out, key + new_lo, value + new_lo))"),
-            ("indexed-target-domain", "let ends = map.fold(local.ends, empty, (out, key, value) =>\n      map.insert(out, key + old_lo, value + new_lo))",
-             "let ends = map.fold(local.ends, empty, (out, key, value) =>\n      map.insert(out, key + old_lo, value + old_lo))"),
+            ("changed-spelling", "x.kinds == y.kinds && x.texts == y.texts", "x.kinds == y.kinds"),
+            ("unchecked-range", "x.lo == old_lo && x.hi == old_hi && y.lo == new_lo && y.hi == new_hi &&\n      ", ""),
+            ("misaligned-slice", "if t.lo < lo || t.hi > hi { aligned = false }", ""),
+            ("byte-identity", "str.slice(a.text, old_lo, old_hi) == str.slice(b.text, new_lo, new_hi)", "true"),
         ]),
         ("checker", "evidence reads preserve distinct origins behind the same runtime key", [
-            ("lost-crossed-origin", "if crossed {\n        (cx1, Some(XEvRead(key, origin, lo, hi, ty)))",
-             "if crossed {\n        (cx1, Some(XEvRead(key, VariableSlot(0), lo, hi, ty)))"),
-            ("lost-missing-origin", "if len(cx1.frame.lambda_stack) > 0 {\n        (cx1, Some(XEvRead(key, origin, lo, hi, ty)))",
-             "if len(cx1.frame.lambda_stack) > 0 {\n        (cx1, Some(XEvRead(key, VariableSlot(0), lo, hi, ty)))"),
+            ("lost-crossed-origin",
+             "if crossed {\n        (cx1, Some(XEvRead(key, origin, owner_off(cx, lo), owner_off(cx, hi), ty)))",
+             "if crossed {\n        (cx1, Some(XEvRead(key, VariableSlot(0), owner_off(cx, lo), owner_off(cx, hi), ty)))"),
+            ("lost-missing-origin",
+             "if len(cx1.frame.lambda_stack) > 0 {\n        (cx1, Some(XEvRead(key, origin, owner_off(cx, lo), owner_off(cx, hi), ty)))",
+             "if len(cx1.frame.lambda_stack) > 0 {\n        (cx1, Some(XEvRead(key, VariableSlot(0), owner_off(cx, lo), owner_off(cx, hi), ty)))"),
         ]),
     ]
     assert owning("FAIL  check/source_projection :: source projection control\n assertion failed: expected\n",

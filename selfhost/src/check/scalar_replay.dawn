@@ -234,18 +234,24 @@ fn relocation(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[(Prior,
   }
   let ids = allocation.reserved_plan(prepared.reserver, key,
     p.allocation_start, p.allocation_count, cx.next_id, prior_sig, sig, [])?
-  # Both revisions lexed their own declarations once. Pairing them is two
-  # list comparisons over kinds and spellings, and the relocation it returns
-  # answers each boundary from the token that covers it.
-  let coords = source_projection.pair(prepared.old_tokens, prepared.tokens,
-    saved.declaration, declaration, prior.lo, prior.hi, d.lo, d.hi)?
+  # Both revisions lexed their own declarations once, and pairing them is two
+  # list comparisons over kinds and spellings. That is the snapshot's own
+  # equality, and it says the recorded coordinates address this declaration in
+  # each revision.
+  if not source_projection.pair(prepared.old_tokens, prepared.tokens,
+    saved.declaration, declaration, prior.lo, prior.hi, d.lo, d.hi) { return None }
+  # This is the admission point for the positions. The product's spans are
+  # offsets into the declaration's own text, so they mean the same thing in
+  # this revision exactly when that text is the same bytes. The pairing above
+  # is deliberately blind to whitespace between tokens, and whitespace between
+  # two tokens of this declaration moves everything after it: the declaration
+  # itself did not move, but every offset into it did. Such an edit is not
+  # admitted, and its declaration is checked cold, which is the whole of the
+  # rule.
+  if not source_projection.same_text(prepared.old_tokens, prepared.tokens,
+    prior.lo, prior.hi, d.lo, d.hi) { return None }
   let view = View { ids: ids,
-    owner_start: prior.lo,
-    next_owner_start: d.lo,
-    positions: (at) => source_projection.start_at(coords, at),
-    ends: (at) => source_projection.end_at(coords, at),
     symbols: saved.symbols,
-    assertion: (text, lo, hi) => source_projection.assertion_at(coords, text, lo, hi),
     # Admission is closed to named calls: `scalar_shape.same` pairs no call
     # node and `recorded` accepts no read but `AssignableType`, so no admitted
     # body has a callee to resolve. Widening this class is what consumes
@@ -505,6 +511,42 @@ test "scalar replay refuses binders that shadow candidate module aliases" {
   assert actual.bodies.cx.diags == expected.cx.diags
   assert actual.bodies.functions == expected.functions
   assert actual.bodies.cx.syms == expected.cx.syms
+}
+
+test "scalar replay refuses a declaration whose own text changed" {
+  # `answer` only moved, so its saved body is admitted: its spans are offsets
+  # into text that did not change. `other` lexes to the same tokens but gained
+  # a space inside it, which moved every offset into its interior. It is
+  # checked cold, and the two functions together are what the cold check would
+  # have produced. Drop the byte comparison at the admission point and the
+  # second one comes back with the offsets of the revision it was recorded
+  # from, which this comparison reads.
+  let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
+  let before = "fn answer() -> Int = 42\nfn other(x: Int) -> Int = x\n"
+  let after = "# moved\nfn answer() -> Int = 42\nfn other(x: Int) -> Int =  x\n"
+  let old_snapshot = source_snapshot.of(before).expect("recorded snapshot")
+  let next_snapshot = source_snapshot.of(after).expect("candidate snapshot")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(old_snapshot), map.empty())
+  let next = checker.check_module_headers(base, source_snapshot.syntax(next_snapshot), map.empty())
+  assert old.cx.diags == [] && next.cx.diags == []
+  let saved = body_execution.record(scope, old)
+  assert saved.refused == 0
+  # the token pairing alone cannot tell these two declarations apart
+  let old_tokens = source_snapshot.tokens(old_snapshot)
+  let next_tokens = source_snapshot.tokens(next_snapshot)
+  let old_other = match source_snapshot.syntax(old_snapshot).decls[1] { DFn(d) -> d, _ -> panic("other") }
+  let new_other = match source_snapshot.syntax(next_snapshot).decls[1] { DFn(d) -> d, _ -> panic("other") }
+  assert source_projection.pair(old_tokens, next_tokens, 1, 1,
+    old_other.lo, old_other.hi, new_other.lo, new_other.hi)
+  assert not source_projection.same_text(old_tokens, next_tokens,
+    old_other.lo, old_other.hi, new_other.lo, new_other.hi)
+  let actual = replay(admit(scope, old, old_snapshot, saved), next, next_snapshot)
+  let expected = checker.check_module_body_products(next)
+  assert actual.reused == 1 && actual.checked == 1
+  assert actual.bodies.functions == expected.functions
+  assert actual.bodies.cx.syms == expected.cx.syms
+  assert actual.bodies.cx.next_id == expected.cx.next_id
 }
 
 test "scalar replay refuses re-parsed statement boundaries with equal tokens" {

@@ -334,15 +334,6 @@ pub fn span_of(view: DeclSpans, key: DeclKey) -> Option[Span] = span_at(view, pa
 
 pub fn span_at(view: DeclSpans, decl: String) -> Option[Span] = map.get(view.by_path, decl)
 
-## Where each declaration of this module starts, addressed the same way. The
-## checker uses it to decide whether it can name the declaration it is about
-## to enter, and to measure that declaration's diagnostics from it.
-pub fn declaration_starts(m: Module) -> Map[String, Int] = {
-  var out: Map[String, Int] = map.empty()
-  for l in located(unscoped(), m) { out = map.insert(out, path_text(l.entry.key.path), l.span.lo) }
-  out
-}
-
 ## The one place a diagnostic's `lo`/`hi` become positions in a revision.
 ## An owner names its module and its declaration; the views are this
 ## revision's, so a declaration that moved answers with where it moved to.
@@ -559,17 +550,16 @@ test "declaration path text separates paths that share a spelling" {
     path_text([ImplHead("P", NamedType("List", [BoundType(0)], []))])
 }
 
-test "declaration starts answer exactly what the span view answers" {
+test "the view answers by path text, and not for a duplicate" {
   let source = "fn f() -> Int = 1\nfn g() -> Int = 2\nfn f() -> Int = 3\n"
-  let starts = declaration_starts(fixture_module(source))
   let view = fixture_spans(source)
   let g = [Named(FunctionDecl, "g")]
-  assert map.get(starts, path_text(g)) == start_of(view, g)
-  assert map.get(starts, path_text(g)) != None
+  assert span_at(view, path_text(g)) == span_of(view, fixture_key(g))
+  assert start_of(view, g) != None
   # a duplicate is nameable in neither, so the checker declines to measure
   # from it and the renderer is never asked to place it
   let f = [Named(FunctionDecl, "f")]
-  assert map.get(starts, path_text(f)) == None
+  assert span_at(view, path_text(f)) == None
   assert start_of(view, f) == None
 }
 

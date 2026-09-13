@@ -1,0 +1,260 @@
+# The typed tree records every span as an offset from the declaration the
+# checker was inside (`cx.owner_off`), because an offset is what survives a
+# declaration moving. This is the one place those offsets become positions in
+# a revision again, and it runs at the end of each declaration, where the base
+# is known without asking: the scheduler has just entered that declaration.
+#
+# Resolving here rather than further down is not a shortcut. A typed function
+# outlives its module -- the comptime interpreter and lowering both read the
+# bundled library's functions beside the ones just checked -- and no single
+# base answers for a tree assembled from several modules. The declaration's
+# own exit is the last moment one base is the right one for the whole tree.
+#
+# The panic below is the guard on the other half of the seam. A span the
+# checker forgot to measure stays absolute, which reads as an offset past the
+# end of its own declaration; that is a compiler bug and not a program's, so
+# it stops here rather than reaching a backend as a position in the wrong
+# coordinate system.
+use std/map
+use check/types.{Sym, TyInt}
+use check/tast.{
+  TExpr, TStmt, TPat, TFun, TDefault, TJavaCall, TStrPart, TArm, TListElem, TListIfArm, TConst,
+  TSPText, TSPInterp, TLEExpr, TLESpread, TLEIf,
+  XInt, XChar, XFloat, XBool, XUnit, XStr, XLocal, XEvRead, XFnValue,
+  XCallDyn, XCallBuiltin, XCallFn, XApply, XJava, XLambda, XCtor, XConstRef,
+  XCtorValue, XField, XListLit, XTupleLit, XPropagate, XUnwrap, XIndex,
+  XReturn, XBreak, XContinue, XComptime, XUnsafePure, XBinary, XUnary,
+  XIf, XMatch, XBlock, XError,
+  TSLet, TSLetPat, TSLocalFn, TSAssign, TSExpr, TSAssert, TSWhile, TSFor, BAdd
+}
+
+## What one declaration's offsets are measured from.
+##
+## `span` is the declaration's own length, and None says the module's span
+## view could not name the declaration. The checker measured nothing from a
+## declaration it could not name, so nothing is added back to one either, and
+## the two sides stay in step by asking the same question.
+pub type Resolver = {
+  base: Int,
+  span: Option[Int],
+  path: Option[String],
+  line_starts: List[Int]
+}
+
+## The resolver for a declaration the span view names.
+pub fn owned(lo: Int, hi: Int, path: Option[String], line_starts: List[Int]) -> Resolver =
+  Resolver { base: lo, span: Some(hi - lo), path: path, line_starts: line_starts }
+
+## The resolver for a declaration it does not: a duplicate, or one under a
+## duplicated parent. Its tree is already in file coordinates.
+pub fn unowned(path: Option[String], line_starts: List[Int]) -> Resolver =
+  Resolver { base: 0, span: None, path: path, line_starts: line_starts }
+
+fn at(r: Resolver, off: Int) -> Int =
+  match r.span {
+    None -> off
+    Some(width) ->
+      if off < 0 || off > width {
+        panic("typed span " ++ to_string(off) ++ " is not inside the declaration " ++
+            "it was measured from (width " ++ to_string(width) ++ ")")
+      } else {
+        r.base + off
+      }
+  }
+
+## 1-based line of a position, the checker's `line_of` on the same table.
+fn line_at(line_starts: List[Int], pos: Int) -> Int = {
+  var line = 1
+  for s in line_starts {
+    if s <= pos && s > 0 { line = line + 1 }
+  }
+  line
+}
+
+## The `at <path>:<line>` half of an `expr!` panic message. The checker knows
+## the producing call and says so; where that call sits is a fact about a
+## revision, so it is derived here, against the revision being resolved. A
+## declaration that only moved therefore reports the line it moved to, which
+## is what a message baked at check time could not do.
+fn site(r: Resolver, pos: Int) -> String =
+  match r.path {
+    Some(p) -> " at " ++ p ++ ":" ++ to_string(line_at(r.line_starts, pos))
+    None -> ""
+  }
+
+fn exprs(r: Resolver, xs: List[TExpr]) -> List[TExpr] = map(xs, x => expr(r, x))
+
+fn opt_expr(r: Resolver, x: Option[TExpr]) -> Option[TExpr] =
+  match x {
+    None -> None
+    Some(e) -> Some(expr(r, e))
+  }
+
+fn str_part(r: Resolver, p: TStrPart) -> TStrPart =
+  match p {
+    TSPText(v) -> TSPText(v)
+    TSPInterp(e, wit) -> TSPInterp(expr(r, e), wit)
+  }
+
+fn list_elem(r: Resolver, e: TListElem) -> TListElem =
+  match e {
+    TLEExpr(x) -> TLEExpr(expr(r, x))
+    TLESpread(x) -> TLESpread(expr(r, x))
+    TLEIf(arms) -> TLEIf(map(arms, a =>
+        TListIfArm { cond: expr(r, a.cond), body: expr(r, a.body) }))
+  }
+
+fn arm(r: Resolver, a: TArm) -> TArm =
+  TArm { pat: a.pat, guard: opt_expr(r, a.guard), body: expr(r, a.body) }
+
+fn java_call(r: Resolver, c: TJavaCall) -> TJavaCall =
+  TJavaCall { ..c,
+    target: opt_expr(r, c.target),
+    args: exprs(r, c.args),
+    sam_evs: map(c.sam_evs, pair => {
+      let (idx, e) = pair
+      (idx, expr(r, e))
+    }),
+    nlo: at(r, c.nlo),
+    nhi: at(r, c.nhi) }
+
+pub fn expr(r: Resolver, e: TExpr) -> TExpr =
+  match e {
+    XInt(v, lo, hi) -> XInt(v, at(r, lo), at(r, hi))
+    XChar(v, lo, hi) -> XChar(v, at(r, lo), at(r, hi))
+    XFloat(v, lo, hi) -> XFloat(v, at(r, lo), at(r, hi))
+    XBool(v, lo, hi) -> XBool(v, at(r, lo), at(r, hi))
+    XUnit(lo, hi) -> XUnit(at(r, lo), at(r, hi))
+    XStr(parts, lo, hi) -> XStr(map(parts, p => str_part(r, p)), at(r, lo), at(r, hi))
+    XLocal(sym, name, lo, hi, ty) -> XLocal(sym, name, at(r, lo), at(r, hi), ty)
+    XEvRead(key, origin, lo, hi, ty) -> XEvRead(key, origin, at(r, lo), at(r, hi), ty)
+    XFnValue(owner, name, builtin, ty, lo, hi) ->
+      XFnValue(owner, name, builtin, ty, at(r, lo), at(r, hi))
+    XCallDyn(sym, name, args, evs, lo, hi, ty) ->
+      XCallDyn(sym, name, exprs(r, args), exprs(r, evs), at(r, lo), at(r, hi), ty)
+    XCallBuiltin(name, args, wits, evs, lo, hi, ty) ->
+      XCallBuiltin(name, exprs(r, args), wits, exprs(r, evs), at(r, lo), at(r, hi), ty)
+    XCallFn(owner, name, args, wits, evs, trait_id, lo, hi, ty) ->
+      XCallFn(owner, name, exprs(r, args), wits, exprs(r, evs), trait_id, at(r, lo), at(r, hi), ty)
+    XApply(target, args, evs, lo, hi, ty) ->
+      XApply(expr(r, target), exprs(r, args), exprs(r, evs), at(r, lo), at(r, hi), ty)
+    XJava(c, lo, hi, ty) -> XJava(java_call(r, c), at(r, lo), at(r, hi), ty)
+    XLambda(params, pnames, body, captures, lo, hi, ty) ->
+      XLambda(params, pnames, expr(r, body), captures, at(r, lo), at(r, hi), ty)
+    XCtor(adt, ci, written, slots, spread, lo, hi, ty) ->
+      XCtor(adt, ci, exprs(r, written), slots, opt_expr(r, spread), at(r, lo), at(r, hi), ty)
+    XConstRef(owner, name, lo, hi, ty) -> XConstRef(owner, name, at(r, lo), at(r, hi), ty)
+    XCtorValue(adt, ci, lo, hi, ty) -> XCtorValue(adt, ci, at(r, lo), at(r, hi), ty)
+    XField(target, idx, lo, hi, ty) -> XField(expr(r, target), idx, at(r, lo), at(r, hi), ty)
+    XListLit(elems, lo, hi, ty) ->
+      XListLit(map(elems, x => list_elem(r, x)), at(r, lo), at(r, hi), ty)
+    XTupleLit(elems, lo, hi, ty) -> XTupleLit(exprs(r, elems), at(r, lo), at(r, hi), ty)
+    XPropagate(operand, lo, hi, ty) -> XPropagate(expr(r, operand), at(r, lo), at(r, hi), ty)
+    XUnwrap(operand, msg, lo, hi, ty) -> {
+      let start = at(r, lo)
+      XUnwrap(expr(r, operand), msg ++ site(r, start), start, at(r, hi), ty)
+    }
+    XIndex(target, index, wit, lo, hi, ty) ->
+      XIndex(expr(r, target), expr(r, index), wit, at(r, lo), at(r, hi), ty)
+    XReturn(v, lo, hi) -> XReturn(opt_expr(r, v), at(r, lo), at(r, hi))
+    XBreak(lo, hi) -> XBreak(at(r, lo), at(r, hi))
+    XContinue(lo, hi) -> XContinue(at(r, lo), at(r, hi))
+    XComptime(body, lo, hi, ty) -> XComptime(expr(r, body), at(r, lo), at(r, hi), ty)
+    XUnsafePure(body, lo, hi, ty) -> XUnsafePure(expr(r, body), at(r, lo), at(r, hi), ty)
+    XBinary(op, left, right, wit, olo, ohi, lo, hi, ty) ->
+      XBinary(op, expr(r, left), expr(r, right), wit,
+        at(r, olo), at(r, ohi), at(r, lo), at(r, hi), ty)
+    XUnary(op, operand, lo, hi, ty) -> XUnary(op, expr(r, operand), at(r, lo), at(r, hi), ty)
+    XIf(cond, thn, els, lo, hi, ty) ->
+      XIf(expr(r, cond), expr(r, thn), opt_expr(r, els), at(r, lo), at(r, hi), ty)
+    XMatch(scrut, arms, lo, hi, ty) ->
+      XMatch(expr(r, scrut), map(arms, a => arm(r, a)), at(r, lo), at(r, hi), ty)
+    XBlock(stmts, tail, lo, hi, ty) ->
+      XBlock(map(stmts, s => stmt(r, s)), opt_expr(r, tail), at(r, lo), at(r, hi), ty)
+    XError(lo, hi) -> XError(at(r, lo), at(r, hi))
+  }
+
+## Patterns carry no spans, so they travel whole.
+pub fn stmt(r: Resolver, s: TStmt) -> TStmt =
+  match s {
+    TSLet(sym, name, init, lo, hi) -> TSLet(sym, name, expr(r, init), at(r, lo), at(r, hi))
+    TSLetPat(pat, init, lo, hi) -> TSLetPat(pat, expr(r, init), at(r, lo), at(r, hi))
+    TSLocalFn(sym, name, params, pnames, body, captures, lo, hi) ->
+      TSLocalFn(sym, name, params, pnames, expr(r, body), captures, at(r, lo), at(r, hi))
+    TSAssign(sym, name, value, lo, hi) -> TSAssign(sym, name, expr(r, value), at(r, lo), at(r, hi))
+    TSExpr(e, lo, hi) -> TSExpr(expr(r, e), at(r, lo), at(r, hi))
+    TSAssert(cond, src, lo, hi) -> TSAssert(expr(r, cond), src, at(r, lo), at(r, hi))
+    TSWhile(cond, body, jumps, lo, hi) ->
+      TSWhile(expr(r, cond), expr(r, body), jumps, at(r, lo), at(r, hi))
+    TSFor(pat, item_ty, from, to, wit, body, jumps, lo, hi) ->
+      TSFor(pat, item_ty, expr(r, from), opt_expr(r, to), wit, expr(r, body), jumps,
+        at(r, lo), at(r, hi))
+  }
+
+pub fn function(r: Resolver, f: TFun) -> TFun =
+  TFun { ..f,
+    defaults: map(f.defaults, d => match d {
+      None -> None
+      Some(dd) -> Some(TDefault { ..dd, body: expr(r, dd.body) })
+    }),
+    body: expr(r, f.body) }
+
+pub fn constant(r: Resolver, c: TConst) -> TConst =
+  TConst { ..c, init: expr(r, c.init), lo: at(r, c.lo), hi: at(r, c.hi) }
+
+## The declaration's own symbols, named by the identifier interval the
+## scheduler minted them in. A symbol's declaring span is measured from the
+## same declaration as the tree that reads it, so the two are resolved
+## together or not at all.
+pub fn symbols(r: Resolver, syms: Map[Int, Sym], first: Int, limit: Int) -> Map[Int, Sym] = {
+  var out = syms
+  var id = first
+  while id < limit {
+    match map.get(out, id) {
+      Some(s) -> { out = map.insert(out, id, Sym { ..s, dlo: at(r, s.dlo), dhi: at(r, s.dhi) }) }
+      None -> ()
+    }
+    id = id + 1
+  }
+  out
+}
+
+test "an owned tree comes back at the declaration it was measured from" {
+  let r = owned(100, 130, Some("m.dawn"), [0, 40, 90])
+  let inner = XBinary(BAdd, XInt(1, 4, 5), XInt(2, 8, 9), None, 6, 7, 4, 9, TyInt)
+  assert expr(r, inner) ==
+    XBinary(BAdd, XInt(1, 104, 105), XInt(2, 108, 109), None, 106, 107, 104, 109, TyInt)
+  # the declaration's own start and end are both inside it
+  assert expr(r, XUnit(0, 30)) == XUnit(100, 130)
+}
+
+test "an unowned tree is already in file coordinates" {
+  let r = unowned(Some("m.dawn"), [0, 40])
+  assert expr(r, XUnit(41, 44)) == XUnit(41, 44)
+}
+
+test "an unwrap message names the line the declaration sits on now" {
+  let starts = [0, 40, 90]
+  let here = owned(100, 130, Some("m.dawn"), starts)
+  let moved = owned(45, 75, Some("m.dawn"), starts)
+  let raw = XUnwrap(XUnit(0, 1), "unwrapped None from f()", 0, 4, TyInt)
+  assert expr(here, raw) ==
+    XUnwrap(XUnit(100, 101), "unwrapped None from f() at m.dawn:3", 100, 104, TyInt)
+  assert expr(moved, raw) ==
+    XUnwrap(XUnit(45, 46), "unwrapped None from f() at m.dawn:2", 45, 49, TyInt)
+  # a context with no source names no site, the way the checker named none
+  let anonymous = owned(100, 130, None, starts)
+  assert expr(anonymous, raw) == XUnwrap(XUnit(100, 101), "unwrapped None from f()", 100, 104, TyInt)
+}
+
+test "symbols move with the tree that reads them" {
+  let sym = (dlo: Int, dhi: Int) =>
+    Sym { name: "x", ty: TyInt, mutable: false, dlo: dlo, dhi: dhi,
+      dict_of: None, ev_of: None, cell_of: None }
+  let before = map.from([(7, sym(0, 1)), (9, sym(4, 5)), (11, sym(60, 61))])
+  let after = symbols(owned(100, 130, None, []), before, 7, 11)
+  assert map.get(after, 7) == Some(sym(100, 101))
+  assert map.get(after, 9) == Some(sym(104, 105))
+  # outside the interval the declaration minted, nothing is touched
+  assert map.get(after, 11) == Some(sym(60, 61))
+}

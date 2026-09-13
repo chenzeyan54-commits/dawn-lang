@@ -26,8 +26,13 @@ def main():
         ('current-handler-cell', 'take_cell: cx.take_cell', 'take_cell: None'),
         ('current-constant-cutoff', 'const_cutoff: cx.const_cutoff', 'const_cutoff: None'),
         ('current-loop-jumps', 'loop_jumps: cx.loop_jumps', 'loop_jumps: set.empty()'),
-        ('unpaired-body',
-         'if not scalar_shape.same(prior.body, d.body, bound) { return None }',
+        # The declaration's own bytes. `scalar_shape.same` above asks a
+        # question this subsumes here -- identical text parses to the same
+        # body -- so it has no fixture of its own to fail any more, and the
+        # control that owns the positions is this one.
+        ('changed-declaration-text',
+         'if not source_projection.same_text(prepared.old_tokens, prepared.tokens,\n'
+         '    prior.lo, prior.hi, d.lo, d.hi) { return None }',
          'if false { return None }'),
         ('alias-shadowed-binders', 'if map.has(cx.module_aliases, name) { return None }',
          'if false { return None }'),

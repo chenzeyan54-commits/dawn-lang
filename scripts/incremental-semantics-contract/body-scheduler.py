@@ -21,10 +21,10 @@ def main():
     variants = [
         ('allocation', 'var cx1 = headers.cx\n  let sigs = headers.sigs',
          'var cx1 = Cx { ..headers.cx, next_id: headers.cx.next_id + 1 }\n  let sigs = headers.sigs'),
-        ('constant-visibility', 'executor.constant(state, owner, d, declared, visible)',
-         'executor.constant(state, owner, d, declared, set.empty())'),
-        ('method-tag', 'TFun { ..tf, impl_of: imp_key }', 'TFun { ..tf, impl_of: None }'),
-        ('default-tag', 'TFun { ..tf, default_of: Some(t) }', 'TFun { ..tf, default_of: None }'),
+        ('constant-visibility', 'executor.constant(state, owner.cx, d, declared, visible)',
+         'executor.constant(state, owner.cx, d, declared, set.empty())'),
+        ('method-tag', 'impl_of: imp_key }', 'impl_of: None }'),
+        ('default-tag', 'default_of: Some(t) }', 'default_of: None }'),
         ('diagnostic-order', '(state, ModuleBodies { cx: cx1, functions: fns_out, constants: tconsts,',
          '(state, ModuleBodies { cx: Cx { ..cx1, diags: list.reverse(cx1.diags) }, functions: fns_out, constants: tconsts,'),
     ]

@@ -457,7 +457,43 @@ pub fn test_cx() -> Cx = cx_new(None, None)
 pub fn owned_by(cx: Cx, module: String, decl: String, start: Int) -> Cx =
   Cx { ..cx, owner: Some(DiagOwner { module: module, decl: decl }), owner_lo: start }
 
+## The same base without a diagnostic owner. A context the driver did not
+## give a module path to cannot name the view its diagnostics would resolve
+## against, so they stay absolute; the typed tree it builds is measured from
+## the declaration all the same, because the seam that resolves the tree is
+## the declaration's own exit and needs no module name to find it.
+pub fn measured_from(cx: Cx, start: Int) -> Cx =
+  Cx { ..cx, owner: None, owner_lo: start }
+
 pub fn unowned(cx: Cx) -> Cx = Cx { ..cx, owner: None, owner_lo: 0 }
+
+## Where the frame first saw an effect raised, back in the coordinates a
+## diagnostic site works in. The table records the span the way everything
+## else a body records does, measured from the declaration, so that a saved
+## body carries it to wherever that declaration ends up; the sites that blame
+## it want a position in the file, and this is the one place the two meet.
+pub fn eff_witness_at(cx: Cx, e: Eff, fallback: (Int, Int, String)) -> (Int, Int, String) =
+  match map.get(cx.frame.eff_witness, e) {
+    Some(w) -> {
+      let (lo, hi, name) = w
+      (owner_at(cx, lo), owner_at(cx, hi), name)
+    }
+    None -> fallback
+  }
+
+## A position on its way into the typed tree, measured from the declaration
+## being checked. The typed tree records offsets for the same reason a
+## diagnostic does: a declaration that moved without changing carries its
+## interior with it, and an offset is what survives that. `owner_lo` is zero
+## outside a declaration the module's span view can name, which is the same
+## case `raised` leaves absolute; the two must agree, because the seam that
+## resolves the tree resolves it against the same view and the same owner.
+pub fn owner_off(cx: Cx, at: Int) -> Int = at - cx.owner_lo
+
+## The inverse, for the few places that read a span back out of what the body
+## already recorded and hand it to a diagnostic. Everything the checker itself
+## passes around is a position; only what it has already stored is an offset.
+pub fn owner_at(cx: Cx, off: Int) -> Int = off + cx.owner_lo
 
 ## The one constructor: every checker diagnostic is measured against the
 ## declaration that owns it when there is one, and left absolute when there

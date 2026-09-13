@@ -15,7 +15,7 @@ pub type Comparison = { old: ModuleBodies, current: ModuleBodies }
 pub fn sample_count(xs: List[Comparison]) -> Int = len(xs)
 pub fn sample_at(xs: List[Comparison], index: Int) -> Comparison = xs[index]
 pub fn main() -> Unit !io = { let pairs = samples()
-  if len(pairs) != 32 { panic("scalar pair count") }
+  if len(pairs) != 34 { panic("scalar pair count") }
 }
 
 pub fn samples() -> List[Comparison] !io = {
@@ -83,14 +83,17 @@ fn local_samples() -> List[Comparison] !io = {
   ])
 }
 
-## Newlines carry statement boundaries, and the token projection drops them.
-## These two revisions have one token stream and two parses, so only the paired
-## syntax trees can tell them apart.
+## Newlines carry statement boundaries, and the token comparison drops them.
+## The second revision here has the same token stream and a different parse;
+## the third has the same parse and different bytes. Neither is admitted: a
+## saved body's spans are offsets into its declaration's own text, so that
+## text has to be the same text.
 fn boundary_samples() -> List[Comparison] !io = {
   let before = "fn compute(x: Int) -> Int = {\n let a = 1\n let b = a\n - x\n}\n"
   replay_cases("boundary", before, [
     ("# moved\n" ++ before, 1),
-    ("fn compute(x: Int) -> Int = {\n let a = 1\n let b = a - x\n}\n", 0)
+    ("fn compute(x: Int) -> Int = {\n let a = 1\n let b = a - x\n}\n", 0),
+    ("fn compute(x: Int) -> Int = {\n let a = 1\n let b =  a\n - x\n}\n", 0)
   ])
 }
 

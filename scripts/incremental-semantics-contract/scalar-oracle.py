@@ -41,12 +41,16 @@ def main():
          '  let moved = BodyProduct { ..p, allocation_start: cx.next_id }'),
         ('header-only-ids', 'let view = View { ids: ids,',
          'let view = View { ids: allocation.reserver_ids(prepared.reserver),'),
-        ('missing-local-symbols', 'symbols: saved.symbols,\n    assertion:',
-         'symbols: map.empty(),\n    assertion:'),
+        ('missing-local-symbols', 'symbols: saved.symbols,', 'symbols: map.empty(),'),
         ('lost-local-journal', 'Some(_) -> moved.body_writes',
          'Some(_) -> Some([])'),
-        ('unpaired-body',
-         'if not scalar_shape.same(prior.body, d.body, bound) { return None }',
+        # The declaration's own bytes. `scalar_shape.same` above asks a
+        # question this subsumes -- identical text parses to the same body --
+        # so it has no case of its own left to fail, and this is the control
+        # that owns admission on the source side.
+        ('changed-declaration-text',
+         'if not source_projection.same_text(prepared.old_tokens, prepared.tokens,\n'
+         '    prior.lo, prior.hi, d.lo, d.hi) { return None }',
          'if false { return None }'),
     ]
     with tempfile.TemporaryDirectory(prefix='dawn-scalar-oracle-') as temp:
@@ -82,12 +86,12 @@ def main():
             else:
                 owner = ('FAIL: scalar independent execution count'
                          if name in ('disguised-cold', 'header-only-ids', 'missing-local-symbols',
-                                     'unpaired-body')
+                                     'changed-declaration-text')
                          else 'FAIL: scalar full product')
                 if not result.returncode or owner not in result.stdout:
                     raise RuntimeError(name + ' missed independent oracle\n' + result.stdout)
             print('OK: scalar oracle ' + name, flush=True)
-    print(f'OK: 32 complete replay products and {len(variants)} compiling controls, {time.monotonic() - started:.2f}s')
+    print(f'OK: 34 complete replay products and {len(variants)} compiling controls, {time.monotonic() - started:.2f}s')
 
 
 if __name__ == '__main__':

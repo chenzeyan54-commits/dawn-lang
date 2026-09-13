@@ -43,7 +43,7 @@ use check/tast.{
   TListElem, TLEExpr, TLESpread, TLEIf, TListIfArm,
   TPat, TPWild, TPBind, TPLit, TPOr, TPTuple, TPList, TPCtor,
   TStmt, TSLet, TSLetPat, TSLocalFn, TSAssign, TSExpr, TSAssert, TSWhile, TSFor,
-  TFun, TDefault, TConst, TModule, WitRef, WForward, WConcrete, WApply
+  TFun, TDefault, TConst, TModule, WitRef, WForward, WConcrete, WApply, x_lo, x_hi
 }
 use check/types.{
   adt_self_ty, Ty, TyInt, TyFloat, TyBool, TyString, TyBytes, TyUnit, TyNever,
@@ -83,7 +83,7 @@ use check/cx.{
   write_symbol, write_signature, write_bounds,
   AliasE, Cx, Frame, LambdaCx, ModExports,
   cx_new, test_cx, check_value_arity,
-  cerr, cerr_h, cerr_o, owned_by, unowned, fresh, alias_shadow, effect_of, resolve_eff_at,
+  cerr, cerr_h, cerr_o, owned_by, unowned, measured_from, owner_off, owner_at, eff_witness_at, fresh, alias_shadow, effect_of, resolve_eff_at,
   resolve_type, resolve_return_type, resolve_alias_target, java_class_info_read, java_class_name_read, java_class_names_read,
   java_methods_read, java_constructors_read, java_static_fields_read, java_component_read,
   java_sam_read, java_assignable_read, is_const_serializable, const_refusal_hint, no_sig,
@@ -96,6 +96,7 @@ use check/cx.{
   TySpan
 }
 use check/identity
+use check/tast_positions
 use check/passes.{
   seed_prelude, pass_java_uses, pass_imports, pass_type_shells, pass_ctor_fields,
   pass_effects, pass_resolve_aliases, pass_register_traits, pass_register_impls,
@@ -155,8 +156,8 @@ fn declare_sym(
     name: name,
     ty: ty,
     mutable: mutable,
-    dlo: lo,
-    dhi: hi,
+    dlo: owner_off(cx, lo),
+    dhi: owner_off(cx, hi),
     dict_of: None,
     ev_of: None,
     cell_of: cell
@@ -207,7 +208,7 @@ pub fn record_effect(cx: Cx, e: Eff, lo: Int, hi: Int, name: String) -> Cx = {
     frame: Frame {
       ..cx.frame,
       used_effects: cx.frame.used_effects ++ [e],
-      eff_witness: map.insert(cx.frame.eff_witness, e, (lo, hi, name))
+      eff_witness: map.insert(cx.frame.eff_witness, e, (owner_off(cx, lo), owner_off(cx, hi), name))
     }
   }
 }
@@ -365,13 +366,13 @@ fn ev_expr(
   match found {
     Some(sid) ->
       if crossed {
-        (cx1, Some(XEvRead(key, origin, lo, hi, ty)))
+        (cx1, Some(XEvRead(key, origin, owner_off(cx, lo), owner_off(cx, hi), ty)))
       } else {
-        (cx1, Some(XLocal(sid, name, lo, hi, ty)))
+        (cx1, Some(XLocal(sid, name, owner_off(cx, lo), owner_off(cx, hi), ty)))
       }
     None ->
       if len(cx1.frame.lambda_stack) > 0 {
-        (cx1, Some(XEvRead(key, origin, lo, hi, ty)))
+        (cx1, Some(XEvRead(key, origin, owner_off(cx, lo), owner_off(cx, hi), ty)))
       } else {
         (cx1, None)
       }
@@ -2165,27 +2166,27 @@ pub fn check_unary(
       if t != TyBool && not is_errorish(t) {
         let (render_cx, text) = type_display_read(cx, t)
         let cx1 = cerr(render_cx, "`not` expects Bool, got " ++ text, olo, ohi)
-        (cx1, TyError, XError(lo, hi))
+        (cx1, TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
       } else {
-        (cx, TyBool, XUnary(UNot, operand, lo, hi, TyBool))
+        (cx, TyBool, XUnary(UNot, operand, owner_off(cx, lo), owner_off(cx, hi), TyBool))
       }
     }
     OpNeg -> {
       if not is_numeric(t) && not is_errorish(t) {
         let (render_cx, text) = type_display_read(cx, t)
         let cx1 = cerr(render_cx, "negation expects a number, got " ++ text, olo, ohi)
-        (cx1, TyError, XError(lo, hi))
+        (cx1, TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
       } else {
-        (cx, t, XUnary(UNeg, operand, lo, hi, t))
+        (cx, t, XUnary(UNeg, operand, owner_off(cx, lo), owner_off(cx, hi), t))
       }
     }
     OpBnot -> {
       if t != TyInt && not is_errorish(t) {
         let (render_cx, text) = type_display_read(cx, t)
         let cx1 = cerr(render_cx, "`~` expects Int, got " ++ text, olo, ohi)
-        (cx1, TyError, XError(lo, hi))
+        (cx1, TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
       } else {
-        (cx, TyInt, XUnary(UBnot, operand, lo, hi, TyInt))
+        (cx, TyInt, XUnary(UBnot, operand, owner_off(cx, lo), owner_off(cx, hi), TyInt))
       }
     }
   }
@@ -2381,7 +2382,7 @@ pub fn check_binary_typed(
   lo: Int,
   hi: Int
 ) -> (Cx, Ty, TExpr) = {
-  let node = (ord: Option[WitRef], t: Ty) => XBinary(tbin_of(op), left, right, ord, olo, ohi, lo, hi, t)
+  let node = (ord: Option[WitRef], t: Ty) => XBinary(tbin_of(op), left, right, ord, owner_off(cx, olo), owner_off(cx, ohi), owner_off(cx, lo), owner_off(cx, hi), t)
   # one side already failed: pick a plausible result type, stay silent
   if is_errorish(lt) || is_errorish(rt) {
     let t = match op {
@@ -3109,9 +3110,9 @@ fn propagate_msg(cx: Cx, on: String, want: String, got: String) -> String =
 
 ## expr? — unwrap Ok/Some or early-return the Err/None (spec §8.1).
 pub fn check_propagate_typed(cx: Cx, ot: Ty, operand: TExpr, lo: Int, hi: Int) -> (Cx, Ty, TExpr) = {
-  if is_errorish(ot) { return (cx, TyError, XError(lo, hi)) }
+  if is_errorish(ot) { return (cx, TyError, XError(owner_off(cx, lo), owner_off(cx, hi))) }
   # the node closes over the result type once it is known
-  let node = (t: Ty) => XPropagate(operand, lo, hi, t)
+  let node = (t: Ty) => XPropagate(operand, owner_off(cx, lo), owner_off(cx, hi), t)
   # inside a lambda, ? returns from the lambda — its return type must be known
   var sig_ret = TyError
   if len(cx.frame.lambda_stack) > 0 {
@@ -3128,25 +3129,25 @@ pub fn check_propagate_typed(cx: Cx, ot: Ty, operand: TExpr, lo: Int, hi: Int) -
             "`?` after `with` needs the type of the `with` call to be known from context",
             lo, hi,
             "annotate the enclosing function's return type, so the closure `with` " ++
-              "introduced knows what it hands back"), TyError, XError(lo, hi))
+              "introduced knows what it hands back"), TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
         } else {
           return (cerr_h(cx,
             "`?` inside a lambda needs the lambda's return type to be known from context",
             lo, hi,
             "handle the Option/Result with match, or make the expected function type explicit"),
-            TyError, XError(lo, hi))
+            TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
         }
     }
   } else {
     sig_ret = match cx.frame.current_sig {
       None -> return (cerr(cx,
         "`?` can only be used inside a function that returns Option or Result", lo, hi),
-        TyError, XError(lo, hi))
+        TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
       Some(fs) ->
         if fs.inferring {
           return (cerr_h(cx, "`?` needs the function's return type to be declared", lo, hi,
             "add `-> Option[...]` / `-> Result[...]` to fn " ++ fs.name ++ "(...)"),
-            TyError, XError(lo, hi))
+            TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
         } else {
           fs.ret
         }
@@ -3163,7 +3164,7 @@ pub fn check_propagate_typed(cx: Cx, ot: Ty, operand: TExpr, lo: Int, hi: Int) -
           let (render_cx, text) = type_display_read(cx, sig_ret)
           return (cerr(render_cx,
             propagate_msg(render_cx, "an Option", "Option[...]", text),
-            lo, hi), TyError, XError(lo, hi))
+            lo, hi), TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
         }
         return (cx, targs[0], node(targs[0]))
       }
@@ -3174,7 +3175,7 @@ pub fn check_propagate_typed(cx: Cx, ot: Ty, operand: TExpr, lo: Int, hi: Int) -
               let (render_cx, text) = type_display_read(cx, sig_ret)
               return (cerr(render_cx,
                 propagate_msg(render_cx, "a Result", "Result[...]", text),
-                lo, hi), TyError, XError(lo, hi))
+                lo, hi), TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
             }
             if rargs[1] != targs[1] {
               let (operand_cx, operand_text) = type_display_read(cx, ot)
@@ -3182,7 +3183,7 @@ pub fn check_propagate_typed(cx: Cx, ot: Ty, operand: TExpr, lo: Int, hi: Int) -
               return (cerr_h(return_cx, "`?` error types differ: " ++ operand_text ++ " vs " ++
                   return_text, lo, hi,
                 "there is no automatic error conversion; match and rewrap the error"),
-                TyError, XError(lo, hi))
+                TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
             }
             return (cx, targs[0], node(targs[0]))
           }
@@ -3190,20 +3191,20 @@ pub fn check_propagate_typed(cx: Cx, ot: Ty, operand: TExpr, lo: Int, hi: Int) -
             let (render_cx, text) = type_display_read(cx, sig_ret)
             return (cerr(render_cx,
               propagate_msg(render_cx, "a Result", "Result[...]", text),
-              lo, hi), TyError, XError(lo, hi))
+              lo, hi), TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
           }
         }
       }
       let (render_cx, text) = type_display_read(cx, ot)
       (cerr_h(render_cx, "`?` needs an Option or Result, got " ++ text, lo, hi,
         "`?` unwraps an Option or Result and early-returns on None/Err; this value is neither"),
-        TyError, XError(lo, hi))
+        TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
     }
     _ -> {
       let (render_cx, text) = type_display_read(cx, ot)
       (cerr_h(render_cx, "`?` needs an Option or Result, got " ++ text, lo, hi,
         "`?` unwraps an Option or Result and early-returns on None/Err; this value is neither"),
-        TyError, XError(lo, hi))
+        TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
     }
   }
 }
@@ -3323,11 +3324,11 @@ test "loop jumps respect lambda boundaries" {
 ## expr! — Option[T] -> T, panicking on None (spec §8.2). The panic message is
 ## assembled by the caller (it needs source/line info); this checks the type.
 pub fn check_unwrap_typed(cx: Cx, ot: Ty, operand: TExpr, msg: String, lo: Int, hi: Int) -> (Cx, Ty, TExpr) = {
-  if is_errorish(ot) { return (cx, TyError, XError(lo, hi)) }
+  if is_errorish(ot) { return (cx, TyError, XError(owner_off(cx, lo), owner_off(cx, hi))) }
   match ot {
     TyAdt(aid, targs) ->
       if aid == OPTION_ID {
-        (cx, targs[0], XUnwrap(operand, msg, lo, hi, targs[0]))
+        (cx, targs[0], XUnwrap(operand, msg, owner_off(cx, lo), owner_off(cx, hi), targs[0]))
       } else {
         let hint = if aid == RESULT_ID {
           "`!` unwraps an Option; on a Result use `?` to propagate, or match the Ok/Err"
@@ -3336,13 +3337,13 @@ pub fn check_unwrap_typed(cx: Cx, ot: Ty, operand: TExpr, msg: String, lo: Int, 
         }
         let (render_cx, text) = type_display_read(cx, ot)
         (cerr_h(render_cx, "`!` needs an Option, got " ++ text, lo, hi, hint),
-          TyError, XError(lo, hi))
+          TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
       }
     _ -> {
       let (render_cx, text) = type_display_read(cx, ot)
       (cerr_h(render_cx, "`!` needs an Option, got " ++ text, lo, hi,
         "`!` unwraps an Option and panics on None; this value is not an Option"),
-        TyError, XError(lo, hi))
+        TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
     }
   }
 }
@@ -3400,7 +3401,7 @@ pub fn check_field_access_typed(
   hi: Int
 ) -> (Cx, Ty, TExpr) = {
   var cx = initial
-  if is_errorish(tt) { return (cx, TyError, XError(lo, hi)) }
+  if is_errorish(tt) { return (cx, TyError, XError(owner_off(initial, lo), owner_off(initial, hi))) }
   let bad_hint: Option[String] = match tt {
     TyAdt(aid, _) -> {
       let (header_cx, header) = constructor_header_read(cx, aid)
@@ -3426,7 +3427,7 @@ pub fn check_field_access_typed(
   if not is_record {
     let (render_cx, text) = type_display_read(cx, tt)
     return (cerr_o(render_cx, "`.` field access needs a record value, got " ++ text,
-      flo, fhi, bad_hint), TyError, XError(lo, hi))
+      flo, fhi, bad_hint), TyError, XError(owner_off(initial, lo), owner_off(initial, hi)))
   }
   match tt {
     TyAdt(aid, targs) -> {
@@ -3451,7 +3452,7 @@ pub fn check_field_access_typed(
           None -> "fields: ${join(fnames, ", ")}"
         }
         return (cerr_h(cx, "`" ++ a.name ++ "` has no field `" ++ fname ++ "`", flo, fhi, hint),
-          TyError, XError(lo, hi))
+          TyError, XError(owner_off(initial, lo), owner_off(initial, hi)))
       }
       var m: Map[Int, Ty] = map.empty()
       var j = 0
@@ -3469,10 +3470,10 @@ pub fn check_field_access_typed(
       let em: Map[Int, Eff] = map.empty()
       {
         let rt = subst(fty, m, em)
-        (cx, rt, XField(target, idx, lo, hi, rt))
+        (cx, rt, XField(target, idx, owner_off(initial, lo), owner_off(initial, hi), rt))
       }
     }
-    _ -> (cx, TyError, XError(lo, hi))
+    _ -> (cx, TyError, XError(owner_off(initial, lo), owner_off(initial, hi)))
   }
 }
 
@@ -3788,8 +3789,8 @@ fn typed_binds(cx: Cx, p: TPat) -> List[PatBind] = {
         name: s.name,
         sym: sid,
         ty: s.ty,
-        lo: s.dlo,
-        hi: s.dhi
+        lo: owner_at(cx, s.dlo),
+        hi: owner_at(cx, s.dhi)
       }]
     }
     TPOr(alts) -> if len(alts) > 0 { out = typed_binds(cx, alts[0]) }
@@ -3805,8 +3806,8 @@ fn typed_binds(cx: Cx, p: TPat) -> List[PatBind] = {
             name: s.name,
             sym: sid,
             ty: s.ty,
-            lo: s.dlo,
-            hi: s.dhi
+            lo: owner_at(cx, s.dlo),
+            hi: owner_at(cx, s.dhi)
           }]
         }
         None -> ()
@@ -5484,10 +5485,7 @@ pub fn enter_isolated(cx: Cx) -> (Cx, Frame) = {
 pub fn leave_isolated(cx: Cx, frame: Frame, what: String, blo: Int, bhi: Int) -> Cx = {
   var cx1 = cx
   for used in cx.frame.used_effects {
-    let (wlo, whi, name) = match map.get(cx.frame.eff_witness, used) {
-      Some(w) -> w
-      None -> (blo, bhi, "?")
-    }
+    let (wlo, whi, name) = eff_witness_at(cx, used, (blo, bhi, "?"))
     let hint = if len(eff_labels(used)) > 0 {
       "compile-time evaluation cannot raise a declared effect; v1 has no handlers " ++
         "at comptime (docs/effects-design.md §4.5)"
@@ -5772,10 +5770,10 @@ pub fn check_fn_value(
     let ps2 = join(f.param_names, ", ")
     return (cerr_h(cx, "effect operation `" ++ name ++ "` cannot be used as a value", lo, hi,
       "wrap it in a lambda: (" ++ ps2 ++ ") => " ++ name ++ "(" ++ ps2 ++ ")"),
-      TyError, XError(lo, hi))
+      TyError, XError(owner_off(initial, lo), owner_off(initial, hi)))
   }
   if len(f.param_tys) > fn_max_params() {
-    return (check_value_arity(cx, len(f.param_tys), lo, hi), TyError, XError(lo, hi))
+    return (check_value_arity(cx, len(f.param_tys), lo, hi), TyError, XError(owner_off(initial, lo), owner_off(initial, hi)))
   }
   # Counted off the type parameters rather than off `constraints` directly, so
   # "there are bounds" and "these are the bounds" are one walk: the eta
@@ -5792,7 +5790,7 @@ pub fn check_fn_value(
     EffVar(_, _) -> true
     _ -> false
   }
-  let node = (t: Ty) => XFnValue(f.owner, name, f.is_builtin, t, lo, hi)
+  let node = (t: Ty) => XFnValue(f.owner, name, f.is_builtin, t, owner_off(initial, lo), owner_off(initial, hi))
   if len(f.tparams) == 0 && not eff_is_var {
     return (cx, declared, node(declared))
   }
@@ -5806,7 +5804,7 @@ pub fn check_fn_value(
       return (cerr_h(cx, "cannot infer the type parameter(s) of `" ++ name ++
           "` used as a value here", lo, hi,
         "wrap it in a lambda with annotated parameters: (x: Int) => " ++ name ++ "(x)"),
-        TyError, XError(lo, hi))
+        TyError, XError(owner_off(initial, lo), owner_off(initial, hi)))
     Some(v) -> v
   }
   var m: Map[Int, Ty] = map.empty()
@@ -5842,7 +5840,7 @@ pub fn check_fn_value(
   if len(unbound) > 0 {
     return (cerr_h(cx, "cannot infer type parameter(s) " ++ join(unbound, ", ") ++ " for `" ++
         name ++ "` used as a value", lo, hi, "wrap it in a lambda with annotated parameters"),
-      TyError, XError(lo, hi))
+      TyError, XError(owner_off(initial, lo), owner_off(initial, hi)))
   }
   match f.eff {
     EffVar(_, eid) -> if not map.has(em, eid) { em = map.insert(em, eid, eeff) }
@@ -5927,14 +5925,14 @@ fn eta_bounded_fn_value(
     cx1 = cxd
     psyms = psyms ++ [sid]
     pnames = pnames ++ [pn]
-    args = args ++ [XLocal(sid, pn, lo, hi, pt)]
+    args = args ++ [XLocal(sid, pn, owner_off(cx, lo), owner_off(cx, hi), pt)]
     j = j + 1
   }
   cx1 = pop_scope(cx1)
   let popped = cx1.frame.lambda_stack[len(cx1.frame.lambda_stack) - 1]
   let outer = list.take(cx1.frame.lambda_stack, len(cx1.frame.lambda_stack) - 1)
   cx1 = Cx { ..cx1, frame: Frame { ..cx1.frame, lambda_stack: outer } }
-  if not ok { return (cx1, TyError, XError(lo, hi)) }
+  if not ok { return (cx1, TyError, XError(owner_off(cx, lo), owner_off(cx, hi))) }
   # The eta wrapper's own body is a *named* call, so the evidence it owes is
   # per atom of the callee's ABI row, not one pack. A bounded function value
   # with a labelled row would need that list built here; none exists (a bound
@@ -5949,11 +5947,11 @@ fn eta_bounded_fn_value(
   let evid: List[TExpr] = []
   let body =
     if f.is_builtin {
-      XCallBuiltin(name, args, wits, evid, lo, hi, iret)
+      XCallBuiltin(name, args, wits, evid, owner_off(cx, lo), owner_off(cx, hi), iret)
     } else {
-      XCallFn(f.owner, name, args, wits, evid, f.trait_id, lo, hi, iret)
+      XCallFn(f.owner, name, args, wits, evid, f.trait_id, owner_off(cx, lo), owner_off(cx, hi), iret)
     }
-  (cx1, inst, XLambda(psyms, pnames, body, popped.captures, lo, hi, inst))
+  (cx1, inst, XLambda(psyms, pnames, body, popped.captures, owner_off(cx, lo), owner_off(cx, hi), inst))
 }
 
 test "fn values instantiate from the expected type" {
@@ -6026,18 +6024,18 @@ pub fn check_ctor_value(
   let (fields_cx, ci) = constructor_fields_read(header_cx, aid, cslot)
   var cx = fields_cx
   if len(ci.fields) > fn_max_params() {
-    return (check_value_arity(cx, len(ci.fields), lo, hi), TyError, XError(lo, hi))
+    return (check_value_arity(cx, len(ci.fields), lo, hi), TyError, XError(owner_off(initial, lo), owner_off(initial, hi)))
   }
   var params: List[Ty] = []
   for f in ci.fields { params = params ++ [f.ty] }
   let ret = TyAdt(a.id, a.tparams)
-  let node = (t: Ty) => XCtorValue(aid, cslot, lo, hi, t)
+  let node = (t: Ty) => XCtorValue(aid, cslot, owner_off(initial, lo), owner_off(initial, hi), t)
   if len(eps) != len(params) {
     let (expected_cx, expected_text) = type_display_read(cx, TyFn(eps, eret, eeff))
     let (hint_cx, hint_text) = constructor_display_read(expected_cx, ci)
     return (cerr_h(hint_cx, "`" ++ ci.name ++ "` takes " ++ to_string(len(params)) ++
         " field(s), but " ++ expected_text ++ " is expected", lo, hi,
-      "constructor: " ++ hint_text), TyError, XError(lo, hi))
+      "constructor: " ++ hint_text), TyError, XError(owner_off(initial, lo), owner_off(initial, hi)))
   }
   if len(a.tparams) == 0 {
     let t0 = TyFn(params, ret, EPure)
@@ -6076,7 +6074,7 @@ pub fn check_ctor_value(
   if len(unbound) > 0 {
     return (cerr_h(cx, "cannot infer type parameter(s) " ++ join(unbound, ", ") ++ " for `" ++
         ci.name ++ "` used as a value", lo, hi,
-      "annotate the surrounding context, or wrap it in a lambda"), TyError, XError(lo, hi))
+      "annotate the surrounding context, or wrap it in a lambda"), TyError, XError(owner_off(initial, lo), owner_off(initial, hi)))
   }
   var ips: List[Ty] = []
   for d in params { ips = ips ++ [subst(d, m, em)] }
@@ -6703,11 +6701,11 @@ fn check_list_elem(initial: Cx, x: ListElem, elem_t: Ty) -> (Cx, Ty, TListElem) 
 
 fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
   match e {
-    EInt(v, lo, hi) -> (cx, TyInt, XInt(v, lo, hi))
-    EChar(v, lo, hi) -> (cx, ty_char(), XChar(v, lo, hi))
-    EFloat(v, lo, hi) -> (cx, TyFloat, XFloat(v, lo, hi))
-    EBool(v, lo, hi) -> (cx, TyBool, XBool(v, lo, hi))
-    EUnit(lo, hi) -> (cx, TyUnit, XUnit(lo, hi))
+    EInt(v, lo, hi) -> (cx, TyInt, XInt(v, owner_off(cx, lo), owner_off(cx, hi)))
+    EChar(v, lo, hi) -> (cx, ty_char(), XChar(v, owner_off(cx, lo), owner_off(cx, hi)))
+    EFloat(v, lo, hi) -> (cx, TyFloat, XFloat(v, owner_off(cx, lo), owner_off(cx, hi)))
+    EBool(v, lo, hi) -> (cx, TyBool, XBool(v, owner_off(cx, lo), owner_off(cx, hi)))
+    EUnit(lo, hi) -> (cx, TyUnit, XUnit(owner_off(cx, lo), owner_off(cx, hi)))
     EStr(parts, lo, hi) -> {
       var cx1 = cx
       var tparts: List[TStrPart] = []
@@ -6725,7 +6723,7 @@ fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
           }
         }
       }
-      (cx1, TyString, XStr(tparts, lo, hi))
+      (cx1, TyString, XStr(tparts, owner_off(cx, lo), owner_off(cx, hi)))
     }
     EVar(name, lo, hi) -> check_var(cx, name, expected, lo, hi)
     EUnary(op, operand, lo, hi) -> {
@@ -6763,12 +6761,12 @@ fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
                 text ++ ")", e_lo(thn), e_hi(thn),
               "add an else branch to produce a value")
           }
-          (cx4, TyUnit, XIf(cndx, thnx, None, lo, hi, TyUnit))
+          (cx4, TyUnit, XIf(cndx, thnx, None, owner_off(cx, lo), owner_off(cx, hi), TyUnit))
         }
         Some(eb) -> {
           let (cx4, et, ex) = check_expr(cx3, eb, expected)
           let (cx5, t) = unify_branches(cx4, tt, et, lo, hi, "the if branches")
-          (cx5, t, XIf(cndx, thnx, Some(ex), lo, hi, t))
+          (cx5, t, XIf(cndx, thnx, Some(ex), owner_off(cx, lo), owner_off(cx, hi), t))
         }
       }
     }
@@ -6785,9 +6783,9 @@ fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
       }
       if len(elems) == 0 {
         match expected_elem {
-          Some(el) -> return (cx, TyList(el), XListLit([], lo, hi, TyList(el)))
+          Some(el) -> return (cx, TyList(el), XListLit([], owner_off(cx, lo), owner_off(cx, hi), TyList(el)))
           None -> return (cerr_h(cx, "cannot infer the element type of an empty list", lo, hi,
-            "add a type annotation: let xs: List[Int] = []"), TyError, XError(lo, hi))
+            "add a type annotation: let xs: List[Int] = []"), TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
         }
       }
       var elem_t = match expected_elem {
@@ -6841,7 +6839,7 @@ fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
           ri = ri + 1
         }
       }
-      (cx1, TyList(elem_t), XListLit(txs, lo, hi, TyList(elem_t)))
+      (cx1, TyList(elem_t), XListLit(txs, owner_off(cx, lo), owner_off(cx, hi), TyList(elem_t)))
     }
     ETupleLit(elems, lo, hi) -> {
       let exps: Option[List[Ty]] = match expected {
@@ -6871,7 +6869,7 @@ fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
         txs = txs ++ [tx]
         i = i + 1
       }
-      (cx1, TyTuple(tys), XTupleLit(txs, lo, hi, TyTuple(tys)))
+      (cx1, TyTuple(tys), XTupleLit(txs, owner_off(cx, lo), owner_off(cx, hi), TyTuple(tys)))
     }
     EPropagate(operand, lo, hi) -> {
       let (cx1, ot, ox) = check_expr(cx, operand, no_expected())
@@ -6879,7 +6877,7 @@ fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
     }
     EUnwrap(operand, lo, hi) -> {
       let (cx1, ot, ox) = check_expr(cx, operand, no_expected())
-      let msg = unwrap_msg(cx1, operand, lo, hi)
+      let msg = unwrap_msg(operand)
       check_unwrap_typed(cx1, ot, ox, msg, lo, hi)
     }
     # `c[i]` (spec §4.8). The subject used to be matched against a two-arm
@@ -6892,7 +6890,7 @@ fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
       let (cx1, tt, tx) = check_expr(cx, target, no_expected())
       if is_errorish(tt) {
         let (cx2, _, _) = check_expr(cx1, index, no_expected())
-        return (cx2, TyError, XError(lo, hi))
+        return (cx2, TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
       }
       # A ground subject with no impl keeps its own message. The general one
       # ("no impl of `Index` for `Bool`") is true but drops the hint that
@@ -6904,7 +6902,7 @@ fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
           "List and Map have one; when absence is a normal case, " ++
             "use get(xs, i) / map.get(m, k)")
         let (cx3, _, _) = check_expr(cx2, index, no_expected())
-        return (cx3, TyError, XError(lo, hi))
+        return (cx3, TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
       }
       let (render_cx, text) = type_display_read(cx1, tt)
       let (cx2, w) = resolve_witness(render_cx, INDEX_ID, tt, lo, hi,
@@ -6912,7 +6910,7 @@ fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
       match w {
         None -> {
           let (cx3, _, _) = check_expr(cx2, index, no_expected())
-          (cx3, TyError, XError(lo, hi))
+          (cx3, TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
         }
         Some(wr) -> {
           let (index_cx, want_idx) = reduce_assoc_read(cx2, TyAssoc(tt, INDEX_ID, "Idx"))
@@ -6923,9 +6921,9 @@ fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
             let (actual_cx, actual_text) = type_display_read(expected_cx, it)
             (cerr(actual_cx, "this index must be `" ++ expected_text ++
                 "`, got `" ++ actual_text ++ "`",
-              e_lo(index), e_hi(index)), TyError, XError(lo, hi))
+              e_lo(index), e_hi(index)), TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
           } else {
-            (cx3, result, XIndex(tx, ix, wr, lo, hi, result))
+            (cx3, result, XIndex(tx, ix, wr, owner_off(cx, lo), owner_off(cx, hi), result))
           }
         }
       }
@@ -6937,9 +6935,9 @@ fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
           match v {
             Some(x) -> {
               let (cx2, _, _) = check_expr(cx1, x, no_expected())
-              (cx2, TyError, XError(lo, hi))
+              (cx2, TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
             }
-            None -> (cx1, TyError, XError(lo, hi))
+            None -> (cx1, TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
           }
         }
         Some(t) -> {
@@ -6963,17 +6961,17 @@ fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
             cx3 = cerr(actual_cx, "`return` type mismatch: this function returns " ++
                 expected_text ++ ", got " ++ actual_text, slo, shi)
           }
-          (cx3, TyNever, XReturn(vx, lo, hi))
+          (cx3, TyNever, XReturn(vx, owner_off(cx, lo), owner_off(cx, hi)))
         }
       }
     }
     EBreak(lo, hi) -> {
       let (cx1, ok) = check_loop_jump(cx, "break", lo, hi)
-      if ok { (cx1, TyNever, XBreak(lo, hi)) } else { (cx1, TyError, XError(lo, hi)) }
+      if ok { (cx1, TyNever, XBreak(owner_off(cx, lo), owner_off(cx, hi))) } else { (cx1, TyError, XError(owner_off(cx, lo), owner_off(cx, hi))) }
     }
     EContinue(lo, hi) -> {
       let (cx1, ok) = check_loop_jump(cx, "continue", lo, hi)
-      if ok { (cx1, TyNever, XContinue(lo, hi)) } else { (cx1, TyError, XError(lo, hi)) }
+      if ok { (cx1, TyNever, XContinue(owner_off(cx, lo), owner_off(cx, hi))) } else { (cx1, TyError, XError(owner_off(cx, lo), owner_off(cx, hi))) }
     }
     EBlock(stmts, tail, lo, hi) -> check_block(cx, stmts, tail, expected, lo, hi)
     EHandle(name, cells, arms, rest, nlo, nhi, lo, hi) ->
@@ -6987,9 +6985,9 @@ fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
         (cerr_h(render_cx, "a comptime result must be constant-serializable, got " ++
             text, lo, hi,
           "Int/Float/Bool/String/Unit and List/tuple/record/ADT values of them (spec §7.2)"),
-          TyError, XError(lo, hi))
+          TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
       } else {
-        (cx3, t, XComptime(bx, lo, hi, t))
+        (cx3, t, XComptime(bx, owner_off(cx, lo), owner_off(cx, hi), t))
       }
     }
     EUnsafePure(body, lo, hi) -> check_unsafe_pure(cx, body, expected, lo, hi)
@@ -7020,7 +7018,7 @@ fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
       match constant {
         Some(pr) -> {
           let (mod_path, ct) = pr
-          (field_cx, ct, XConstRef(mod_path, fname, lo, hi, ct))
+          (field_cx, ct, XConstRef(mod_path, fname, owner_off(cx, lo), owner_off(cx, hi), ct))
         }
         None -> {
           # `m.C` with no arguments: a nullary constructor's value, or -- in a
@@ -7057,13 +7055,13 @@ fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
                         match diagnostic {
                           Some(d) ->
                             return (cerr_o(scope_cx, d.message, flo, fhi, d.hint),
-                              TyError, XError(lo, hi))
+                              TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
                           None -> {
                             let (next, path) = module_alias_read(scope_cx, q)
                             scope_cx = next
                             if path == None {
                               return (undefined_qualifier_err(scope_cx, q, qlo, qhi),
-                                TyError, XError(lo, hi))
+                                TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
                             }
                           }
                         }
@@ -7088,8 +7086,13 @@ fn no_expected() -> Option[Ty] = None
 fn no_texpr() -> Option[TExpr] = None
 
 ## The panic message for `expr!` (the Kotlin unwrapMsg): names the producing
-## call and the site, since codegen has neither source text nor line numbers.
-fn unwrap_msg(cx: Cx, operand: Expr, lo: Int, hi: Int) -> String = {
+## call, since codegen has neither source text nor line numbers.
+##
+## Where the site is comes from `check/tast_positions` instead, at the
+## declaration's exit. A line number is a fact about a revision, and a message
+## baked here would be the one fact in a reused body that a declaration moving
+## invalidates (issue #142).
+fn unwrap_msg(operand: Expr) -> String = {
   var msg = "unwrapped None"
   let desc: Option[String] = match operand {
     EMethod(recv, mname, _, _, _, _, _) ->
@@ -7107,22 +7110,7 @@ fn unwrap_msg(cx: Cx, operand: Expr, lo: Int, hi: Int) -> String = {
     Some(d) -> { msg = msg ++ " from " ++ d }
     None -> ()
   }
-  match cx.src_path {
-    Some(p) -> { msg = msg ++ " at " ++ p ++ ":" ++ to_string(line_of(cx, lo)) }
-    None -> ()
-  }
   msg
-}
-
-## 1-based line number of a code-point offset in the current source (set by the
-## driver; the Kotlin SourceFile.lineOf). Line starts and offsets share the same
-## code-point currency, so the line number is unit-invariant.
-fn line_of(cx: Cx, off: Int) -> Int = {
-  var line = 1
-  for s in cx.line_starts {
-    if s <= off && s > 0 { line = line + 1 }
-  }
-  line
 }
 
 # ---- name resolution with capture bookkeeping ----
@@ -7331,9 +7319,9 @@ fn check_var(cx: Cx, name: String, expected: Option[Ty], lo: Int, hi: Int) -> (C
           let (_, ct) = c
           let take = cx1.take_cell == Some(id)
           let cx2 = if take { Cx { ..cx1, take_cell: None } } else { cx1 }
-          (cx2, ct, cell_read(id, name, ct, take, lo, hi))
+          (cx2, ct, cell_read(cx, id, name, ct, take, lo, hi))
         }
-        None -> (cx1, sym.ty, XLocal(id, name, lo, hi, sym.ty))
+        None -> (cx1, sym.ty, XLocal(id, name, owner_off(cx, lo), owner_off(cx, hi), sym.ty))
       }
     }
     None -> {
@@ -7344,7 +7332,7 @@ fn check_var(cx: Cx, name: String, expected: Option[Ty], lo: Int, hi: Int) -> (C
           let (cx3, pool) = fn_pool_read(cx2)
           (cerr_o(cx3, "undefined variable: ${name}", lo, hi,
             moved_or_suggest(cx3, name, local_names(cx3) ++ pool)),
-            TyError, XError(lo, hi))
+            TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
         }
       }
     }
@@ -7386,10 +7374,7 @@ fn check_unsafe_pure(cx: Cx, body: Expr, expected: Option[Ty], lo: Int, hi: Int)
   for u in inner {
     let ls = eff_labels(u)
     if len(ls) > 0 {
-      let (wlo, whi, wname) = match map.get(cx1.frame.eff_witness, u) {
-        Some(w) -> w
-        None -> (lo, hi, "?")
-      }
+      let (wlo, whi, wname) = eff_witness_at(cx1, u, (lo, hi, "?"))
       cx2 = record_effect(cx2, eff_with_labels(EPure, ls), wlo, whi, wname)
     }
   }
@@ -7422,7 +7407,7 @@ fn check_unsafe_pure(cx: Cx, body: Expr, expected: Option[Ty], lo: Int, hi: Int)
     }
   }
   # masked: the body's io is deliberately not folded back into the saved record
-  (cx2, t, XUnsafePure(bx, lo, hi, t))
+  (cx2, t, XUnsafePure(bx, owner_off(cx, lo), owner_off(cx, hi), t))
 }
 
 # ---- lambdas and application ----
@@ -7589,7 +7574,7 @@ fn check_lambda(
   let lam_eff = eff_union(cx3.frame.used_effects)
   cx3 = Cx { ..cx3, frame: Frame { ..cx3.frame, used_effects: saved_used, eff_witness: saved_wit } }
   let t = TyFn(ptys, bt, lam_eff)
-  (cx3, t, XLambda(psyms, pnames, bx, popped.captures, lo, hi, t))
+  (cx3, t, XLambda(psyms, pnames, bx, popped.captures, owner_off(cx, lo), owner_off(cx, hi), t))
 }
 
 fn fn_ty_parts(t: Ty) -> (List[Ty], Ty, Eff) =
@@ -7614,8 +7599,8 @@ fn fn_ty_parts(t: Ty) -> (List[Ty], Ty, Eff) =
 ## The slot itself, at the type the slot has. `types.Sym.ty` of a cell is
 ## `erased_cell_ty()`, so this is just the local -- spelled out here so that
 ## the three primitives cannot disagree about it.
-fn cell_local(id: Int, name: String, lo: Int, hi: Int) -> TExpr =
-  XLocal(id, name, lo, hi, erased_cell_ty())
+fn cell_local(cx: Cx, id: Int, name: String, lo: Int, hi: Int) -> TExpr =
+  XLocal(id, name, owner_off(cx, lo), owner_off(cx, hi), erased_cell_ty())
 
 fn cell_wits() -> List[WitRef] = []
 
@@ -7631,21 +7616,21 @@ fn cell_evs() -> List[TExpr] = []
 ## the choice is whether the value the assignment goes on to rebuild is
 ## uniquely referenced, which on native decides whether the accumulator is
 ## rebuilt in place or copied. `cell_take_ok` is where the conditions are.
-fn cell_read(id: Int, name: String, ct: Ty, take: Bool, lo: Int, hi: Int) -> TExpr = {
+fn cell_read(cx: Cx, id: Int, name: String, ct: Ty, take: Bool, lo: Int, hi: Int) -> TExpr = {
   let prim = if take { "cell_take" } else { "cell_get" }
-  XCallBuiltin(prim, [cell_local(id, name, lo, hi)], cell_wits(), cell_evs(), lo, hi, ct)
+  XCallBuiltin(prim, [cell_local(cx, id, name, lo, hi)], cell_wits(), cell_evs(), owner_off(cx, lo), owner_off(cx, hi), ct)
 }
 
 ## One write of a cell. The superseded value is the primitive's problem, not
 ## this file's: `cell_set` releases it on native and lets the collector have it
 ## on the JVM.
-fn cell_write(id: Int, name: String, v: TExpr, lo: Int, hi: Int) -> TExpr =
-  XCallBuiltin("cell_set", [cell_local(id, name, lo, hi), v], cell_wits(), cell_evs(),
-    lo, hi, TyUnit)
+fn cell_write(cx: Cx, id: Int, name: String, v: TExpr, lo: Int, hi: Int) -> TExpr =
+  XCallBuiltin("cell_set", [cell_local(cx, id, name, lo, hi), v], cell_wits(), cell_evs(),
+    owner_off(cx, lo), owner_off(cx, hi), TyUnit)
 
 ## Making the slot: evaluated once, where the handler is installed.
-fn cell_new(init: TExpr, lo: Int, hi: Int) -> TExpr =
-  XCallBuiltin("cell_new", [init], cell_wits(), cell_evs(), lo, hi, erased_cell_ty())
+fn cell_new(cx: Cx, init: TExpr, lo: Int, hi: Int) -> TExpr =
+  XCallBuiltin("cell_new", [init], cell_wits(), cell_evs(), owner_off(cx, lo), owner_off(cx, hi), erased_cell_ty())
 
 ## The cells of one installation, bound into the scope the caller has already
 ## pushed, with the `TSLet` that makes each slot.
@@ -7695,7 +7680,7 @@ fn declare_cells(cx: Cx, cells: List[HandlerCell], hid: Int) -> (Cx, List[TStmt]
     let (cxc, sid) =
       declare_sym(cx1, c.name, erased_cell_ty(), false, Some((hid, tys[i])), c.nlo, c.nhi)
     cx1 = cxc
-    stmts = stmts ++ [TSLet(Some(sid), c.name, cell_new(inits[i], c.lo, c.hi), c.lo, c.hi)]
+    stmts = stmts ++ [TSLet(Some(sid), c.name, cell_new(cx, inits[i], c.lo, c.hi), owner_off(cx, c.lo), owner_off(cx, c.hi))]
     i = i + 1
   }
   (cx1, stmts)
@@ -8023,8 +8008,8 @@ fn check_handle(
       cxr0 = cxr
       let (_, rret, reff0) = fn_ty_parts(rt)
       let (cxr1, revs0, _) = evidence_pack(cxr0, reff0, false, lo, hi)
-      let rcall = XApply(rx, [], [revs0], lo, hi, rret)
-      return (pop_scope(cxr1), rret, XBlock(cstmts, Some(rcall), lo, hi, rret))
+      let rcall = XApply(rx, [], [revs0], owner_off(cx, lo), owner_off(cx, hi), rret)
+      return (pop_scope(cxr1), rret, XBlock(cstmts, Some(rcall), owner_off(cx, lo), owner_off(cx, hi), rret))
     }
   }
   let (info_cx, info) = declared_effect_info_read(cx1, eid)
@@ -8109,12 +8094,12 @@ fn check_handle(
   var arm_nodes: List[TExpr] = []
   var slots: List[Option[Int]] = []
   var arm_lets: List[TStmt] = []
-  var arm_env = XError(lo, hi)
+  var arm_env = XError(owner_off(cx, lo), owner_off(cx, hi))
   var ev_sym = 0
   var rret = TyError
   var reff = EPure
-  var rx = XError(lo, hi)
-  var revs = XError(lo, hi)
+  var rx = XError(owner_off(cx, lo), owner_off(cx, hi))
+  var revs = XError(owner_off(cx, lo), owner_off(cx, hi))
   if has_ctl {
     cx1 = push_scope(cx1)
     let (cxe, esym) = declare_evidence(cx1, ev_name, ev_ty, label_key(eid), nlo, nhi)
@@ -8159,7 +8144,7 @@ fn check_handle(
     revs = rv0
   }
   let ev_node = XCtor(eid, 0, arm_nodes ++ [arm_env], slots ++ [Some(len(slots))],
-    no_expr(), lo, hi, ev_ty)
+    no_expr(), owner_off(cx, lo), owner_off(cx, hi), ev_ty)
   cx1 = pop_scope(cx1)
   # ... and the block is charged with what the remainder does *minus* E, which
   # this very call just answered
@@ -8176,17 +8161,17 @@ fn check_handle(
   # LIFO answer wanted -- no token object is needed to say it.
   let call =
     if has_ctl {
-      XCallBuiltin("ctl_run", [XInt(hid, lo, hi), rx, revs], ctl_wits(), ctl_evs(),
-        lo, hi, rret)
+      XCallBuiltin("ctl_run", [XInt(hid, owner_off(cx, lo), owner_off(cx, hi)), rx, revs], ctl_wits(), ctl_evs(),
+        owner_off(cx, lo), owner_off(cx, hi), rret)
     } else {
-      XApply(rx, [], [revs], lo, hi, rret)
+      XApply(rx, [], [revs], owner_off(cx, lo), owner_off(cx, hi), rret)
     }
   # the slots are made before the record that holds the arms: an arm closes
   # over the cells, so they have to exist before the closure does. A control
   # arm's own local goes between the two, for the reason `ctl_wrapper` gives.
   (cx1, rret,
-    XBlock(cell_stmts ++ arm_lets ++ [TSLet(Some(ev_sym), ev_name, ev_node, lo, hi)],
-      Some(call), lo, hi, rret))
+    XBlock(cell_stmts ++ arm_lets ++ [TSLet(Some(ev_sym), ev_name, ev_node, owner_off(cx, lo), owner_off(cx, hi))],
+      Some(call), owner_off(cx, lo), owner_off(cx, hi), rret))
 }
 
 ## Was any answered operation given a `resume k` clause?
@@ -8281,7 +8266,7 @@ fn check_handle_arms(
     let field = rec.fields[k]
     let (fptys, fret, _) = fn_ty_parts(field.ty)
     let node = match chosen[k] {
-      None -> XError(nlo, nhi)
+      None -> XError(owner_off(cx, nlo), owner_off(cx, nhi))
       Some(a) ->
         if arm_is_control(a) {
           let (aty, reff) = answer_parts(answer)
@@ -8431,7 +8416,7 @@ fn check_control_arm(
   cx1 = cxd
   let (cxw, wrap) = ctl_wrapper(cx1, hid, asym, local, at, fptys, fret, a.lo, a.hi)
   cx1 = cxw
-  (cx1, wrap, TSLet(Some(asym), local, ax, a.lo, a.hi), aeff)
+  (cx1, wrap, TSLet(Some(asym), local, ax, owner_off(cx, a.lo), owner_off(cx, a.hi)), aeff)
 }
 
 ## The closure the evidence record holds for a control arm.
@@ -8476,14 +8461,14 @@ fn ctl_wrapper(
     cx1 = cxa
     psyms = psyms ++ [sid]
     pnames = pnames ++ [pn]
-    pargs = pargs ++ [XLocal(sid, pn, lo, hi, pt)]
+    pargs = pargs ++ [XLocal(sid, pn, owner_off(cx, lo), owner_off(cx, hi), pt)]
     i = i + 1
   }
   cx1 = pop_scope(cx1)
   let body = XCallBuiltin("ctl_yield",
-    [XInt(hid, lo, hi), XLocal(arm_sym, arm_name, lo, hi, arm_ty)] ++ pargs,
-    ctl_wits(), ctl_evs(), lo, hi, fret)
-  (cx1, XLambda(psyms, pnames, body, [arm_sym], lo, hi, TyFn(fptys, fret, EPure)))
+    [XInt(hid, owner_off(cx, lo), owner_off(cx, hi)), XLocal(arm_sym, arm_name, owner_off(cx, lo), owner_off(cx, hi), arm_ty)] ++ pargs,
+    ctl_wits(), ctl_evs(), owner_off(cx, lo), owner_off(cx, hi), fret)
+  (cx1, XLambda(psyms, pnames, body, [arm_sym], owner_off(cx, lo), owner_off(cx, hi), TyFn(fptys, fret, EPure)))
 }
 
 ## A row without one label. `eff_drop` takes a list; this is its one-label
@@ -8560,7 +8545,7 @@ fn named_args_stop(cx: Cx, args: List[Arg], lo: Int, hi: Int) -> (Cx, Ty, TExpr)
     let (cxa, _, _) = check_expr(cx1, e, no_expected())
     cx1 = cxa
   }
-  (cx1, TyError, XError(lo, hi))
+  (cx1, TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
 }
 
 fn reject_named_args(
@@ -8672,7 +8657,7 @@ fn check_apply(
   var pre: Option[List[Ty]] = None
   var pre_txs: List[TExpr] = []
   var ft = TyError
-  var fx: TExpr = XError(lo, hi)
+  var fx: TExpr = XError(owner_off(initial, lo), owner_off(initial, hi))
   if lambda_unannotated {
     var ats: List[Ty] = []
     for a in args {
@@ -8700,7 +8685,7 @@ fn check_apply(
         cx1 = cxa
       }
     }
-    return (cx1, TyError, XError(lo, hi))
+    return (cx1, TyError, XError(owner_off(initial, lo), owner_off(initial, hi)))
   }
   var is_fn = false
   var fps: List[Ty] = []
@@ -8724,7 +8709,7 @@ fn check_apply(
     }
     let (render_cx, text) = type_display_read(cx1, ft)
     return (cerr(render_cx, "cannot call a value of type " ++ text,
-      e_lo(target), e_hi(target)), TyError, XError(lo, hi))
+      e_lo(target), e_hi(target)), TyError, XError(owner_off(initial, lo), owner_off(initial, hi)))
   }
   if len(args) != len(fps) {
     if pre_none {
@@ -8736,7 +8721,7 @@ fn check_apply(
     let (render_cx, text) = type_display_read(cx1, ft)
     cx1 = cerr_h(render_cx, "this function takes " ++ to_string(len(fps)) ++ " argument(s), got " ++
         to_string(len(args)), lo, hi, "type: " ++ text)
-    return (cx1, fret, XError(lo, hi))
+    return (cx1, fret, XError(owner_off(initial, lo), owner_off(initial, hi)))
   }
   var txs: List[TExpr] = []
   match pre {
@@ -8787,7 +8772,7 @@ fn check_apply(
   cx1 = cxe
   cx1 = record_effect(cx1, eff_drop(feff, unanswered), e_lo(target), e_hi(target),
     "the applied function")
-  (cx1, fret, XApply(fx, txs, evs, lo, hi, fret))
+  (cx1, fret, XApply(fx, txs, evs, owner_off(initial, lo), owner_off(initial, hi), fret))
 }
 
 # ---- blocks and statements ----
@@ -8824,7 +8809,7 @@ fn check_block(
   # a Java call in tail position of a Unit block is a discard, like in
   # statement position (spec §9) — codegen pops the leftover value
   let rt = if expected == Some(TyUnit) && t != TyUnit && tail_java { TyUnit } else { t }
-  (cx1, rt, XBlock(tstmts, ttail, lo, hi, rt))
+  (cx1, rt, XBlock(tstmts, ttail, owner_off(cx, lo), owner_off(cx, hi), rt))
 }
 
 fn check_stmt(cx: Cx, s: Stmt) -> (Cx, TStmt) !io =
@@ -8866,7 +8851,7 @@ fn check_stmt(cx: Cx, s: Stmt) -> (Cx, TStmt) !io =
       let (cxc, sid) = declare(cx1, name, t, mutable, lo, hi)
       # `_` binds nothing: codegen discards the value (sym None)
       let bind: Option[Int] = if name == "_" { None } else { Some(sid) }
-      (cxc, TSLet(bind, name, ix, lo, hi))
+      (cxc, TSLet(bind, name, ix, owner_off(cx, lo), owner_off(cx, hi)))
     }
     SLocalFn(name, params, ret, effs, body, nlo, nhi, lo, hi) ->
       check_local_fn(cx, name, params, ret, effs, body, nlo, nhi, lo, hi)
@@ -8899,7 +8884,7 @@ fn check_stmt(cx: Cx, s: Stmt) -> (Cx, TStmt) !io =
           None -> { cx1 = usefulness_too_complex(cx1, pat_lo(pat), pat_hi(pat)) }
         }
       }
-      (cx1, TSLetPat(tp, ix, lo, hi))
+      (cx1, TSLetPat(tp, ix, owner_off(cx, lo), owner_off(cx, hi)))
     }
     SAssign(name, value, nlo, nhi, lo, hi) -> {
       var cx1 = cx
@@ -8911,7 +8896,7 @@ fn check_stmt(cx: Cx, s: Stmt) -> (Cx, TStmt) !io =
           cx1 = cerr_o(next, "undefined variable: ${name}", nlo, nhi,
             moved_or_suggest(next, name, local_names(next) ++ pool))
           let (cxb, _, vx) = check_expr(cx1, value, no_expected())
-          (cxb, TSExpr(vx, lo, hi))
+          (cxb, TSExpr(vx, owner_off(cx, lo), owner_off(cx, hi)))
         }
         Some(sid) -> {
           let sym = sym_of(cx1, sid)
@@ -8937,7 +8922,7 @@ fn check_stmt(cx: Cx, s: Stmt) -> (Cx, TStmt) !io =
                 cx1 = cerr(actual_cx, "`" ++ name ++ "` is " ++ declared_text ++
                     ", cannot assign " ++ actual_text, e_lo(value), e_hi(value))
               }
-              (cx1, TSExpr(cell_write(sid, name, vx, lo, hi), lo, hi))
+              (cx1, TSExpr(cell_write(cx, sid, name, vx, lo, hi), owner_off(cx, lo), owner_off(cx, hi)))
             }
             None -> {
               if not sym.mutable {
@@ -8955,7 +8940,7 @@ fn check_stmt(cx: Cx, s: Stmt) -> (Cx, TStmt) !io =
                 cx1 = cerr(actual_cx, "`" ++ name ++ "` is " ++ declared_text ++
                     ", cannot assign " ++ actual_text, e_lo(value), e_hi(value))
               }
-              (cx1, TSAssign(sid, name, vx, lo, hi))
+              (cx1, TSAssign(sid, name, vx, owner_off(cx, lo), owner_off(cx, hi)))
             }
           }
         }
@@ -8971,7 +8956,7 @@ fn check_stmt(cx: Cx, s: Stmt) -> (Cx, TStmt) !io =
         cx2 = cerr_h(render_cx, "this " ++ text ++ " value is discarded", lo, hi,
           "write let _ = ... to discard it, or move it to the block's tail/return position")
       }
-      (cx2, TSExpr(tx, lo, hi))
+      (cx2, TSExpr(tx, owner_off(cx, lo), owner_off(cx, hi)))
     }
     SAssert(cond, src, lo, hi) -> {
       var cx1 = cx
@@ -8985,7 +8970,7 @@ fn check_stmt(cx: Cx, s: Stmt) -> (Cx, TStmt) !io =
         let (render_cx, text) = type_display_read(cx1, ct)
         cx1 = cerr(render_cx, "`assert` expects Bool, got " ++ text, e_lo(cond), e_hi(cond))
       }
-      (cx1, TSAssert(cnx, src, lo, hi))
+      (cx1, TSAssert(cnx, src, owner_off(cx, lo), owner_off(cx, hi)))
     }
     SWhile(cond, body, lo, hi) -> {
       var cx1 = cx
@@ -9016,7 +9001,7 @@ fn check_stmt(cx: Cx, s: Stmt) -> (Cx, TStmt) !io =
           e_lo(body), e_hi(body),
           "the last statement of a loop body must not be a non-Unit expression")
       }
-      (cx1, TSWhile(cnx, bx, hj, lo, hi))
+      (cx1, TSWhile(cnx, bx, hj, owner_off(cx, lo), owner_off(cx, hi)))
     }
     SFor(pat, from, to_opt, body, lo, hi) -> {
       var cx1 = cx
@@ -9111,7 +9096,7 @@ fn check_stmt(cx: Cx, s: Stmt) -> (Cx, TStmt) !io =
           e_lo(body), e_hi(body))
       }
       cx1 = pop_scope(cx1)
-      (cx1, TSFor(tp, loop_t, fx, tx_to, wit, bx, hj, lo, hi))
+      (cx1, TSFor(tp, loop_t, fx, tx_to, wit, bx, hj, owner_off(cx, lo), owner_off(cx, hi)))
     }
   }
 
@@ -9191,9 +9176,9 @@ fn check_local_fn(
       for c in caps {
         if c != sid { caps2 = caps2 ++ [c] }
       }
-      (cx1, TSLocalFn(sid, name, psyms, pnames, bx, caps2, lo, hi))
+      (cx1, TSLocalFn(sid, name, psyms, pnames, bx, caps2, owner_off(cx, lo), owner_off(cx, hi)))
     }
-    _ -> (cx1, TSExpr(XError(lo, hi), lo, hi))
+    _ -> (cx1, TSExpr(XError(owner_off(cx, lo), owner_off(cx, hi)), owner_off(cx, lo), owner_off(cx, hi)))
   }
 }
 
@@ -9321,7 +9306,7 @@ fn default_call(
   let none_tid: Option[Int] = None
   let (next, pty) = reduce_instantiated_read(cx, subst(s.param_tys[idx], m, em), m)
   (next, XCallFn(s.owner, callee ++ "\$default\$" ++ to_string(idx), [], wits, [], none_tid,
-    lo, hi, pty))
+    owner_off(cx, lo), owner_off(cx, hi), pty))
 }
 
 ## A named call f(args) (the Kotlin checkCall): a local fn value, else a
@@ -9359,7 +9344,7 @@ fn check_call(
         Some(a) -> {
           var cxn = cerr_h(cx1, fn_value_named_arg_msg(callee), a.lo, a.hi, named_arg_hint())
           let (cxa, _) = check_args_plain(cxn, args, pre0)
-          return (cxa, TyError, XError(lo, hi))
+          return (cxa, TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
         }
         None -> ()
       }
@@ -9367,7 +9352,7 @@ fn check_call(
       let lt = sym.ty
       if is_errorish(lt) {
         let (cxa, _) = check_args_plain(cx1, args, pre0)
-        return (cxa, TyError, XError(lo, hi))
+        return (cxa, TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
       }
       var is_fn = false
       var lps: List[Ty] = []
@@ -9386,14 +9371,14 @@ fn check_call(
         let (cxa, _) = check_args_plain(cx1, args, pre0)
         let (render_cx, text) = type_display_read(cxa, lt)
         return (cerr(render_cx, "`" ++ callee ++ "` is not a function (it is " ++
-            text ++ ")", clo, chi), TyError, XError(lo, hi))
+            text ++ ")", clo, chi), TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
       }
       if len(args) != len(lps) {
         let (cxa, _) = check_args_plain(cx1, args, pre0)
         let (render_cx, text) = type_display_read(cxa, lt)
         return (cerr_h(render_cx, "`" ++ callee ++ "` takes " ++ to_string(len(lps)) ++
             " argument(s), got " ++ to_string(len(args)), lo, hi,
-          "type: " ++ text), lret, XError(lo, hi))
+          "type: " ++ text), lret, XError(owner_off(cx, lo), owner_off(cx, hi)))
       }
       var txs: List[TExpr] = []
       var i = 0
@@ -9419,7 +9404,7 @@ fn check_call(
       let (cxe, evs, unanswered) = dyn_evidence_args(cx1, leff, clo, chi)
       cx1 = cxe
       cx1 = record_effect(cx1, eff_drop(leff, unanswered), clo, chi, callee)
-      return (cx1, lret, XCallDyn(sid, callee, txs, evs, lo, hi, lret))
+      return (cx1, lret, XCallDyn(sid, callee, txs, evs, owner_off(cx, lo), owner_off(cx, hi), lret))
     }
     None -> ()
   }
@@ -9439,7 +9424,7 @@ fn check_call(
       let (cxb, pool) = fn_pool_read(cxa)
       return (cerr_o(cxb, "undefined function: ${callee}", clo, chi,
         moved_or_suggest(cxb, callee, pool)),
-        TyError, XError(lo, hi))
+        TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
     }
   }
   # Arity first when every argument is positional -- the historical wording,
@@ -9462,7 +9447,7 @@ fn check_call(
     # variables nothing bound -- returning it puts a bare `T` in the next
     # diagnostic ("declares return type String but its body is T").
     let rt = if len(s.tparams) == 0 { s.ret } else { TyError }
-    return (cxb, rt, XError(lo, hi))
+    return (cxb, rt, XError(owner_off(cx, lo), owner_off(cx, hi)))
   }
   var m: Map[Int, Ty] = map.empty()
   var em: Map[Int, Eff] = map.empty()
@@ -9659,7 +9644,7 @@ fn check_call(
       let cxb = cerr_h(hint_cx, arity_msg(callee, min_arity, len(s.param_tys), len(args)), lo, hi,
         "signature: " ++ hint_text)
       let rt = if len(s.tparams) == 0 { s.ret } else { TyError }
-      return (cxb, rt, XError(lo, hi))
+      return (cxb, rt, XError(owner_off(cx, lo), owner_off(cx, hi)))
     }
   # a required parameter a named call skipped while the count stayed in
   # range, or a default-before-required signature called positionally short
@@ -9682,7 +9667,7 @@ fn check_call(
           join(missing_req, ", "), lo, hi,
         "signature: " ++ hint_text)
       let rt = if len(s.tparams) == 0 { s.ret } else { TyError }
-      return (cxb, rt, XError(lo, hi))
+      return (cxb, rt, XError(owner_off(cx, lo), owner_off(cx, hi)))
     }
   }
   # return-position inference: let x: Option[Int] = ...
@@ -9723,7 +9708,7 @@ fn check_call(
       "Dawn has no call-site type arguments, so the type has to arrive as an " ++
         "expectation: annotate the binding an argument comes from, or the one " ++
         "that takes the result"),
-      TyError, XError(lo, hi))
+      TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
   }
   # trait bounds: each (type parameter, bound) pair needs a dictionary
   var wits: List[WitRef] = []
@@ -9802,7 +9787,7 @@ fn check_call(
     }
     match sl {
       Some(ax) -> { txs2 = txs2 ++ [ax] }
-      None -> { txs2 = txs2 ++ [XError(lo, hi)] }
+      None -> { txs2 = txs2 ++ [XError(owner_off(cx, lo), owner_off(cx, hi))] }
     }
     pi2 = pi2 + 1
   }
@@ -9837,8 +9822,8 @@ fn check_call(
             let nm = "arg\$${to_string(wi2)}"
             let (cxd, sidw) = declare(cx1, nm, t, false, a0.lo, a0.hi)
             cx1 = cxd
-            arg_lets = arg_lets ++ [TSLet(Some(sidw), nm, ax, a0.lo, a0.hi)]
-            locs = locs ++ [Some(XLocal(sidw, nm, a0.lo, a0.hi, t))]
+            arg_lets = arg_lets ++ [TSLet(Some(sidw), nm, ax, owner_off(cx, a0.lo), owner_off(cx, a0.hi))]
+            locs = locs ++ [Some(XLocal(sidw, nm, owner_off(cx, a0.lo), owner_off(cx, a0.hi), t))]
           }
           None -> { locs = locs ++ [no_texpr()] }
         }
@@ -9861,7 +9846,7 @@ fn check_call(
         }
         match sl {
           Some(lx) -> { txs2 = txs2 ++ [lx] }
-          None -> { txs2 = txs2 ++ [XError(lo, hi)] }
+          None -> { txs2 = txs2 ++ [XError(owner_off(cx, lo), owner_off(cx, hi))] }
         }
         pi3 = pi3 + 1
       }
@@ -9917,14 +9902,14 @@ fn check_call(
   # and both handed a closure a pack with nothing in it, so a labelled closure
   # through either was `ev_get`'s panic on a program that checks clean.
   let node = if s.is_builtin {
-    XCallBuiltin(callee, txs2, wits, evs, lo, hi, ret)
+    XCallBuiltin(callee, txs2, wits, evs, owner_off(cx, lo), owner_off(cx, hi), ret)
   } else {
     match s.op_of {
       # an operation call is a field read off the evidence plus a closure
       # call: there is no symbol named `ask` anywhere in the output
       Some(pr) -> {
         let (eid, idx) = pr
-        let recv = if len(evs) == 1 { evs[0] } else { XError(lo, hi) }
+        let recv = if len(evs) == 1 { evs[0] } else { XError(owner_off(cx, lo), owner_off(cx, hi)) }
         # **The arm's evidence is the handler's, not this raise site's.** An arm
         # runs where the handler was installed, so the pack it gets is the one
         # `check_handle` stored in the record's trailing `env` field -- the last
@@ -9933,14 +9918,14 @@ fn check_call(
         # the scope that raised, which is the outer-handler rule backwards
         # (`scripts/spike-native/effect_lexical.dawn`'s `inner_ten`).
         let env_idx = len(adt_of(cx1.adts, eid).ctors[0].fields) - 1
-        let env = XField(recv, env_idx, clo, chi, erased_ev_ty())
-        XApply(XField(recv, idx, clo, chi, TyFn(s.param_tys, s.ret, EPure)), txs2,
-          [env], lo, hi, ret)
+        let env = XField(recv, env_idx, owner_off(cx, clo), owner_off(cx, chi), erased_ev_ty())
+        XApply(XField(recv, idx, owner_off(cx, clo), owner_off(cx, chi), TyFn(s.param_tys, s.ret, EPure)), txs2,
+          [env], owner_off(cx, lo), owner_off(cx, hi), ret)
       }
-      None -> XCallFn(s.owner, callee, txs2, wits, evs, s.trait_id, lo, hi, ret)
+      None -> XCallFn(s.owner, callee, txs2, wits, evs, s.trait_id, owner_off(cx, lo), owner_off(cx, hi), ret)
     }
   }
-  let out = if len(arg_lets) > 0 { XBlock(arg_lets, Some(node), lo, hi, ret) } else { node }
+  let out = if len(arg_lets) > 0 { XBlock(arg_lets, Some(node), owner_off(cx, lo), owner_off(cx, hi), ret) } else { node }
   (cx1, ret, out)
 }
 
@@ -10232,13 +10217,13 @@ fn evidence_pack(cx: Cx, inst: Eff, report: Bool, lo: Int, hi: Int) -> (Cx, TExp
   # `ev_append`'s own row is pure, so it owes no evidence -- the packs it joins
   # are its ordinary arguments
   let no_ev: List[TExpr] = []
-  var tail: TExpr = XUnit(lo, hi)
+  var tail: TExpr = XUnit(owner_off(cx, lo), owner_off(cx, hi))
   if len(envs) > 0 {
     tail = envs[len(envs) - 1]
     var i = len(envs) - 1
     while i > 0 {
       i = i - 1
-      tail = XCallBuiltin("ev_append", [envs[i], tail], no_wits, no_ev, lo, hi, erased_ev_ty())
+      tail = XCallBuiltin("ev_append", [envs[i], tail], no_wits, no_ev, owner_off(cx, lo), owner_off(cx, hi), erased_ev_ty())
     }
   }
   var acc = tail
@@ -10255,13 +10240,13 @@ fn evidence_pack(cx: Cx, inst: Eff, report: Bool, lo: Int, hi: Int) -> (Cx, TExp
         let (cxs, found) = ev_expr(cx1, nm, LabelSlot(eid), TyAdt(eid, []), lo, hi)
         (cxs, match found {
           Some(tx) -> tx
-          None -> XUnit(lo, hi)
+          None -> XUnit(owner_off(cx, lo), owner_off(cx, hi))
         })
       }
     cx1 = cxb
     acc = XCtor(EV_PACK_ID, 0,
-      [XInt(label_key(eid), lo, hi), ev, acc],
-      [Some(0), Some(1), Some(2)], no_expr(), lo, hi, ev_pack_ty())
+      [XInt(label_key(eid), owner_off(cx, lo), owner_off(cx, hi)), ev, acc],
+      [Some(0), Some(1), Some(2)], no_expr(), owner_off(cx, lo), owner_off(cx, hi), ev_pack_ty())
   }
   (cx1, acc, unanswered)
 }
@@ -10307,7 +10292,7 @@ fn resolve_label_evidence(cx: Cx, eid: Int, lo: Int, hi: Int) -> (Cx, TExpr, Boo
     match local_fn_missing_evidence(cx1, nm) {
       Some(fname) -> {
         cx1 = local_fn_effect(cx1, fname, eid, lo, hi)
-        return (cx1, XError(lo, hi), false)
+        return (cx1, XError(owner_off(cx, lo), owner_off(cx, hi)), false)
       }
       None -> ()
     }
@@ -10324,9 +10309,9 @@ fn resolve_label_evidence(cx: Cx, eid: Int, lo: Int, hi: Int) -> (Cx, TExpr, Boo
       # to find out what to refuse
       if not cx1.frame.isolated {
         cx1 = unhandled_effect(cx1, eid, lo, hi)
-        (cx1, XError(lo, hi), false)
+        (cx1, XError(owner_off(cx, lo), owner_off(cx, hi)), false)
       } else {
-        (cx1, XError(lo, hi), true)
+        (cx1, XError(owner_off(cx, lo), owner_off(cx, hi)), true)
       }
     }
   }
@@ -10409,7 +10394,7 @@ fn evidence_assoc_args(
       }
     }
     if missing {
-      out = out ++ [XError(lo, hi)]
+      out = out ++ [XError(owner_off(cx, lo), owner_off(cx, hi))]
     } else {
       let (cx2, pack, un) = evidence_pack(cx1, red, true, lo, hi)
       cx1 = cx2
@@ -10743,9 +10728,9 @@ fn check_ctor_call(
         Some(ct) -> {
           if spelled_out || len(cargs) > 0 || has_spread {
             return (cerr(cx1, "`" ++ cname ++ "` is a constant, not a constructor", cclo, cchi),
-              TyError, XError(lo, hi))
+              TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
           }
-          return (cx1, ct, XConstRef("", cname, lo, hi, ct))
+          return (cx1, ct, XConstRef("", cname, owner_off(cx, lo), owner_off(cx, hi), ct))
         }
         None -> ()
       }
@@ -10783,7 +10768,7 @@ fn check_ctor_call(
         }
       }
       return (cerr_o(cx1, "undefined constructor: ${cname}", cclo, cchi, hint),
-        TyError, XError(lo, hi))
+        TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
     }
     Some(_) -> ()
   }
@@ -10816,7 +10801,7 @@ fn check_ctor_call(
     let (hint_cx, hint_text) = constructor_display_read(cx1, ci)
     return (cerr_h(hint_cx,
       "record `" ++ ci.name ++ "` must be built with braces: " ++ ci.name ++ " { ... }",
-      lo, hi, "constructor: " ++ hint_text), TyError, XError(lo, hi))
+      lo, hi, "constructor: " ++ hint_text), TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
   }
   if spelling == CBare && n > 0 {
     # a bare constructor with fields, in a function-typed position, is a function value
@@ -10831,13 +10816,13 @@ fn check_ctor_call(
     }
     let (hint_cx, hint_text) = constructor_display_read(cx1, ci)
     return (cerr_h(hint_cx, msg, lo, hi, "constructor: " ++ hint_text),
-      TyError, XError(lo, hi))
+      TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
   }
   # a bare nullary constructor where a function is expected: a value, not a function
   if spelling == CBare && n == 0 && exp_is_fn {
     return (cerr_h(cx1, "`" ++ ci.name ++ "` is a value, not a function (it takes no fields)",
       lo, hi, "use it directly; only constructors with fields can be passed as functions"),
-      TyError, XError(lo, hi))
+      TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
   }
   var m: Map[Int, Ty] = map.empty()
   var em: Map[Int, Eff] = map.empty()
@@ -11089,18 +11074,18 @@ fn check_ctor_call(
     return (cerr_h(cx1, "cannot infer type parameter(s) " ++ join(unbound, ", ") ++
         " for `" ++ ci.name ++ "`", lo, hi,
       "add a type annotation, e.g. let x: " ++ ad.name ++ "[...] = " ++ ci.name),
-      TyError, XError(lo, hi))
+      TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
   }
-  if unbound_all { return (cx1, TyError, XError(lo, hi)) }
+  if unbound_all { return (cx1, TyError, XError(owner_off(cx, lo), owner_off(cx, hi))) }
   var written: List[TExpr] = []
   for sl in atx {
     match sl {
       Some(ax) -> { written = written ++ [ax] }
-      None -> { written = written ++ [XError(lo, hi)] }
+      None -> { written = written ++ [XError(owner_off(cx, lo), owner_off(cx, hi))] }
     }
   }
   let rt = subst(self_ty, m, em)
-  (cx1, rt, XCtor(aid, cslot, written, slots, spread_tx, lo, hi, rt))
+  (cx1, rt, XCtor(aid, cslot, written, slots, spread_tx, owner_off(cx, lo), owner_off(cx, hi), rt))
 }
 
 # ---- Java interop calls (spec §9) ----
@@ -11949,7 +11934,7 @@ fn check_java_call(
   }
   if any_err {
     cx1 = check_deferred(cx1, args, ats)
-    return (cx1, TyError, XError(lo, hi))
+    return (cx1, TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
   }
   var shown: List[String] = []
   var si = 0
@@ -11968,7 +11953,7 @@ fn check_java_call(
   if name == "new" {
     if not is_static {
       return (cerr(cx1, "`.new` is called on the class, not on an instance", nlo, nhi),
-        TyError, XError(lo, hi))
+        TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
     }
     let (constructors_cx, constructors) = java_constructors_read(cx1, cls.fqcn)
     cx1 = constructors_cx
@@ -11998,14 +11983,14 @@ fn check_java_call(
       var descs: List[String] = []
       for c in cands { descs = descs ++ ["  ${c.desc}"] }
       return (cerr_h(cx1, "no constructor of `" ++ cls.fqcn ++ "` matches (" ++ show_args ++ ")",
-        lo, hi, "candidates:\n${join(descs, "\n")}"), TyError, XError(lo, hi))
+        lo, hi, "candidates:\n${join(descs, "\n")}"), TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
     }
     if len(best) > 1 {
       cx1 = check_deferred(cx1, args, ats)
       var bdescs: List[String] = []
       for c in best { bdescs = bdescs ++ ["  ${c.desc}"] }
       return (cerr_h(cx1, "ambiguous constructor call on `" ++ cls.fqcn ++ "`", lo, hi,
-        "candidates:\n${join(bdescs, "\n")}"), TyError, XError(lo, hi))
+        "candidates:\n${join(bdescs, "\n")}"), TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
     }
     let c = best[0]
     let packs = bph == 0
@@ -12015,7 +12000,7 @@ fn check_java_call(
     for sl in atx2 {
       match sl {
         Some(ax) -> { fin = fin ++ [ax] }
-        None -> { fin = fin ++ [XError(lo, hi)] }
+        None -> { fin = fin ++ [XError(owner_off(cx, lo), owner_off(cx, hi))] }
       }
     }
     let vp: Option[Int] = if packs { Some(len(c.param_cls) - 1) } else { None }
@@ -12034,13 +12019,13 @@ fn check_java_call(
       sam_convs: convs,
       sam_evs: sevs,
       list_bridges: bridges,
-      nlo: nlo,
-      nhi: nhi
+      nlo: owner_off(cx, nlo),
+      nhi: owner_off(cx, nhi)
     }
     # .new returns T — a constructor never returns null; a constructed
     # java.lang.String is an ordinary Dawn String
     let rt = if cls.fqcn == "java.lang.String" { TyString } else { TyJava(cls.fqcn, cls.display) }
-    return (cx1, rt, XJava(call, lo, hi, rt))
+    return (cx1, rt, XJava(call, owner_off(cx, lo), owner_off(cx, hi), rt))
   }
   var matching: List[JMethod] = []
   let (methods_cx, methods) = java_methods_read(cx1, cls.fqcn)
@@ -12071,7 +12056,7 @@ fn check_java_call(
     let stat = if is_static { "static " } else { "" }
     return (cerr_h(cx1, "`" ++ cls.fqcn ++ "` has no " ++ stat ++ "method `" ++ name ++ "`",
       nlo, nhi, "Java calls are " ++ shape ++ "; a public static field is read as `Class.FIELD`, and no other field is readable"),
-      TyError, XError(lo, hi))
+      TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
   }
   var bph = -1
   var bsc = -1
@@ -12099,14 +12084,14 @@ fn check_java_call(
     for m2 in same_name { descs = descs ++ ["  ${m2.desc}"] }
     return (cerr_h(cx1, "no overload of `" ++ cls.simple ++ "." ++ name ++ "` matches (" ++
         show_args ++ ")", lo, hi, "candidates:\n${join(descs, "\n")}"),
-      TyError, XError(lo, hi))
+      TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
   }
   if len(best) > 1 {
     cx1 = check_deferred(cx1, args, ats)
     var bdescs: List[String] = []
     for m2 in best { bdescs = bdescs ++ ["  ${m2.desc}"] }
     return (cerr_h(cx1, "ambiguous call to `" ++ cls.simple ++ "." ++ name ++ "`", lo, hi,
-      "candidates:\n${join(bdescs, "\n")}"), TyError, XError(lo, hi))
+      "candidates:\n${join(bdescs, "\n")}"), TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
   }
   let m3 = best[0]
   let packs = bph == 0
@@ -12116,7 +12101,7 @@ fn check_java_call(
   for sl in atx3 {
     match sl {
       Some(ax) -> { fin = fin ++ [ax] }
-      None -> { fin = fin ++ [XError(lo, hi)] }
+      None -> { fin = fin ++ [XError(owner_off(cx, lo), owner_off(cx, hi))] }
     }
   }
   let (cxc, rt) = map_java_return(cx1, m3.ret_cls, nlo, nhi)
@@ -12137,10 +12122,10 @@ fn check_java_call(
     sam_convs: convs,
     sam_evs: sevs,
     list_bridges: bridges,
-    nlo: nlo,
-    nhi: nhi
+    nlo: owner_off(cx, nlo),
+    nhi: owner_off(cx, nhi)
   }
-  (cx1, rt, XJava(call, lo, hi, rt))
+  (cx1, rt, XJava(call, owner_off(cx, lo), owner_off(cx, hi), rt))
 }
 
 ## Is `target` a bare java class name (a nullary ctor spelling that resolves to a
@@ -12181,7 +12166,7 @@ fn check_java_static_field(
   match found {
     None -> (cerr_h(cx, "`" ++ fq ++ "` has no static field `" ++ fname ++ "`", flo, fhi,
       "only public static fields are readable; instance fields and methods are not"),
-      TyError, XError(lo, hi))
+      TyError, XError(owner_off(initial, lo), owner_off(initial, hi)))
     Some(f) -> {
       let cx1 = record_effect(cx, EIo, flo, fhi, fq ++ "." ++ fname)
       let (cx2, ty) = map_java_return(cx1, f.type_cls, flo, fhi)
@@ -12205,10 +12190,10 @@ fn check_java_static_field(
         sam_convs: no_convs,
         sam_evs: no_sevs,
         list_bridges: no_bridges,
-        nlo: flo,
-        nhi: fhi
+        nlo: owner_off(cx, flo),
+        nhi: owner_off(cx, fhi)
       }
-      (cx2, ty, XJava(call, lo, hi, ty))
+      (cx2, ty, XJava(call, owner_off(initial, lo), owner_off(initial, hi), ty))
     }
   }
 }
@@ -12282,16 +12267,16 @@ fn check_module_call(
       match renamed_std_fn(mod_path, name) {
         Some(h) ->
           return (cerr_h(cx1, "module `" ++ mod_path ++ "` has no exported function `" ++
-              name ++ "`", nlo, nhi, h), TyError, XError(lo, hi))
+              name ++ "`", nlo, nhi, h), TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
         None -> ()
       }
       let (diagnostic_cx, diagnostic) = export_function_diagnostic_read(cx1, al, name)
       cx1 = diagnostic_cx
       match diagnostic {
-        Some(d) -> (cerr_o(cx1, d.message, nlo, nhi, d.hint), TyError, XError(lo, hi))
+        Some(d) -> (cerr_o(cx1, d.message, nlo, nhi, d.hint), TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
         None ->
           (cerr(cx1, "module `" ++ mod_path ++ "` has no exported function `" ++ name ++ "`",
-            nlo, nhi), TyError, XError(lo, hi))
+            nlo, nhi), TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
       }
     }
   }
@@ -12345,7 +12330,7 @@ fn check_method_call(
           let (cxa, _, _) = check_expr(cxe, a, no_expected())
           cxe = cxa
         }
-        return (cxe, TyError, XError(lo, hi))
+        return (cxe, TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
       }
     }
     _ -> ()
@@ -12397,7 +12382,7 @@ fn check_method_call(
       let (cxa, _, _) = check_expr(cx1, a, no_expected())
       cx1 = cxa
     }
-    return (cx1, TyError, XError(lo, hi))
+    return (cx1, TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
   }
   # a record field holding a function: r.f(a) calls the field value. When a
   # function `f` is ALSO in scope the call is ambiguous and errors out (spec §2.4)
@@ -12457,9 +12442,9 @@ fn check_method_call(
                     "` — ambiguous call", nlo, nhi,
                   "for the field, bind it first: `let g = <recv>." ++ name ++ "` then `g(...)`; " ++
                     "for the function, call it directly: `" ++ name ++ "(<recv>, ...)`"),
-                  TyError, XError(lo, hi))
+                  TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
               }
-              let fx = XField(tx, fidx, e_lo(target), nhi, ftype)
+              let fx = XField(tx, fidx, owner_off(cx, e_lo(target)), owner_off(cx, nhi), ftype)
               if len(args) != len(fps) {
                 for a in args {
                   let (cxa, _, _) = check_expr(cx1, a, no_expected())
@@ -12469,7 +12454,7 @@ fn check_method_call(
                 cx1 = cerr_h(field_cx, "`" ++ name ++ "` takes " ++ to_string(len(fps)) ++
                     " argument(s), got " ++ to_string(len(args)), lo, hi,
                   "field type: " ++ field_text)
-                return (cx1, fret, XError(lo, hi))
+                return (cx1, fret, XError(owner_off(cx, lo), owner_off(cx, hi)))
               }
               var txs: List[TExpr] = []
               var ai = 0
@@ -12494,7 +12479,7 @@ fn check_method_call(
               let (cxe, evs, unanswered) = dyn_evidence_args(cx1, feff, nlo, nhi)
               cx1 = cxe
               cx1 = record_effect(cx1, eff_drop(feff, unanswered), nlo, nhi, name)
-              return (cx1, fret, XApply(fx, txs, evs, lo, hi, fret))
+              return (cx1, fret, XApply(fx, txs, evs, owner_off(cx, lo), owner_off(cx, hi), fret))
             }
             _ -> ()
           }
@@ -12742,7 +12727,7 @@ fn check_match(
       None -> { cx1 = usefulness_too_complex(cx1, lo, hi) }
     }
   }
-  (cx1, result, XMatch(sx, tarms, lo, hi, result))
+  (cx1, result, XMatch(sx, tarms, owner_off(cx, lo), owner_off(cx, hi), result))
 }
 
 # ---- expression checker tests ----
@@ -13457,8 +13442,8 @@ fn bind_dicts(cx: Cx, s: Sig, nlo: Int, nhi: Int) -> Cx = {
             name: tr.name ++ "$" ++ tn,
             ty: tp,
             mutable: false,
-            dlo: nlo,
-            dhi: nhi,
+            dlo: owner_off(cx, nlo),
+            dhi: owner_off(cx, nhi),
             dict_of: Some((tr_id, vid)),
             ev_of: None,
             cell_of: None
@@ -13716,10 +13701,7 @@ fn verify_effects(
     # row it charges, so what reaches here is exactly the labels that found
     # evidence, and those are the ones a signature must admit.
     if not eff_subsumes(declared, used) {
-      let (wlo, whi, wname) = match map.get(cx.frame.eff_witness, used) {
-        Some(w) -> w
-        None -> (nlo, nhi, "?")
-      }
+      let (wlo, whi, wname) = eff_witness_at(cx, used, (nlo, nhi, "?"))
       # "add !e" is advice that cannot be taken when the effect is a variable
       # this signature does not bind: an effect variable is bound where it is
       # written, so writing `!e` on this signature binds a *new* one and the
@@ -13850,10 +13832,7 @@ pub fn check_param_default(cx: Cx, d: FnDecl, s: Sig, k: Int) -> (Cx, TDefault) 
   # The row must not depend on whether the call site omits the argument.
   for used in cxd.frame.used_effects {
     if not eff_subsumes(EPure, used) {
-      let (wlo, whi, wname) = match map.get(cxd.frame.eff_witness, used) {
-        Some(w) -> w
-        None -> (e_lo(de), e_hi(de), "?")
-      }
+      let (wlo, whi, wname) = eff_witness_at(cxd, used, (e_lo(de), e_hi(de), "?"))
       cxd = cerr_h(cxd, "a parameter default must be pure, but it calls `" ++ wname ++
           "` (!" ++ eff_show(used) ++ ")", wlo, whi,
         "the default runs at every call that omits the argument; " ++
@@ -14129,7 +14108,8 @@ pub fn check_const_init(
         " but its initializer is " ++ body_text, e_lo(d.init), e_hi(d.init))
   }
   cx1 = Cx { ..cx1, const_cutoff: None }
-  (cx1, TConst { name: d.name, ty: declared, init: bx, lo: d.lo, hi: d.hi })
+  (cx1, TConst { name: d.name, ty: declared, init: bx,
+    lo: owner_off(cx, d.lo), hi: owner_off(cx, d.hi) })
 }
 
 test "diagnostic reads retain lambda arity and match diagnostic paths" {
@@ -14701,22 +14681,44 @@ pub fn check_module_body_products(headers: ModuleHeaders) -> ModuleBodies !io = 
   products
 }
 
-## Enter the declaration a body belongs to, so that every diagnostic the body
-## raises is measured from the declaration rather than from the file. A
-## declaration `check/identity` refuses to name -- a duplicate, or one whose
-## parent is duplicated -- has no start to measure from and is left unowned,
-## which keeps its diagnostics absolute.
-fn enter_decl(cx: Cx, starts: Map[String, Int], path: List[identity.Part]) -> Cx =
-  match cx.mod_path {
-    None -> unowned(cx)
-    Some(module) -> {
-      let decl = identity.path_text(path)
-      match map.get(starts, decl) {
-        Some(start) -> owned_by(cx, module, decl, start)
-        None -> unowned(cx)
+## A declaration the scheduler is inside: the context its body is checked in,
+## and the resolver that turns what the body records back into positions.
+## They come from one lookup because they must agree: what the checker
+## measured from, the resolver adds back.
+type Entered = { cx: Cx, resolver: tast_positions.Resolver }
+
+## Enter the declaration a body belongs to, so that every diagnostic and every
+## typed span the body records is measured from the declaration rather than
+## from the file. A declaration `check/identity` refuses to name -- a
+## duplicate, or one whose parent is duplicated -- has no start to measure
+## from and is left unowned, which keeps both absolute.
+fn enter_decl(cx: Cx, view: identity.DeclSpans, path: List[identity.Part]) -> Entered = {
+  let decl = identity.path_text(path)
+  match identity.span_at(view, decl) {
+    None -> Entered { cx: unowned(cx),
+      resolver: tast_positions.unowned(cx.src_path, cx.line_starts) }
+    Some(sp) -> {
+      # A diagnostic names the view it resolves against by module path, which
+      # only the driver can supply. The typed tree names nothing: it is
+      # resolved where it is built, so it is measured from the declaration
+      # even in a context that has no module to name.
+      let entered = match cx.mod_path {
+        None -> measured_from(cx, sp.lo)
+        Some(module) -> owned_by(cx, module, decl, sp.lo)
       }
+      Entered { cx: entered,
+        resolver: tast_positions.owned(sp.lo, sp.hi, cx.src_path, cx.line_starts) }
     }
   }
+}
+
+## Leave it again. The symbols the declaration minted sit in the identifier
+## interval it consumed, so they are resolved beside the tree that reads them;
+## anything the body wrote to a symbol minted before it keeps the positions
+## that symbol already had.
+fn left(entered: Entered, before: Cx, after: Cx) -> Cx =
+  unowned(Cx { ..after,
+    syms: tast_positions.symbols(entered.resolver, after.syms, before.next_id, after.next_id) })
 
 pub fn execute_module_bodies[S](headers: ModuleHeaders, initial: S, executor: BodyExecutor[S]) -> (S, ModuleBodies) !io = {
   var state = initial
@@ -14724,7 +14726,7 @@ pub fn execute_module_bodies[S](headers: ModuleHeaders, initial: S, executor: Bo
   # One walk of this module's declarations, the same one the span view on the
   # carry is built from, so the two cannot disagree about which declarations
   # can be named.
-  let starts = identity.declaration_starts(m)
+  let view = identity.declaration_spans(m)
   var cx1 = headers.cx
   let sigs = headers.sigs
   let impl_sigs = headers.impl_sigs
@@ -14791,11 +14793,11 @@ pub fn execute_module_bodies[S](headers: ModuleHeaders, initial: S, executor: Bo
         if ready {
           # each pending index is completed at most once, so the signature this
           # reads is still the unsealed one the list held
-          let owner = enter_decl(cx1, starts, [identity.Named(identity.FunctionDecl, d.name)])
-          let (next_state, cxe, tf) = executor.inferred_body(state, owner, d, sigs[idx])
+          let owner = enter_decl(cx1, view, [identity.Named(identity.FunctionDecl, d.name)])
+          let (next_state, cxe, tf) = executor.inferred_body(state, owner.cx, d, sigs[idx])
           state = next_state
-          cx1 = unowned(cxe)
-          inferred = map.insert(inferred, idx, tf)
+          cx1 = left(owner, cx1, cxe)
+          inferred = map.insert(inferred, idx, tast_positions.function(owner.resolver, tf))
           done = set.insert(done, d.name)
           progress = true
         } else {
@@ -14820,11 +14822,11 @@ pub fn execute_module_bodies[S](headers: ModuleHeaders, initial: S, executor: Bo
   for d in module_consts(m) {
     match const_tys[ci] {
       Some(declared) -> {
-        let owner = enter_decl(cx1, starts, [identity.Named(identity.ConstDecl, d.name)])
-        let (next_state, cxe, tc) = executor.constant(state, owner, d, declared, visible)
+        let owner = enter_decl(cx1, view, [identity.Named(identity.ConstDecl, d.name)])
+        let (next_state, cxe, tc) = executor.constant(state, owner.cx, d, declared, visible)
         state = next_state
-        cx1 = unowned(cxe)
-        tconsts = tconsts ++ [tc]
+        cx1 = left(owner, cx1, cxe)
+        tconsts = tconsts ++ [tast_positions.constant(owner.resolver, tc)]
       }
       None -> ()
     }
@@ -14839,11 +14841,11 @@ pub fn execute_module_bodies[S](headers: ModuleHeaders, initial: S, executor: Bo
   i = 0
   for d in fnds {
     if not sigs[i].inferring {
-      let owner = enter_decl(cx1, starts, [identity.Named(identity.FunctionDecl, d.name)])
-      let (next_state, cxe, tf) = executor.function(state, owner, d, sigs[i])
+      let owner = enter_decl(cx1, view, [identity.Named(identity.FunctionDecl, d.name)])
+      let (next_state, cxe, tf) = executor.function(state, owner.cx, d, sigs[i])
       state = next_state
-      cx1 = unowned(cxe)
-      tfuns = tfuns ++ [Some(tf)]
+      cx1 = left(owner, cx1, cxe)
+      tfuns = tfuns ++ [Some(tast_positions.function(owner.resolver, tf))]
     } else {
       match map.get(inferred, i) {
         Some(tf) -> { tfuns = tfuns ++ [Some(tf)] }
@@ -14869,11 +14871,12 @@ pub fn execute_module_bodies[S](headers: ModuleHeaders, initial: S, executor: Bo
         Some(ms) -> {
           # registration refused any parameter defaults; strip them so the
           # refusal is not followed by the value's own diagnostics
-          let owner = enter_decl(cx1, starts, impl_head ++ [identity.Named(identity.MethodDecl, me.name)])
-          let (next_state, cxe, tf) = executor.method(state, owner, imd.trait_name, imd.subject, strip_param_defaults(me), ms)
+          let owner = enter_decl(cx1, view, impl_head ++ [identity.Named(identity.MethodDecl, me.name)])
+          let (next_state, cxe, tf) = executor.method(state, owner.cx, imd.trait_name, imd.subject, strip_param_defaults(me), ms)
           state = next_state
-          cx1 = unowned(cxe)
-          impl_tfuns = impl_tfuns ++ [TFun { ..tf, impl_of: imp_key }]
+          cx1 = left(owner, cx1, cxe)
+          impl_tfuns = impl_tfuns ++
+            [TFun { ..tast_positions.function(owner.resolver, tf), impl_of: imp_key }]
         }
         None -> ()
       }
@@ -14897,12 +14900,13 @@ pub fn execute_module_bodies[S](headers: ModuleHeaders, initial: S, executor: Bo
               }
               match msig {
                 Some(s2) -> {
-                  let owner = enter_decl(cx1, starts,
+                  let owner = enter_decl(cx1, view,
                     [identity.Named(identity.TraitDecl, td.name), identity.Named(identity.MethodDecl, me.name)])
-                  let (next_state, cxe, tf) = executor.default_body(state, owner, t, me, s2, b)
+                  let (next_state, cxe, tf) = executor.default_body(state, owner.cx, t, me, s2, b)
                   state = next_state
-                  cx1 = unowned(cxe)
-                  default_tfuns = default_tfuns ++ [TFun { ..tf, default_of: Some(t) }]
+                  cx1 = left(owner, cx1, cxe)
+                  default_tfuns = default_tfuns ++
+                    [TFun { ..tast_positions.function(owner.resolver, tf), default_of: Some(t) }]
                 }
                 None -> ()
               }
@@ -14916,11 +14920,11 @@ pub fn execute_module_bodies[S](headers: ModuleHeaders, initial: S, executor: Bo
   }
   var ttests: List[TFun] = []
   for t in module_tests(m) {
-    let owner = enter_decl(cx1, starts, [identity.Named(identity.TestDecl, t.name)])
-    let (next_state, cxe, tf) = executor.test_body(state, owner, t.name, t.body)
+    let owner = enter_decl(cx1, view, [identity.Named(identity.TestDecl, t.name)])
+    let (next_state, cxe, tf) = executor.test_body(state, owner.cx, t.name, t.body)
     state = next_state
-    cx1 = unowned(cxe)
-    ttests = ttests ++ [tf]
+    cx1 = left(owner, cx1, cxe)
+    ttests = ttests ++ [tast_positions.function(owner.resolver, tf)]
   }
   var fns_out: List[TFun] = []
   for sl in tfuns {
@@ -14931,6 +14935,28 @@ pub fn execute_module_bodies[S](headers: ModuleHeaders, initial: S, executor: Bo
   }
   (state, ModuleBodies { cx: cx1, functions: fns_out, constants: tconsts,
     impl_methods: impl_tfuns, trait_defaults: default_tfuns, tests: ttests })
+}
+
+test "a typed span cuts the source the declaration actually holds" {
+  # The typed tree records spans as offsets from the declaration, and the
+  # scheduler turns them back into positions at that declaration's exit. A
+  # seam that resolved them against nothing -- or against the wrong
+  # declaration -- would still hand back a tree that agrees with itself, so
+  # the proof cannot be internal: it is that the span cuts out the expression
+  # that is written there. The second declaration is the one that matters,
+  # because the first one starts where the file does.
+  let source = "fn first() -> Int = 1\nfn second(x: Int) -> Int = x + 40\nconst K: Int = 7\n"
+  let (m, ds) = parser.parse_module(source)
+  assert ds == []
+  let (cx, tm) = check_module(test_cx(), m, map.empty())
+  assert cx.diags == []
+  assert str.slice(source, x_lo(tm.fns[0].body), x_hi(tm.fns[0].body)) == "1"
+  assert str.slice(source, x_lo(tm.fns[1].body), x_hi(tm.fns[1].body)) == "x + 40"
+  assert str.slice(source, x_lo(tm.consts[0].init), x_hi(tm.consts[0].init)) == "7"
+  assert str.slice(source, tm.consts[0].lo, tm.consts[0].hi) == "const K: Int = 7"
+  # a parameter's symbol names the parameter, wherever its declaration sits
+  let parameter = map.get(tm.syms, tm.fns[1].param_syms[0]).expect("the parameter's symbol")
+  assert str.slice(source, parameter.dlo, parameter.dhi) == "x"
 }
 
 ## No checking or fresh allocation here: descriptor registration and default

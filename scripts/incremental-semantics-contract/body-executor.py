@@ -19,18 +19,18 @@ def main():
     original = (ROOT / 'selfhost/src/check/checker.dawn').read_text()
     owner = 'body executor threads current state through every scheduled role'
     calls = [
-        ('inferred', 'executor.inferred_body(state, owner, d, sigs[idx])',
-         '{ let (next, _, tree) = check_fn_inferred(owner, d, sigs[idx])\n (state, next, tree) }'),
-        ('constant', 'executor.constant(state, owner, d, declared, visible)',
-         '{ let (next, tree) = check_const_init(owner, d, declared, visible)\n (state, next, tree) }'),
-        ('function', 'executor.function(state, owner, d, sigs[i])',
-         '{ let (next, tree) = check_fn(owner, d, sigs[i])\n (state, next, tree) }'),
-        ('method', 'executor.method(state, owner, imd.trait_name, imd.subject, strip_param_defaults(me), ms)',
-         '{ let (next, tree) = check_fn(owner, strip_param_defaults(me), ms)\n (state, next, tree) }'),
-        ('default', 'executor.default_body(state, owner, t, me, s2, b)',
-         '{ let (next, tree) = check_trait_default(owner, me, s2, b)\n (state, next, tree) }'),
-        ('test', 'executor.test_body(state, owner, t.name, t.body)',
-         '{ let (next, tree) = check_test(owner, t.name, t.body)\n (state, next, tree) }'),
+        ('inferred', 'executor.inferred_body(state, owner.cx, d, sigs[idx])',
+         '{ let (next, _, tree) = check_fn_inferred(owner.cx, d, sigs[idx])\n (state, next, tree) }'),
+        ('constant', 'executor.constant(state, owner.cx, d, declared, visible)',
+         '{ let (next, tree) = check_const_init(owner.cx, d, declared, visible)\n (state, next, tree) }'),
+        ('function', 'executor.function(state, owner.cx, d, sigs[i])',
+         '{ let (next, tree) = check_fn(owner.cx, d, sigs[i])\n (state, next, tree) }'),
+        ('method', 'executor.method(state, owner.cx, imd.trait_name, imd.subject, strip_param_defaults(me), ms)',
+         '{ let (next, tree) = check_fn(owner.cx, strip_param_defaults(me), ms)\n (state, next, tree) }'),
+        ('default', 'executor.default_body(state, owner.cx, t, me, s2, b)',
+         '{ let (next, tree) = check_trait_default(owner.cx, me, s2, b)\n (state, next, tree) }'),
+        ('test', 'executor.test_body(state, owner.cx, t.name, t.body)',
+         '{ let (next, tree) = check_test(owner.cx, t.name, t.body)\n (state, next, tree) }'),
     ]
     subjects = [('positive', original)]
     for role, call, bypass in calls:
@@ -39,8 +39,8 @@ def main():
     # The inferred arm's own declaration boundary, indented apart from the
     # annotated one: the body is entered from the stale header context rather
     # than from the context the passes before it left.
-    stale = ('          let owner = enter_decl(cx1, starts, [identity.Named(identity.FunctionDecl, d.name)])',
-             '          let owner = enter_decl(headers.cx, starts, [identity.Named(identity.FunctionDecl, d.name)])')
+    stale = ('          let owner = enter_decl(cx1, view, [identity.Named(identity.FunctionDecl, d.name)])',
+             '          let owner = enter_decl(headers.cx, view, [identity.Named(identity.FunctionDecl, d.name)])')
     subjects.append(('stale-inferred-context', edit(original, stale[0], stale[1])))
     with tempfile.TemporaryDirectory(prefix='dawn-body-executor-') as temp:
         root = Path(temp)

@@ -17,6 +17,11 @@ EXPECTED = Counter({
     **{('check/body_product.dawn', 'assemble', field): 1 for field in FIELDS},
     **{('check/header_product.dawn', 'assemble', field): 1 for field in FIELDS - {'syms'}},
     ('check/cx.dawn', 'write_symbol', 'syms'): 1,
+    # The scheduler's declaration exit, which resolves the declaring spans of
+    # the symbols that declaration minted. It replaces values under keys the
+    # body already wrote and adds none, so it is not a new writer of the
+    # table's membership.
+    ('check/checker.dawn', 'left', 'syms'): 1,
     ('check/cx.dawn', 'write_signature', 'fns'): 1,
     ('check/cx.dawn', 'write_alias', 'alias_resolved'): 1,
     ('check/cx.dawn', 'write_bounds', 'current_tparam_bounds'): 1,

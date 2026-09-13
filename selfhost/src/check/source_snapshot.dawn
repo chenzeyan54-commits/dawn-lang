@@ -137,12 +137,8 @@ test "source snapshot pairs one parse with the index of its own text" {
   let (parsed, diagnostics) = parser.parse_module(text)
   assert diagnostics == []
   assert syntax(snapshot) == parsed
-  assert source_projection.between_indexed(indexed(snapshot), indexed(snapshot),
-    0, 5, 0, 5) == source_projection.between(text, text, 0, 5, 0, 5)
   assert match of("fn broken( -> Int = 42\n") { None -> true, Some(_) -> false }
-  let paired = source_projection.pair(tokens(snapshot), tokens(snapshot), 0, 0, 4, 27, 4, 27)
-  assert match paired {
-    Some(coords) -> source_projection.start_at(coords, 4) == Some(4)
-    None -> false
-  }
+  # the snapshot's own declaration slice answers for itself, both ways
+  assert source_projection.pair(tokens(snapshot), tokens(snapshot), 0, 0, 4, 27, 4, 27)
+  assert source_projection.same_text(tokens(snapshot), tokens(snapshot), 4, 27, 4, 27)
 }
