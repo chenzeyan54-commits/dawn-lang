@@ -76,9 +76,9 @@ MUTATIONS = {
         "src/check/checker.dawn",
         ((
             '''      cx1 = pop_scope(cx1)
-      (cx1, TSFor(tp, loop_t, fx, tx_to, wit, bx, hj, lo, hi))
+      (cx1, TSFor(tp, loop_t, fx, tx_to, wit, bx, hj, owner_off(cx, lo), owner_off(cx, hi)))
 ''',
-            "      (cx1, TSFor(tp, loop_t, fx, tx_to, wit, bx, hj, lo, hi))\n",
+            "      (cx1, TSFor(tp, loop_t, fx, tx_to, wit, bx, hj, owner_off(cx, lo), owner_off(cx, hi)))\n",
         ),),
     ),
     "skip-LSP-visit": (
