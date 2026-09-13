@@ -7,18 +7,18 @@ dict dict$1$Int trait=1 subject=Int
   slot fn std/gpu.prim$1$Int$eq
 dict dict$2$Int trait=2 subject=Int
   slot fn std/gpu.prim$2$Int$hash
-dict dict$2171$Adt2152 trait=2171 subject=F64
-  slot fn std/gpu.bridge$2171$Adt2152$dtype_name
-  slot fn std/gpu.bridge$2171$Adt2152$dtype_bytes
-dict dict$2171$Adt2153 trait=2171 subject=F32
-  slot fn std/gpu.bridge$2171$Adt2153$dtype_name
-  slot fn std/gpu.bridge$2171$Adt2153$dtype_bytes
-dict dict$2171$Adt2154 trait=2171 subject=BF16
-  slot fn std/gpu.bridge$2171$Adt2154$dtype_name
-  slot fn std/gpu.bridge$2171$Adt2154$dtype_bytes
-dict dict$2171$Adt2156 trait=2171 subject=F16
-  slot fn std/gpu.bridge$2171$Adt2156$dtype_name
-  slot fn std/gpu.bridge$2171$Adt2156$dtype_bytes
+dict dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64
+  slot fn std/gpu.bridge$100398589141678$Adt24267576839709$dtype_name
+  slot fn std/gpu.bridge$100398589141678$Adt24267576839709$dtype_bytes
+dict dict$100398589141678$Adt2314666007681 trait=100398589141678 subject=F32
+  slot fn std/gpu.bridge$100398589141678$Adt2314666007681$dtype_name
+  slot fn std/gpu.bridge$100398589141678$Adt2314666007681$dtype_bytes
+dict dict$100398589141678$Adt135610686735435 trait=100398589141678 subject=BF16
+  slot fn std/gpu.bridge$100398589141678$Adt135610686735435$dtype_name
+  slot fn std/gpu.bridge$100398589141678$Adt135610686735435$dtype_bytes
+dict dict$100398589141678$Adt25023023279458 trait=100398589141678 subject=F16
+  slot fn std/gpu.bridge$100398589141678$Adt25023023279458$dtype_name
+  slot fn std/gpu.bridge$100398589141678$Adt25023023279458$dtype_bytes
 fn std/gpu.element_bytes -> Option[Int]
   param v0 : String owned
   block : Option[Int]
@@ -1675,7 +1675,7 @@ fn std/gpu.alloc -> Result[Tensor[D], ForeignError]
           call dynamic : Result[Int, ForeignError]
             field ev$Gpu/ev$Gpu.0 : fn(String, Int) -> Result[Int, ForeignError]
               local v3 : ev$Gpu
-            call method trait=2171 dtype_name slot=0 : String
+            call method trait=100398589141678 dtype_name slot=0 : String
               local v2 : <dict>
               local v0 : D
             local v1 : Int
@@ -1972,7 +1972,7 @@ fn std/gpu.module_global -> Result[Tensor[D], ForeignError]
           local v4 : ev$Gpu
         local v1 : String
         local v2 : String
-        call method trait=2171 dtype_name slot=0 : String
+        call method trait=100398589141678 dtype_name slot=0 : String
           local v3 : <dict>
           local v0 : D
         dup
@@ -12911,7 +12911,7 @@ fn std/gpu.with_gpu_fake_globals -> T
           call dynamic : T
             local v8 : fn() -> T !Gpu
             ctor ev$Pack/ev$Pack : ev$Pack
-              int 6507
+              int 132596728265172
               box from=ev$Gpu
                 local v7 : ev$Gpu
               box from=Unit
@@ -13578,7 +13578,7 @@ fn std/gpu.with_gpu_real -> T
           call dynamic : T
             local v8 : fn() -> T !(Gpu|io)
             ctor ev$Pack/ev$Pack : ev$Pack
-              int 6507
+              int 132596728265172
               box from=ev$Gpu
                 local v7 : ev$Gpu
               box from=Unit
@@ -14049,7 +14049,7 @@ fn std/gpu.vadd_on_device -> Result[List[Float], ForeignError]
     str "vadd"
     local v0 : List[Float]
     local v1 : List[Float]
-    dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+    dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
     local v2 : ev$Gpu
 fn std/gpu.sum_on_device -> Result[List[Float], ForeignError]
   param v0 : List[Float] owned
@@ -14064,7 +14064,7 @@ fn std/gpu.sum_on_device -> Result[List[Float], ForeignError]
               ctor F64/F64 : F64
             intrinsic len : Int
               local v0 : List[Float]
-            dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+            dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
             dup
               local v2 : ev$Gpu
         sif
@@ -14097,7 +14097,7 @@ fn std/gpu.sum_on_device -> Result[List[Float], ForeignError]
             binary mul : Int
               local v1 : Int
               int 128
-            dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+            dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
             dup
               local v2 : ev$Gpu
         sif
@@ -14399,7 +14399,7 @@ fn std/gpu.wrong_length_upload -> Result[List[Float], ForeignError]
             box from=F64
               ctor F64/F64 : F64
             int 3
-            dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+            dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
             dup
               local v0 : ev$Gpu
         sif
@@ -14507,7 +14507,7 @@ fn std/gpu.alloc_refusals -> (String, String, String)
         box from=F64
           ctor F64/F64 : F64
         int 0
-        dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+        dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
         dup
           local v0 : ev$Gpu
     let v2 : Result[Tensor[F64], ForeignError]
@@ -14517,7 +14517,7 @@ fn std/gpu.alloc_refusals -> (String, String, String)
         binary sub : Int
           int 0
           int 4
-        dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+        dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
         dup
           local v0 : ev$Gpu
     let v3 : Result[Tensor[F32], ForeignError]
@@ -14525,7 +14525,7 @@ fn std/gpu.alloc_refusals -> (String, String, String)
         box from=F32
           ctor F32/F32 : F32
         int 4
-        dictref dict$2171$Adt2153 trait=2171 subject=F32 : <dict>
+        dictref dict$100398589141678$Adt2314666007681 trait=100398589141678 subject=F32 : <dict>
         local v0 : ev$Gpu
     tuple : (String, String, String)
       call direct std/gpu.kind_of : String
@@ -14720,7 +14720,7 @@ fn std/gpu.there_and_back -> Result[List[Float], ForeignError]
               ctor BF16/BF16 : BF16
             intrinsic len : Int
               local v0 : List[Float]
-            dictref dict$2171$Adt2154 trait=2171 subject=BF16 : <dict>
+            dictref dict$100398589141678$Adt135610686735435 trait=100398589141678 subject=BF16 : <dict>
             dup
               local v1 : ev$Gpu
         sif
@@ -14784,7 +14784,7 @@ fn std/gpu.launch_refusals -> List[String]
         box from=F64
           ctor F64/F64 : F64
         int 2
-        dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+        dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
         dup
           local v0 : ev$Gpu
     let v2 : Int
@@ -14972,7 +14972,7 @@ fn std/gpu.too_few_buffers -> Result[Unit, ForeignError]
             box from=F64
               ctor F64/F64 : F64
             int 2
-            dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+            dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
             dup
               local v0 : ev$Gpu
         sif
@@ -15033,7 +15033,7 @@ fn std/gpu.one_short_buffer -> Result[Unit, ForeignError]
             box from=F64
               ctor F64/F64 : F64
             int 2
-            dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+            dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
             dup
               local v0 : ev$Gpu
         sif
@@ -15063,7 +15063,7 @@ fn std/gpu.one_short_buffer -> Result[Unit, ForeignError]
             box from=F64
               ctor F64/F64 : F64
             int 2
-            dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+            dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
             dup
               local v0 : ev$Gpu
         sif
@@ -15142,7 +15142,7 @@ fn std/gpu.use_after_free -> (Int, Int, String, String)
         box from=F64
           ctor F64/F64 : F64
         int 2
-        dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+        dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
         dup
           local v0 : ev$Gpu
     let v2 : Result[Tensor[F64], ForeignError]
@@ -15150,7 +15150,7 @@ fn std/gpu.use_after_free -> (Int, Int, String, String)
         box from=F64
           ctor F64/F64 : F64
         int 2
-        dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+        dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
         dup
           local v0 : ev$Gpu
     block : (Int, Int, String, String)
@@ -15434,7 +15434,7 @@ fn std/gpu.look -> String
           ctor F64/F64 : F64
         local v0 : String
         local v1 : String
-        dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+        dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
         local v2 : ev$Gpu
     let v4 : String
       str ""
@@ -15596,7 +15596,7 @@ fn std/gpu.global_is_storage -> Result[(List[Float], List[Float], List[Float]), 
               ctor F64/F64 : F64
             str "k"
             str "frozen"
-            dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+            dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
             dup
               local v0 : ev$Gpu
         sif
@@ -15663,7 +15663,7 @@ fn std/gpu.global_is_storage -> Result[(List[Float], List[Float], List[Float]), 
               ctor F64/F64 : F64
             str "k"
             str "frozen"
-            dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+            dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
             dup
               local v0 : ev$Gpu
         sif
@@ -15800,7 +15800,7 @@ fn std/gpu.global_launch_reads_the_write -> Result[List[Float], ForeignError]
               ctor F64/F64 : F64
             str "k"
             str "shown"
-            dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+            dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
             dup
               local v0 : ev$Gpu
         sif
@@ -15865,7 +15865,7 @@ fn std/gpu.global_launch_reads_the_write -> Result[List[Float], ForeignError]
             box from=F64
               ctor F64/F64 : F64
             int 4
-            dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+            dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
             dup
               local v0 : ev$Gpu
         sif
@@ -15895,7 +15895,7 @@ fn std/gpu.global_launch_reads_the_write -> Result[List[Float], ForeignError]
             box from=F64
               ctor F64/F64 : F64
             int 12
-            dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+            dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
             dup
               local v0 : ev$Gpu
         sif
@@ -16067,7 +16067,7 @@ fn std/gpu.global_as_bf16 -> String
           ctor BF16/BF16 : BF16
         str "k"
         str "shown"
-        dictref dict$2171$Adt2154 trait=2171 subject=BF16 : <dict>
+        dictref dict$100398589141678$Adt135610686735435 trait=100398589141678 subject=BF16 : <dict>
         local v0 : ev$Gpu
     let v2 : String
       str ""
@@ -16142,7 +16142,7 @@ fn std/gpu.real_refusals -> List[String]
         box from=F32
           ctor F32/F32 : F32
         int 4
-        dictref dict$2171$Adt2153 trait=2171 subject=F32 : <dict>
+        dictref dict$100398589141678$Adt2314666007681 trait=100398589141678 subject=F32 : <dict>
         dup
           local v0 : ev$Gpu
     block : List[String]
@@ -16837,7 +16837,7 @@ fn std/gpu.f16_vadds -> Result[List[Float], ForeignError]
             box from=F16
               ctor F16/F16 : F16
             local v3 : Int
-            dictref dict$2171$Adt2156 trait=2171 subject=F16 : <dict>
+            dictref dict$100398589141678$Adt25023023279458 trait=100398589141678 subject=F16 : <dict>
             dup
               local v2 : ev$Gpu
         sif
@@ -16869,7 +16869,7 @@ fn std/gpu.f16_vadds -> Result[List[Float], ForeignError]
             box from=F16
               ctor F16/F16 : F16
             local v3 : Int
-            dictref dict$2171$Adt2156 trait=2171 subject=F16 : <dict>
+            dictref dict$100398589141678$Adt25023023279458 trait=100398589141678 subject=F16 : <dict>
             dup
               local v2 : ev$Gpu
         sif
@@ -16902,7 +16902,7 @@ fn std/gpu.f16_vadds -> Result[List[Float], ForeignError]
             box from=F16
               ctor F16/F16 : F16
             local v3 : Int
-            dictref dict$2171$Adt2156 trait=2171 subject=F16 : <dict>
+            dictref dict$100398589141678$Adt25023023279458 trait=100398589141678 subject=F16 : <dict>
             dup
               local v2 : ev$Gpu
         sif
@@ -17231,21 +17231,21 @@ fn std/gpu.masked_run -> Result[List[Float], ForeignError]
             box from=F64
               ctor F64/F64 : F64
             int 8
-            dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+            dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
             dup
               local v3 : ev$Gpu
           call direct std/gpu.alloc : Result[Tensor[D], ForeignError]
             box from=F64
               ctor F64/F64 : F64
             int 8
-            dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+            dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
             dup
               local v3 : ev$Gpu
           call direct std/gpu.alloc : Result[Tensor[D], ForeignError]
             box from=F64
               ctor F64/F64 : F64
             int 8
-            dictref dict$2171$Adt2152 trait=2171 subject=F64 : <dict>
+            dictref dict$100398589141678$Adt24267576839709 trait=100398589141678 subject=F64 : <dict>
             dup
               local v3 : ev$Gpu
       let v6 : Result[List[Float], ForeignError]
@@ -17704,215 +17704,215 @@ fn std/gpu.masked_answers -> List[List[Float]]
         local v35 : List[Float]
         local v36 : List[Float]
       ctor ev$Pack/ev$Pack : ev$Pack
-        int 6507
+        int 132596728265172
         box from=ev$Gpu
           local v0 : ev$Gpu
         box from=Unit
           unit
-fn std/gpu.dtype_name -> String impl_of=2171/F64
+fn std/gpu.dtype_name -> String impl_of=100398589141678/F64
   param v0 : F64 owned
   block : String
     let v1 : String
       str "f64"
     drop v0
     local v1 : String
-fn std/gpu.dtype_bytes -> Int impl_of=2171/F64
+fn std/gpu.dtype_bytes -> Int impl_of=100398589141678/F64
   param v0 : F64 owned
   block : Int
     let v1 : Int
       int 8
     drop v0
     local v1 : Int
-fn std/gpu.dtype_name -> String impl_of=2171/F32
+fn std/gpu.dtype_name -> String impl_of=100398589141678/F32
   param v0 : F32 owned
   block : String
     let v1 : String
       str "f32"
     drop v0
     local v1 : String
-fn std/gpu.dtype_bytes -> Int impl_of=2171/F32
+fn std/gpu.dtype_bytes -> Int impl_of=100398589141678/F32
   param v0 : F32 owned
   block : Int
     let v1 : Int
       int 4
     drop v0
     local v1 : Int
-fn std/gpu.dtype_name -> String impl_of=2171/BF16
+fn std/gpu.dtype_name -> String impl_of=100398589141678/BF16
   param v0 : BF16 owned
   block : String
     let v1 : String
       str "bf16"
     drop v0
     local v1 : String
-fn std/gpu.dtype_bytes -> Int impl_of=2171/BF16
+fn std/gpu.dtype_bytes -> Int impl_of=100398589141678/BF16
   param v0 : BF16 owned
   block : Int
     let v1 : Int
       int 2
     drop v0
     local v1 : Int
-fn std/gpu.dtype_name -> String impl_of=2171/I32
+fn std/gpu.dtype_name -> String impl_of=100398589141678/I32
   param v0 : I32 owned
   block : String
     let v1 : String
       str "i32"
     drop v0
     local v1 : String
-fn std/gpu.dtype_bytes -> Int impl_of=2171/I32
+fn std/gpu.dtype_bytes -> Int impl_of=100398589141678/I32
   param v0 : I32 owned
   block : Int
     let v1 : Int
       int 4
     drop v0
     local v1 : Int
-fn std/gpu.dtype_name -> String impl_of=2171/F16
+fn std/gpu.dtype_name -> String impl_of=100398589141678/F16
   param v0 : F16 owned
   block : String
     let v1 : String
       str "f16"
     drop v0
     local v1 : String
-fn std/gpu.dtype_bytes -> Int impl_of=2171/F16
+fn std/gpu.dtype_bytes -> Int impl_of=100398589141678/F16
   param v0 : F16 owned
   block : Int
     let v1 : Int
       int 2
     drop v0
     local v1 : Int
-fn std/gpu.dtype_name -> String impl_of=2171/I8
+fn std/gpu.dtype_name -> String impl_of=100398589141678/I8
   param v0 : I8 owned
   block : String
     let v1 : String
       str "i8"
     drop v0
     local v1 : String
-fn std/gpu.dtype_bytes -> Int impl_of=2171/I8
+fn std/gpu.dtype_bytes -> Int impl_of=100398589141678/I8
   param v0 : I8 owned
   block : Int
     let v1 : Int
       int 1
     drop v0
     local v1 : Int
-fn std/gpu.dtype_name -> String impl_of=2171/U8
+fn std/gpu.dtype_name -> String impl_of=100398589141678/U8
   param v0 : U8 owned
   block : String
     let v1 : String
       str "u8"
     drop v0
     local v1 : String
-fn std/gpu.dtype_bytes -> Int impl_of=2171/U8
+fn std/gpu.dtype_bytes -> Int impl_of=100398589141678/U8
   param v0 : U8 owned
   block : Int
     let v1 : Int
       int 1
     drop v0
     local v1 : Int
-fn std/gpu.dtype_name -> String impl_of=2171/I16
+fn std/gpu.dtype_name -> String impl_of=100398589141678/I16
   param v0 : I16 owned
   block : String
     let v1 : String
       str "i16"
     drop v0
     local v1 : String
-fn std/gpu.dtype_bytes -> Int impl_of=2171/I16
+fn std/gpu.dtype_bytes -> Int impl_of=100398589141678/I16
   param v0 : I16 owned
   block : Int
     let v1 : Int
       int 2
     drop v0
     local v1 : Int
-fn std/gpu.dtype_name -> String impl_of=2171/I64
+fn std/gpu.dtype_name -> String impl_of=100398589141678/I64
   param v0 : I64 owned
   block : String
     let v1 : String
       str "i64"
     drop v0
     local v1 : String
-fn std/gpu.dtype_bytes -> Int impl_of=2171/I64
+fn std/gpu.dtype_bytes -> Int impl_of=100398589141678/I64
   param v0 : I64 owned
   block : Int
     let v1 : Int
       int 8
     drop v0
     local v1 : Int
-fn std/gpu.dtype_name -> String impl_of=2171/TF32
+fn std/gpu.dtype_name -> String impl_of=100398589141678/TF32
   param v0 : TF32 owned
   block : String
     let v1 : String
       str "tf32"
     drop v0
     local v1 : String
-fn std/gpu.dtype_bytes -> Int impl_of=2171/TF32
+fn std/gpu.dtype_bytes -> Int impl_of=100398589141678/TF32
   param v0 : TF32 owned
   block : Int
     let v1 : Int
       int 4
     drop v0
     local v1 : Int
-fn std/gpu.dtype_name -> String impl_of=2171/F8E4M3FN
+fn std/gpu.dtype_name -> String impl_of=100398589141678/F8E4M3FN
   param v0 : F8E4M3FN owned
   block : String
     let v1 : String
       str "f8E4M3FN"
     drop v0
     local v1 : String
-fn std/gpu.dtype_bytes -> Int impl_of=2171/F8E4M3FN
+fn std/gpu.dtype_bytes -> Int impl_of=100398589141678/F8E4M3FN
   param v0 : F8E4M3FN owned
   block : Int
     let v1 : Int
       int 1
     drop v0
     local v1 : Int
-fn std/gpu.dtype_name -> String impl_of=2171/F8E5M2
+fn std/gpu.dtype_name -> String impl_of=100398589141678/F8E5M2
   param v0 : F8E5M2 owned
   block : String
     let v1 : String
       str "f8E5M2"
     drop v0
     local v1 : String
-fn std/gpu.dtype_bytes -> Int impl_of=2171/F8E5M2
+fn std/gpu.dtype_bytes -> Int impl_of=100398589141678/F8E5M2
   param v0 : F8E5M2 owned
   block : Int
     let v1 : Int
       int 1
     drop v0
     local v1 : Int
-fn std/gpu.dtype_name -> String impl_of=2171/F8E8M0FNU
+fn std/gpu.dtype_name -> String impl_of=100398589141678/F8E8M0FNU
   param v0 : F8E8M0FNU owned
   block : String
     let v1 : String
       str "f8E8M0FNU"
     drop v0
     local v1 : String
-fn std/gpu.dtype_bytes -> Int impl_of=2171/F8E8M0FNU
+fn std/gpu.dtype_bytes -> Int impl_of=100398589141678/F8E8M0FNU
   param v0 : F8E8M0FNU owned
   block : Int
     let v1 : Int
       int 1
     drop v0
     local v1 : Int
-fn std/gpu.dtype_name -> String impl_of=2171/I4
+fn std/gpu.dtype_name -> String impl_of=100398589141678/I4
   param v0 : I4 owned
   block : String
     let v1 : String
       str "i4"
     drop v0
     local v1 : String
-fn std/gpu.dtype_bytes -> Int impl_of=2171/I4
+fn std/gpu.dtype_bytes -> Int impl_of=100398589141678/I4
   param v0 : I4 owned
   block : Int
     let v1 : Int
       int 1
     drop v0
     local v1 : Int
-fn std/gpu.dtype_name -> String impl_of=2171/F4E2M1FN
+fn std/gpu.dtype_name -> String impl_of=100398589141678/F4E2M1FN
   param v0 : F4E2M1FN owned
   block : String
     let v1 : String
       str "f4E2M1FN"
     drop v0
     local v1 : String
-fn std/gpu.dtype_bytes -> Int impl_of=2171/F4E2M1FN
+fn std/gpu.dtype_bytes -> Int impl_of=100398589141678/F4E2M1FN
   param v0 : F4E2M1FN owned
   block : Int
     let v1 : Int
@@ -33028,12 +33028,12 @@ fn std/gpu.lambda$304 -> T
       call dynamic : T
         local v0 : fn() -> T !Gpu
         ctor ev$Pack/ev$Pack : ev$Pack
-          int 6507
+          int 132596728265172
           box from=ev$Gpu
             unbox to=ev$Gpu
               intrinsic ev_get : ev
                 local v1 : ev
-                int 6507
+                int 132596728265172
           box from=Unit
             unit
     drop v0
@@ -34638,12 +34638,12 @@ fn std/gpu.lambda$314 -> T
       call dynamic : T
         local v0 : fn() -> T !(Gpu|io)
         ctor ev$Pack/ev$Pack : ev$Pack
-          int 6507
+          int 132596728265172
           box from=ev$Gpu
             unbox to=ev$Gpu
               intrinsic ev_get : ev
                 local v1 : ev
-                int 6507
+                int 132596728265172
           box from=Unit
             unit
     drop v0
@@ -34651,16 +34651,16 @@ fn std/gpu.lambda$314 -> T
     discard
       intrinsic gpu_close_host : Unit
     local v2 : T
-fn std/gpu.bridge$2171$Adt2152$dtype_name -> String
+fn std/gpu.bridge$100398589141678$Adt24267576839709$dtype_name -> String
   param v0 : D owned
   dict v1 : <dict> owned
-  call impl std/gpu trait=2171 subject=F64 dtype_name : String
+  call impl std/gpu trait=100398589141678 subject=F64 dtype_name : String
     unbox to=F64
       local v0 : D
-fn std/gpu.bridge$2171$Adt2152$dtype_bytes -> Int
+fn std/gpu.bridge$100398589141678$Adt24267576839709$dtype_bytes -> Int
   param v0 : D owned
   dict v1 : <dict> owned
-  call impl std/gpu trait=2171 subject=F64 dtype_bytes : Int
+  call impl std/gpu trait=100398589141678 subject=F64 dtype_bytes : Int
     unbox to=F64
       local v0 : D
 fn std/gpu.lambda$315 -> Float
@@ -34706,16 +34706,16 @@ fn std/gpu.lambda$315 -> Float
                 local v2 : Int
                 int 4
             local v3 : Int
-fn std/gpu.bridge$2171$Adt2153$dtype_name -> String
+fn std/gpu.bridge$100398589141678$Adt2314666007681$dtype_name -> String
   param v0 : D owned
   dict v1 : <dict> owned
-  call impl std/gpu trait=2171 subject=F32 dtype_name : String
+  call impl std/gpu trait=100398589141678 subject=F32 dtype_name : String
     unbox to=F32
       local v0 : D
-fn std/gpu.bridge$2171$Adt2153$dtype_bytes -> Int
+fn std/gpu.bridge$100398589141678$Adt2314666007681$dtype_bytes -> Int
   param v0 : D owned
   dict v1 : <dict> owned
-  call impl std/gpu trait=2171 subject=F32 dtype_bytes : Int
+  call impl std/gpu trait=100398589141678 subject=F32 dtype_bytes : Int
     unbox to=F32
       local v0 : D
 fn std/gpu.lambda$316 -> Float
@@ -34725,8 +34725,8 @@ fn std/gpu.lambda$316 -> Float
   ev v3 : ev owned
   block : Float
     let v4 : Float
-      call impl std/narrow trait=324 subject=BF16 to_f64 : Float
-        call impl std/narrow trait=324 subject=BF16 add : BF16
+      call impl std/narrow trait=6990402973281 subject=BF16 to_f64 : Float
+        call impl std/narrow trait=6990402973281 subject=BF16 add : BF16
           call direct std/narrow.bf16 : BF16
             block : Float
               let v5 : E
@@ -34753,16 +34753,16 @@ fn std/gpu.lambda$316 -> Float
     drop v1
     drop v3
     local v4 : Float
-fn std/gpu.bridge$2171$Adt2154$dtype_name -> String
+fn std/gpu.bridge$100398589141678$Adt135610686735435$dtype_name -> String
   param v0 : D owned
   dict v1 : <dict> owned
-  call impl std/gpu trait=2171 subject=BF16 dtype_name : String
+  call impl std/gpu trait=100398589141678 subject=BF16 dtype_name : String
     unbox to=BF16
       local v0 : D
-fn std/gpu.bridge$2171$Adt2154$dtype_bytes -> Int
+fn std/gpu.bridge$100398589141678$Adt135610686735435$dtype_bytes -> Int
   param v0 : D owned
   dict v1 : <dict> owned
-  call impl std/gpu trait=2171 subject=BF16 dtype_bytes : Int
+  call impl std/gpu trait=100398589141678 subject=BF16 dtype_bytes : Int
     unbox to=BF16
       local v0 : D
 fn std/gpu.lambda$317 -> List[Float]
@@ -34837,16 +34837,16 @@ fn std/gpu.lambda$321 -> List[(Int, List[Float])]
     drop v1
     drop v2
     local v3 : List[(Int, List[Float])]
-fn std/gpu.bridge$2171$Adt2156$dtype_name -> String
+fn std/gpu.bridge$100398589141678$Adt25023023279458$dtype_name -> String
   param v0 : D owned
   dict v1 : <dict> owned
-  call impl std/gpu trait=2171 subject=F16 dtype_name : String
+  call impl std/gpu trait=100398589141678 subject=F16 dtype_name : String
     unbox to=F16
       local v0 : D
-fn std/gpu.bridge$2171$Adt2156$dtype_bytes -> Int
+fn std/gpu.bridge$100398589141678$Adt25023023279458$dtype_bytes -> Int
   param v0 : D owned
   dict v1 : <dict> owned
-  call impl std/gpu trait=2171 subject=F16 dtype_bytes : Int
+  call impl std/gpu trait=100398589141678 subject=F16 dtype_bytes : Int
     unbox to=F16
       local v0 : D
 fn std/gpu.lambda$322 -> List[Float]
@@ -34958,7 +34958,7 @@ fn std/gpu.lambda$328 -> List[Float]
         unbox to=ev$Gpu
           intrinsic ev_get : ev
             local v4 : ev
-            int 6507
+            int 132596728265172
     drop v3
     drop v4
     let v6 : List[Float]

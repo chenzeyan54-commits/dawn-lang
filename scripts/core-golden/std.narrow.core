@@ -1795,10 +1795,10 @@ fn std/narrow.f8e8m0_of_bits -> Float
           binary sub : Int
             local v1 : Int
             int 127
-fn std/narrow.to_f64 -> Float impl_of=324/BF16
+fn std/narrow.to_f64 -> Float impl_of=6990402973281/BF16
   param v0 : BF16 owned
   local v0 : BF16
-fn std/narrow.add -> BF16 impl_of=324/BF16
+fn std/narrow.add -> BF16 impl_of=6990402973281/BF16
   param v0 : BF16 owned
   param v1 : BF16 owned
   block : Float
@@ -1810,7 +1810,7 @@ fn std/narrow.add -> BF16 impl_of=324/BF16
       binary add : Float
         local v2 : Float
         local v3 : Float
-fn std/narrow.sub -> BF16 impl_of=324/BF16
+fn std/narrow.sub -> BF16 impl_of=6990402973281/BF16
   param v0 : BF16 owned
   param v1 : BF16 owned
   block : Float
@@ -1822,7 +1822,7 @@ fn std/narrow.sub -> BF16 impl_of=324/BF16
       binary sub : Float
         local v2 : Float
         local v3 : Float
-fn std/narrow.mul -> BF16 impl_of=324/BF16
+fn std/narrow.mul -> BF16 impl_of=6990402973281/BF16
   param v0 : BF16 owned
   param v1 : BF16 owned
   block : Float
@@ -1834,7 +1834,7 @@ fn std/narrow.mul -> BF16 impl_of=324/BF16
       binary mul : Float
         local v2 : Float
         local v3 : Float
-fn std/narrow.div -> BF16 impl_of=324/BF16
+fn std/narrow.div -> BF16 impl_of=6990402973281/BF16
   param v0 : BF16 owned
   param v1 : BF16 owned
   block : Float
@@ -1846,7 +1846,7 @@ fn std/narrow.div -> BF16 impl_of=324/BF16
       binary div : Float
         local v2 : Float
         local v3 : Float
-fn std/narrow.sqrt -> BF16 impl_of=324/BF16
+fn std/narrow.sqrt -> BF16 impl_of=6990402973281/BF16
   param v0 : BF16 owned
   block : Float
     let v1 : Float
@@ -1854,24 +1854,24 @@ fn std/narrow.sqrt -> BF16 impl_of=324/BF16
     call direct std/narrow.sqrt_binary : Float
       local v1 : Float
       int 8
-fn std/narrow.neg -> BF16 impl_of=324/BF16
+fn std/narrow.neg -> BF16 impl_of=6990402973281/BF16
   param v0 : BF16 owned
   block : Float
     let v1 : Float
       local v0 : BF16
     unary neg : Float
       local v1 : Float
-fn std/narrow.abs -> BF16 impl_of=324/BF16
+fn std/narrow.abs -> BF16 impl_of=6990402973281/BF16
   param v0 : BF16 owned
   block : Float
     let v1 : Float
       local v0 : BF16
     call direct std/narrow.magnitude : Float
       local v1 : Float
-fn std/narrow.to_f64 -> Float impl_of=324/FP16
+fn std/narrow.to_f64 -> Float impl_of=6990402973281/FP16
   param v0 : FP16 owned
   local v0 : FP16
-fn std/narrow.add -> FP16 impl_of=324/FP16
+fn std/narrow.add -> FP16 impl_of=6990402973281/FP16
   param v0 : FP16 owned
   param v1 : FP16 owned
   block : Float
@@ -1883,7 +1883,7 @@ fn std/narrow.add -> FP16 impl_of=324/FP16
       binary add : Float
         local v2 : Float
         local v3 : Float
-fn std/narrow.sub -> FP16 impl_of=324/FP16
+fn std/narrow.sub -> FP16 impl_of=6990402973281/FP16
   param v0 : FP16 owned
   param v1 : FP16 owned
   block : Float
@@ -1895,7 +1895,7 @@ fn std/narrow.sub -> FP16 impl_of=324/FP16
       binary sub : Float
         local v2 : Float
         local v3 : Float
-fn std/narrow.mul -> FP16 impl_of=324/FP16
+fn std/narrow.mul -> FP16 impl_of=6990402973281/FP16
   param v0 : FP16 owned
   param v1 : FP16 owned
   block : Float
@@ -1907,7 +1907,7 @@ fn std/narrow.mul -> FP16 impl_of=324/FP16
       binary mul : Float
         local v2 : Float
         local v3 : Float
-fn std/narrow.div -> FP16 impl_of=324/FP16
+fn std/narrow.div -> FP16 impl_of=6990402973281/FP16
   param v0 : FP16 owned
   param v1 : FP16 owned
   block : Float
@@ -1919,7 +1919,7 @@ fn std/narrow.div -> FP16 impl_of=324/FP16
       binary div : Float
         local v2 : Float
         local v3 : Float
-fn std/narrow.sqrt -> FP16 impl_of=324/FP16
+fn std/narrow.sqrt -> FP16 impl_of=6990402973281/FP16
   param v0 : FP16 owned
   block : Float
     let v1 : Float
@@ -1927,24 +1927,24 @@ fn std/narrow.sqrt -> FP16 impl_of=324/FP16
     call direct std/narrow.sqrt_binary : Float
       local v1 : Float
       int 11
-fn std/narrow.neg -> FP16 impl_of=324/FP16
+fn std/narrow.neg -> FP16 impl_of=6990402973281/FP16
   param v0 : FP16 owned
   block : Float
     let v1 : Float
       local v0 : FP16
     unary neg : Float
       local v1 : Float
-fn std/narrow.abs -> FP16 impl_of=324/FP16
+fn std/narrow.abs -> FP16 impl_of=6990402973281/FP16
   param v0 : FP16 owned
   block : Float
     let v1 : Float
       local v0 : FP16
     call direct std/narrow.magnitude : Float
       local v1 : Float
-fn std/narrow.to_f64 -> Float impl_of=324/F32
+fn std/narrow.to_f64 -> Float impl_of=6990402973281/F32
   param v0 : F32 owned
   local v0 : F32
-fn std/narrow.add -> F32 impl_of=324/F32
+fn std/narrow.add -> F32 impl_of=6990402973281/F32
   param v0 : F32 owned
   param v1 : F32 owned
   block : Float
@@ -1956,7 +1956,7 @@ fn std/narrow.add -> F32 impl_of=324/F32
       binary add : Float
         local v2 : Float
         local v3 : Float
-fn std/narrow.sub -> F32 impl_of=324/F32
+fn std/narrow.sub -> F32 impl_of=6990402973281/F32
   param v0 : F32 owned
   param v1 : F32 owned
   block : Float
@@ -1968,7 +1968,7 @@ fn std/narrow.sub -> F32 impl_of=324/F32
       binary sub : Float
         local v2 : Float
         local v3 : Float
-fn std/narrow.mul -> F32 impl_of=324/F32
+fn std/narrow.mul -> F32 impl_of=6990402973281/F32
   param v0 : F32 owned
   param v1 : F32 owned
   block : Float
@@ -1980,7 +1980,7 @@ fn std/narrow.mul -> F32 impl_of=324/F32
       binary mul : Float
         local v2 : Float
         local v3 : Float
-fn std/narrow.div -> F32 impl_of=324/F32
+fn std/narrow.div -> F32 impl_of=6990402973281/F32
   param v0 : F32 owned
   param v1 : F32 owned
   block : Float
@@ -1992,7 +1992,7 @@ fn std/narrow.div -> F32 impl_of=324/F32
       binary div : Float
         local v2 : Float
         local v3 : Float
-fn std/narrow.sqrt -> F32 impl_of=324/F32
+fn std/narrow.sqrt -> F32 impl_of=6990402973281/F32
   param v0 : F32 owned
   block : Float
     let v1 : Float
@@ -2000,14 +2000,14 @@ fn std/narrow.sqrt -> F32 impl_of=324/F32
     call direct std/narrow.sqrt_binary : Float
       local v1 : Float
       int 24
-fn std/narrow.neg -> F32 impl_of=324/F32
+fn std/narrow.neg -> F32 impl_of=6990402973281/F32
   param v0 : F32 owned
   block : Float
     let v1 : Float
       local v0 : F32
     unary neg : Float
       local v1 : Float
-fn std/narrow.abs -> F32 impl_of=324/F32
+fn std/narrow.abs -> F32 impl_of=6990402973281/F32
   param v0 : F32 owned
   block : Float
     let v1 : Float
