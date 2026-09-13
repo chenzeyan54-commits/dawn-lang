@@ -158,8 +158,8 @@ type Acc = { checked: Int, reused: Int, shape: Int, reval: Int, proj: Int, asm: 
 
 type Prior = { syntax: FnDecl, signature: Sig, product: Product, declaration: Int,
   binders: List[String], symbols: Map[Int, Sym] }
-type Prepared = { scope: ModuleKey, entries: Map[DeclKey, Prior], allowed: Map[DeclKey, Int],
-  reserver: allocation.Reserver,
+type Prepared = { scope: ModuleKey, entries: Map[DeclKey, Prior],
+  candidates: Map[Int, (DeclKey, Int)], headers: relocate.Ids,
   old_tokens: source_projection.Tokens, tokens: source_projection.Tokens }
 
 fn primitive(t: Ty) -> Bool = match t {
@@ -270,19 +270,18 @@ type Shaped = { prior: FnDecl, product: Product, symbols: Map[Int, Sym], ids: re
 
 fn shape_ok(p: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[Shaped] = {
   if cx.diags != [] { return None }
-  let bound = parameters(d, sig)?
-  let key = DeclKey { scope: p.scope, path: [Named(FunctionDecl, d.name)] }
-  let declaration = map.get(p.allowed, key)?
+  let _ = parameters(d, sig)?
+  let (key, declaration) = map.get(p.candidates, d.lo)?
   let saved = map.get(p.entries, key)?
   let prior = saved.syntax
   let prior_sig = saved.signature
   if prior_sig.param_names != sig.param_names { return None }
-  if not scalar_shape.same(prior.body, d.body, bound) { return None }
   for name in saved.binders {
     if map.has(cx.module_aliases, name) { return None }
   }
-  let ids = allocation.reserved_plan(p.reserver, key, saved.product.allocation_start,
-    saved.product.allocation_count, cx.next_id, prior_sig, sig, [])?
+  let no_evidence: List[Int] = []
+  let ids = allocation.body_relocation(p.headers, saved.product.allocation_start,
+    saved.product.allocation_count, cx.next_id, prior_sig, sig, no_evidence)?
   Some(Shaped { prior: prior, product: saved.product, symbols: saved.symbols, ids: ids,
     prior_declaration: saved.declaration, declaration_new: declaration })
 }
@@ -298,22 +297,17 @@ fn timed_function(p: Prepared, acc: Acc, cx: Cx, d: FnDecl, sig: Sig,
     Some(saved) -> {
       let prior = saved.prior
       let t2 = System.nanoTime()
-      let positions = source_projection.pair(p.old_tokens, p.tokens,
-        saved.prior_declaration, saved.declaration_new, prior.lo, prior.hi, d.lo, d.hi)
-      let relocated = match positions {
-        None -> None
-        Some(pos) -> {
-          let view = View { ids: saved.ids,
-            owner_start: prior.lo,
-            next_owner_start: d.lo,
-            positions: (at) => source_projection.start_at(pos, at),
-            ends: (at) => source_projection.end_at(pos, at),
-            symbols: saved.symbols,
-            assertion: (text, lo, hi) => source_projection.assertion_at(pos, text, lo, hi),
-            callee: (owner, name, builtin, trait_id) => None }
-          Some(view)
-        }
-      }
+      # Both revisions lexed their own declarations once; pairing them is two
+      # list comparisons, and admission then requires the declaration's own
+      # bytes, because a saved body's spans are offsets into that text.
+      let paired = source_projection.pair(p.old_tokens, p.tokens,
+        saved.prior_declaration, saved.declaration_new, prior.lo, prior.hi, d.lo, d.hi) &&
+        source_projection.same_text(p.old_tokens, p.tokens, prior.lo, prior.hi, d.lo, d.hi)
+      let absent: Option[View] = None
+      let relocated = if paired {
+        Some(View { ids: saved.ids, symbols: saved.symbols,
+          callee: (owner, name, builtin, trait_id) => None })
+      } else { absent }
       let t3 = System.nanoTime()
       a = Acc { ..a, proj: a.proj + (t3 - t2) }
       match relocated {
@@ -378,20 +372,25 @@ fn instrumented_replay(scope: ModuleKey, old_headers: allocation.Table,
   if not ok { panic("instrumented replay: source snapshots did not match") }
   let a0 = System.nanoTime()
   let next_table = table(scope, next)
-  let reserver = match next_table {
-    Some(b) -> allocation.reserver(old_headers, b)
+  let headers = match next_table {
+    Some(b) -> allocation.between(old_headers, b)
     None -> None
   }
   let a1 = System.nanoTime()
-  let prepared_reserver = match reserver { Some(v) -> v, None -> panic("instrumented replay: no allocation plan") }
+  let prepared_headers = match headers { Some(v) -> v, None -> panic("instrumented replay: no allocation plan") }
   let q0 = System.nanoTime()
-  var allowed: Map[DeclKey, Int] = map.empty()
-  for entry in identity.declarations(scope, next.syntax) {
-    allowed = map.insert(allowed, entry.key, entry.declaration)
+  var candidates: Map[Int, (DeclKey, Int)] = map.empty()
+  for located in identity.located(scope, next.syntax) {
+    match next.syntax.decls[located.entry.declaration] {
+      DFn(_) -> if located.entry.member == None {
+        candidates = map.insert(candidates, located.span.lo, (located.entry.key, located.entry.declaration))
+      }
+      _ -> ()
+    }
   }
   let q1 = System.nanoTime()
-  let prepared = Prepared { scope: scope, entries: entries, allowed: allowed,
-    reserver: prepared_reserver,
+  let prepared = Prepared { scope: scope, entries: entries, candidates: candidates,
+    headers: prepared_headers,
     old_tokens: source_snapshot.tokens(old_source), tokens: source_snapshot.tokens(source) }
   let cold: BodyExecutor[Acc] = checker.cold_body_executor()
   let executor: BodyExecutor[Acc] = BodyExecutor {
@@ -540,9 +539,10 @@ fn run_parse(kind: String, n: Int, rounds: Int) -> Unit !io = {
     let same = ds == [] && syntax == headers.syntax
     let t3 = System.nanoTime()
     if not same { panic("reparse did not match the header syntax") }
-    if match source_projection.between_indexed(indexed, indexed, 0, 0, 0, 0) {
-      Some(_) -> false, None -> true
-    } { panic("index did not bind to its own snapshot") }
+    let no_spans: List[(Int, Int, Int)] = []
+    if source_projection.tokens_of(indexed, no_spans) == None {
+      panic("index did not bind to its own snapshot")
+    }
     let t4 = System.nanoTime()
     let whole = snapshot_of(text)
     let t5 = System.nanoTime()
