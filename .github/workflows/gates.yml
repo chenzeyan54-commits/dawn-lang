@@ -2624,6 +2624,11 @@ jobs:
     # / 242 / 213s; unsharded that is 716 - 2 * 36 = 644s, the two setups
     # being what the split was buying. run.sh defaults to 1/1, so the flag
     # goes rather than becoming `--shard 1/1`.
+    # 2026-09-14: the harness self-test joined this job. It builds nothing --
+    # a copy of selfhost and a stub compiler -- and measured 0.07s three times
+    # in a row locally, which is under the rounding of every observation the
+    # 644s is made of. It is counted in the claim below and the number is
+    # unchanged.
     # budget: 3x 644s planning value (three merged shards' worst observations)
     timeout-minutes: 33
     steps:
@@ -2631,6 +2636,16 @@ jobs:
       - uses: ./.github/actions/dawn-toolchain
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+      # The negative control over the harness below, which is a mutant runner
+      # and so fails in the one direction its own PASS lines cannot show: a
+      # mutation whose anchor has drifted out of the tree builds an unmutated
+      # compiler, and an unmutated compiler passes every assertion. This feeds
+      # it a drifted anchor and requires it to stop, with mutate.py's words and
+      # before any build. No compiler of its own, so it runs first and costs
+      # nothing.
+      - name: the surface harness refuses a drifted mutation
+        run: ./scripts/export-surface-contract/run.sh --self-test
+
       - name: public API surface contract
         run: ./scripts/export-surface-contract/run.sh
 
