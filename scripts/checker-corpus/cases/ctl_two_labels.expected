@@ -1,0 +1,1 @@
+D	ctl_two_labels.dawn	874	903	a function value whose row names the `ctl` effect `Abort` cannot cross to Java	`ctl` says an arm may suspend this value's caller, and there is no Dawn frame under a Java frame to suspend into; move the conversion out, or drop `ctl` from the effect if no arm of it binds a continuation

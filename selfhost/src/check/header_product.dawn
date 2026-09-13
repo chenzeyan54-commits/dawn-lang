@@ -5,6 +5,8 @@
 use std/map
 use std/list
 use check/cx.{Cx, AliasE, ModExports, Origin, TySpan, cx_new, write_alias}
+use check/identity
+use check/identity.{Minted, minted}
 use check/write_journal
 use check/types.{Adts, Traits, Impls, Effects, ImplI, Sig, Ty, Eff, TyInt}
 use front/token.{Diag}
@@ -13,6 +15,12 @@ pub type HeaderProduct = {
   allocation_start: Int,
   allocation_count: Int,
   diagnostics: List[Diag],
+  # The header passes are where nominal and trait ids are minted, so the
+  # intern table behind them is something a header boundary writes. It is
+  # carried whole rather than as a delta because it is not an allocation: a
+  # candidate revision derives the same ids from the same declarations, which
+  # is why `relocate_header.state` has nothing to do to it.
+  identities: Map[Int, Minted],
   adts: Adts,
   traits: Traits,
   fns: Map[String, Sig],
@@ -62,6 +70,7 @@ pub fn capture(before: Cx, after: Cx) -> Option[HeaderProduct] = {
   Some(HeaderProduct {
     allocation_start: before.next_id, allocation_count: after.next_id - before.next_id,
     diagnostics: list.drop(after.diags, len(before.diags)),
+    identities: after.identities,
     adts: after.adts, traits: after.traits, fns: after.fns, fn_origin: after.fn_origin,
     adts_by_name: after.adts_by_name, aliases: after.aliases, alias_resolved: after.alias_resolved,
     alias_resolving: after.alias_resolving, ctors_by_name: after.ctors_by_name,
@@ -85,6 +94,7 @@ pub fn assemble(current: Cx, product: HeaderProduct) -> Option[Cx] = {
   if limit < current.next_id { return None }
   Some(Cx { ..current,
     next_id: limit, diags: current.diags ++ product.diagnostics,
+    identities: product.identities,
     adts: product.adts, traits: product.traits, fns: product.fns, fn_origin: product.fn_origin,
     adts_by_name: product.adts_by_name, aliases: product.aliases, alias_resolved: product.alias_resolved,
     alias_resolving: product.alias_resolving, ctors_by_name: product.ctors_by_name,
@@ -105,12 +115,17 @@ test "header product captures scope resets and appends diagnostics" {
   let next = Diag { msg: "header", lo: 3, hi: 4, hint: "", owner: None }
   let before = Cx { ..cx_new(Some("decl"), Some("decl.dawn")), diags: [first],
     ty_spans: map.from([((1, 2), TySpan { lo: 1, hi: 2, kids: [] })]), record_ty_spans: true }
+  let cell = minted("decl", identity.TypeDecl, "Cell")
   let after = Cx { ..before, next_id: before.next_id + 3, diags: [first, next],
+    identities: map.from([(identity.derive(cell), cell)]),
     consts: map.from([("SECOND", TyInt), ("FIRST", TyInt)]), const_order: ["SECOND", "FIRST"],
     current_tparams: map.from([("T", TyInt)]), ty_spans: map.empty(), record_ty_spans: false }
   let product = capture(before, after).expect("header product")
   let restored = assemble(before, product).expect("header assembly")
   assert restored.next_id == after.next_id && restored.diags == [first, next]
+  # the header passes are where nominal and trait ids are minted, so the
+  # intern table is something this boundary captures and installs
+  assert restored.identities == after.identities && map.len(restored.identities) == 1
   assert map.keys(restored.consts) == ["SECOND", "FIRST"] && restored.const_order == after.const_order
   assert restored.current_tparams == after.current_tparams && map.len(restored.ty_spans) == 0 && not restored.record_ty_spans
   let prefix = Cx { ..before, diags: [] }

@@ -8,7 +8,8 @@ use check/relocate
 use check/relocate.{Ids}
 use check/types.{Sig, Sym, EV_PACK_ID, evidence_role_key, EvidenceRole,
   LabelSlot, VariableSlot, AssociatedSlot, Eff, EPure, ELabeled, EffVar, EffAssoc,
-  eff_union, eff_labels, eff_vars, eff_assocs, ev_pack_ty, erased_ev_ty, TyInt, TyUnit }
+  eff_union, eff_labels, eff_vars, eff_assocs, ev_pack_ty, erased_ev_ty, key_is_label,
+  key_effect_id, TyInt, TyUnit, TyVar }
 use check/tast.{
   TExpr, TStmt, TPat, TFun, TDefault, TJavaCall, TStrPart, TArm, TListElem, TListIfArm, TModule, TConst,
   WitRef, TSPText, TSPInterp, TLEExpr, TLESpread, TLEIf,
@@ -159,12 +160,6 @@ fn opt_local(v: View, x: Option[Int]) -> Option[Option[Int]] =
     Some(id) -> Some(Some(relocate.local_id(v.ids, id)?))
   }
 
-fn opt_trait(v: View, x: Option[Int]) -> Option[Option[Int]] =
-  match x {
-    None -> Some(None)
-    Some(id) -> Some(Some(relocate.trait_id(v.ids, id)?))
-  }
-
 fn witnesses(v: View, xs: List[WitRef]) -> Option[List[WitRef]] = {
   var out: List[WitRef] = []
   for x in xs { out = out ++ [relocate.witness(v.ids, x)?] }
@@ -216,7 +211,7 @@ pub fn pattern(v: View, p: TPat) -> Option[TPat] =
         }
         moved = moved ++ [next]
       }
-      Some(TPCtor(relocate.nominal(v.ids, adt)?, slot, moved))
+      Some(TPCtor(adt, slot, moved))
     }
   }
 
@@ -254,7 +249,8 @@ fn pack_parts(v: View, x: TExpr) -> Option[List[PackPart]] =
       let key = match args[0] { XInt(k, _, _) -> k
         _ -> { return None }
       }
-      let label = relocate.evidence_label(v.ids, key)?
+      if not key_is_label(key) { return None }
+      let label = key_effect_id(key)
       let rest = pack_parts(v, args[2])?
       Some(rest ++ [PackPart { role: relocate.evidence_slot(v.ids, LabelSlot(label))?, value: expression(v, args[1])? }])
     }
@@ -303,7 +299,6 @@ fn ordered_parts(parts: List[PackPart]) -> Option[List[PackPart]] = {
 }
 
 fn evidence_pack(v: View, x: TExpr, lo: Int, hi: Int) -> Option[TExpr] = {
-  if relocate.nominal(v.ids, EV_PACK_ID)? != EV_PACK_ID { return None }
   let parts = ordered_parts(pack_parts(v, x)?)?
   let nlo = lo
   let nhi = hi
@@ -368,7 +363,7 @@ pub fn expression(v: View, x: TExpr) -> Option[TExpr] =
     XCallFn(owner, name, args, ws, evs, tr, lo, hi, ty) -> {
       let sig = v.callee(owner, name, false, tr)?
       Some(XCallFn(owner, name, expressions(v, args)?, witnesses(v, ws)?, evidence(v, sig, evs)?,
-        opt_trait(v, tr)?, lo, hi, relocate.ty(v.ids, ty)?))
+        tr, lo, hi, relocate.ty(v.ids, ty)?))
     }
     XCallBuiltin(name, args, ws, evs, lo, hi, ty) -> {
       if name == "ev_append" { return evidence_pack(v, x, lo, hi) }
@@ -398,13 +393,13 @@ pub fn expression(v: View, x: TExpr) -> Option[TExpr] =
         lo, hi, relocate.ty(v.ids, ty)?))
     XCtor(adt, slot, written, slots, spread, lo, hi, ty) -> {
       if adt == EV_PACK_ID { return evidence_pack(v, x, lo, hi) }
-      Some(XCtor(relocate.nominal(v.ids, adt)?, slot, expressions(v, written)?, slots, opt_expr(v, spread)?,
+      Some(XCtor(adt, slot, expressions(v, written)?, slots, opt_expr(v, spread)?,
         lo, hi, relocate.ty(v.ids, ty)?))
     }
     XConstRef(owner, name, lo, hi, ty) ->
       Some(XConstRef(owner, name, lo, hi, relocate.ty(v.ids, ty)?))
     XCtorValue(adt, slot, lo, hi, ty) ->
-      Some(XCtorValue(relocate.nominal(v.ids, adt)?, slot, lo, hi, relocate.ty(v.ids, ty)?))
+      Some(XCtorValue(adt, slot, lo, hi, relocate.ty(v.ids, ty)?))
     XField(target, slot, lo, hi, ty) ->
       Some(XField(expression(v, target)?, slot, lo, hi, relocate.ty(v.ids, ty)?))
     XListLit(elems, lo, hi, ty) -> {
@@ -484,11 +479,11 @@ pub fn function(v: View, f: TFun) -> Option[TFun] = {
   for i in order { evs = evs ++ [relocate.local_id(v.ids, f.ev_syms[i])?] }
   let impl_ref = match f.impl_of {
     None -> None
-    Some((tr, ty)) -> Some((relocate.trait_id(v.ids, tr)?, relocate.ty(v.ids, ty)?))
+    Some((tr, ty)) -> Some((tr, relocate.ty(v.ids, ty)?))
   }
   Some(TFun { ..f, sig: relocate.signature(v.ids, f.sig)?, param_syms: local_ids(v, f.param_syms)?,
     dict_syms: local_ids(v, f.dict_syms)?, defaults: defaults, ev_syms: evs, body: expression(v, f.body)?,
-    impl_of: impl_ref, default_of: opt_trait(v, f.default_of)? })
+    impl_of: impl_ref, default_of: f.default_of })
 }
 
 pub fn constant(v: View, c: TConst) -> Option[TConst] = {
@@ -608,8 +603,7 @@ test "the callee index answers exactly what the linear scan answers" {
 fn fixture_view() -> View = {
   let empty: Map[Int, Int] = map.empty()
   let swap = map.insert(map.insert(empty, 1, 20), 2, 10)
-  let headers = relocate.new(map.insert(swap, EV_PACK_ID, EV_PACK_ID), map.insert(empty, 3, 30),
-    map.insert(swap, 0, 0), swap).expect("valid fixture IDs")
+  let headers = relocate.new(map.insert(swap, 0, 0), swap).expect("valid fixture IDs")
   # The body allocated symbols 1 and 2 and the candidate revision mints 91 and
   # 92 for them, with the entry evidence pair swapped by the ABI order.
   let ids = relocate.body_interval(headers, 1, 2, 91, map.insert(map.insert(empty, 1, 91), 2, 92))
@@ -626,7 +620,8 @@ test "tree relocation separates literals from prompts and preserves field slots"
   let ctl = XCallBuiltin("ctl_run", [XInt(1, 10, 11)], [], [], 10, 11, TyUnit)
   assert expression(v, ctl) == Some(XCallBuiltin("ctl_run", [XInt(91, 10, 11)], [], [], 10, 11, TyUnit))
   let p = TPCtor(1, 1, [Some(TPBind(1, "x")), None])
-  assert pattern(v, p) == Some(TPCtor(20, 1, [Some(TPBind(91, "x")), None]))
+  # the constructor's ADT is a derived id and is the same integer here
+  assert pattern(v, p) == Some(TPCtor(1, 1, [Some(TPBind(91, "x")), None]))
   let local = XLocal(1, "x", 10, 11, TyInt)
   let binary = XBinary(BAdd, local, XInt(1, 10, 11), None, 10, 11, 10, 11, TyInt)
   assert expression(v, binary) == Some(XBinary(BAdd, XLocal(91, "x", 10, 11, TyInt),
@@ -644,12 +639,15 @@ test "tree relocation reconstructs ground packs and associated environment order
     [Some(0), Some(1), Some(2)], None, 10, 11, ev_pack_ty())
   let old = XCtor(EV_PACK_ID, 0, [XInt(6, 10, 11), XInt(102, 10, 11), inner],
     [Some(0), Some(1), Some(2)], None, 10, 11, ev_pack_ty())
+  # The two ground labels and the trait behind the associated key are derived
+  # ids, so the chain keeps its keys and its order; the two type variables
+  # swap, and the associated environment reorders around them.
   let next_env = XCallBuiltin("ev_append", [
-    XEvRead(92, AssociatedSlot(10, 30, "E"), 10, 11, erased_ev_ty()),
-    XEvRead(92, AssociatedSlot(20, 30, "E"), 10, 11, erased_ev_ty())], [], [], 10, 11, erased_ev_ty())
-  let next_inner = XCtor(EV_PACK_ID, 0, [XInt(30, 10, 11), XInt(102, 10, 11), next_env],
+    XEvRead(11, AssociatedSlot(10, 3, "E"), 10, 11, erased_ev_ty()),
+    XEvRead(11, AssociatedSlot(20, 3, "E"), 10, 11, erased_ev_ty())], [], [], 10, 11, erased_ev_ty())
+  let next_inner = XCtor(EV_PACK_ID, 0, [XInt(3, 10, 11), XInt(101, 10, 11), next_env],
     [Some(0), Some(1), Some(2)], None, 10, 11, ev_pack_ty())
-  let expected = XCtor(EV_PACK_ID, 0, [XInt(60, 10, 11), XInt(101, 10, 11), next_inner],
+  let expected = XCtor(EV_PACK_ID, 0, [XInt(6, 10, 11), XInt(102, 10, 11), next_inner],
     [Some(0), Some(1), Some(2)], None, 10, 11, ev_pack_ty())
   assert expression(v, old) == Some(expected)
   assert expression(v, XCallBuiltin("ev_append", [a, a], [], [], 10, 11, erased_ev_ty())) == None
@@ -665,16 +663,19 @@ test "tree relocation assembles defaults symbols and permuted call evidence" {
     defaults: [Some(TDefault { body: XInt(5, 10, 11), dict_syms: [1] })], ev_syms: [1, 2],
     body: body, is_test: false, impl_of: Some((3, TyInt)), default_of: Some(3) }
   let m = TModule { fns: [f], tests: [TFun { ..f, is_test: true }],
-    consts: [TConst { name: "C", ty: TyInt, init: XInt(6, 10, 11), lo: 10, hi: 11 }], syms: v.symbols }
+    consts: [TConst { name: "C", ty: TyVar("T", 1), init: XInt(6, 10, 11), lo: 10, hi: 11 }], syms: v.symbols }
   let moved = module(v, m).expect("complete typed module")
   assert moved.fns[0].ev_syms == [92, 91]
   assert moved.fns[0].dict_syms == [91]
-  assert moved.fns[0].impl_of == Some((30, TyInt))
-  assert moved.fns[0].default_of == Some(30)
+  assert moved.fns[0].impl_of == Some((3, TyInt))
+  assert moved.fns[0].default_of == Some(3)
   assert moved.fns[0].defaults == [Some(TDefault { body: XInt(5, 10, 11), dict_syms: [91] })]
   assert moved.fns[0].body == XCallFn(None, "f", [], [], [XInt(102, 10, 11), XInt(101, 10, 11)], None, 10, 11, TyUnit)
   assert moved.tests[0].is_test
   assert moved.consts[0].init == XInt(6, 10, 11)
+  # a constant's declared type is the one reference its product carries that
+  # is not in the tree, so it has to be relocated with the rest
+  assert moved.consts[0].ty == TyVar("T", 20)
   let s = map.get(moved.syms, 91).expect("relocated symbol")
   assert s.dlo == 10 && s.dhi == 11
   assert not map.has(moved.syms, 1)

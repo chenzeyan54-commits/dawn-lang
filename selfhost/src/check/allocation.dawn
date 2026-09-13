@@ -1,6 +1,12 @@
 # Checker integers are allocations, not identities. Join explicit declaration
 # provenance and binder slots across revisions before constructing the domain
 # maps consumed by relocation. An equal integer alone never grants a mapping.
+#
+# Nominal and trait ids left this ledger when they stopped being allocations:
+# they derive from the declaration (`check/identity.derive`), so a consumer
+# needs no table to know what a provider's id is, and two declarations cannot
+# quarrel over one number. What remains here is the binder domains, which are
+# still minted off `Cx.next_id`.
 use std/map
 use std/list
 use check/identity
@@ -17,7 +23,7 @@ use front/ast.{Module, DType, DImpl, module_impls}
 ## checker mints while checking one declaration, so they are relocated by
 ## `relocate.body_interval` rather than owned here; this table describes only
 ## what a declaration's header allocates.
-pub type Domain = NominalId | TraitId | TypeParameter | EffectParameter
+pub type Domain = TypeParameter | EffectParameter
 pub type Slot = HeaderSlot(index: Int)
 pub type Binding = { declaration: DeclKey, domain: Domain, slot: Slot }
 pub type Entry = { binding: Binding, id: Int }
@@ -81,22 +87,18 @@ pub fn in_world(origin: Table, from: String, world: String) -> Option[Table] = {
 pub fn between(old: Table, next: Table) -> Option[Ids] = {
   let a: Data = old
   let b: Data = next
-  var nominals: Map[Int, Int] = map.empty()
-  var traits: Map[Int, Int] = map.empty()
   var types: Map[Int, Int] = map.empty()
   var effects: Map[Int, Int] = map.empty()
   for (binding, id) in map.entries(a.bindings) {
     match map.get(b.bindings, binding) {
       None -> ()
       Some(target) -> match binding.domain {
-        NominalId -> { nominals = map.insert(nominals, id, target) }
-        TraitId -> { traits = map.insert(traits, id, target) }
         TypeParameter -> { types = map.insert(types, id, target) }
         EffectParameter -> { effects = map.insert(effects, id, target) }
       }
     }
   }
-  relocate.new(nominals, traits, types, effects)
+  relocate.new(types, effects)
 }
 
 ## These are declaration binders, never instantiations of a signature. Their
@@ -117,14 +119,14 @@ pub fn compiler_headers(world: String) -> Option[Table] = {
   var known: Map[Int, Bool] = map.empty()
   for (_, adt) in map.entries(builtin_types.prelude_adts()) {
     let key = compiler_key(world, TypeDecl, adt.name)
-    entries = entries ++ [entry(key, NominalId, 0, adt.id)] ++ binders(key, adt.tparams, adt.bound_eparams)?
+    entries = entries ++ binders(key, adt.tparams, adt.bound_eparams)?
     for t in adt.tparams {
       match t { TyVar(_, id) -> { known = map.insert(known, id, true) }, _ -> return None }
     }
   }
   for (_, tr) in map.entries(builtin_types.prelude_traits()) {
     let key = compiler_key(world, TraitDecl, tr.name)
-    entries = entries ++ [entry(key, TraitId, 0, tr.id)] ++ binders(key, [tr.tvar], [])?
+    entries = entries ++ binders(key, [tr.tvar], [])?
     match tr.tvar { TyVar(_, id) -> { known = map.insert(known, id, true) }, _ -> return None }
   }
   for info in builtin_types.prelude_impls() {
@@ -228,22 +230,6 @@ fn binders(owner: DeclKey, type_params: List[Ty], effect_params: List[Eff]) -> O
   Some(out)
 }
 
-## The declaration index excludes ambiguous local effects before their
-## checker IDs are read. Imported effects require their exporting provenance
-## and are not invented from this module's display spelling.
-pub fn local_effects(scope: ModuleKey, syntax: Module, effects: Map[String, Int]) -> Option[List[Entry]] = {
-  var out: List[Entry] = []
-  for declaration in identity.declarations(scope, syntax) {
-    match declaration.key.path {
-      [Named(EffectDecl, name)] -> {
-        out = out ++ [entry(declaration.key, NominalId, 0, map.get(effects, name)?)]
-      }
-      _ -> ()
-    }
-  }
-  Some(out)
-}
-
 ## Read completed local headers, not imported names or partially resolved
 ## shells. Opaque aliases own nominal IDs; transparent aliases only own their
 ## binders. Trait subjects belong to their trait, not separately to each method.
@@ -266,7 +252,6 @@ pub fn local_headers(scope: ModuleKey, syntax: Module, cx: Cx) -> Option[List[En
             let alias_info = map.get(cx.aliases, name)?
             if alias_info.owner != scope.emission_owner || alias_info.is_opaque != d.is_opaque { return None }
             if len(alias_info.tparams) != len(d.tparams) || len(alias_info.eparams) != len(d.eparams) { return None }
-            if alias_info.is_opaque { out = out ++ [entry(key, NominalId, 0, alias_info.id)] }
             out = out ++ binders(key, alias_info.tparams, alias_info.eparams)?
           }
           None -> {
@@ -274,7 +259,7 @@ pub fn local_headers(scope: ModuleKey, syntax: Module, cx: Cx) -> Option[List[En
             let adt = map.get(cx.adts, id)?
             if adt.owner != cx.owner_class || adt.name != name || adt.id != id { return None }
             if len(adt.tparams) != len(d.tparams) || len(adt.bound_eparams) != len(d.eparams) { return None }
-            out = out ++ [entry(key, NominalId, 0, id)] ++ binders(key, adt.tparams, adt.bound_eparams)?
+            out = out ++ binders(key, adt.tparams, adt.bound_eparams)?
           }
         }
       }
@@ -282,7 +267,7 @@ pub fn local_headers(scope: ModuleKey, syntax: Module, cx: Cx) -> Option[List[En
         let id = map.get(cx.traits_by_name, name)?
         let tr = map.get(cx.traits, id)?
         if tr.owner != cx.owner_class || tr.name != name || tr.id != id { return None }
-        out = out ++ [entry(key, TraitId, 0, id)] ++ binders(key, [tr.tvar], [])?
+        out = out ++ binders(key, [tr.tvar], [])?
       }
       [Named(TraitDecl, name), Named(MethodDecl, method)] -> {
         let tr = map.get(cx.traits, map.get(cx.traits_by_name, name)?)?
@@ -304,7 +289,6 @@ pub fn local_headers(scope: ModuleKey, syntax: Module, cx: Cx) -> Option[List[En
         let id = map.get(cx.effects, name)?
         let info = map.get(cx.effect_infos, id)?
         if info.owner != cx.owner_class || info.name != name || info.id != id { return None }
-        out = out ++ [entry(key, NominalId, 0, id)]
       }
       _ -> ()
     }
@@ -379,13 +363,11 @@ test "allocation compiler declarations own only observed reserved references" {
   let saved = origin.expect("compiler provenance")
   let ids = between(saved, saved).expect("compiler IDs")
   for (_, adt) in map.entries(builtin_types.prelude_adts()) {
-    assert relocate.nominal(ids, adt.id) == Some(adt.id)
     for t in adt.tparams {
       match t { TyVar(_, id) -> { assert relocate.type_var(ids, id) == Some(id) }, _ -> { assert false } }
     }
   }
   for (_, tr) in map.entries(builtin_types.prelude_traits()) {
-    assert relocate.trait_id(ids, tr.id) == Some(tr.id)
     match tr.tvar { TyVar(_, id) -> { assert relocate.type_var(ids, id) == Some(id) }, _ -> { assert false } }
   }
   for info in builtin_types.prelude_impls() {
@@ -402,7 +384,6 @@ test "allocation compiler declarations own only observed reserved references" {
     }
   }
   assert relocate.type_var(ids, 0) == Some(0)
-  assert relocate.nominal(ids, builtin_types.first_minted_id()) == None
   assert relocate.type_var(ids, 1000000) == None
   assert relocate.local_id(ids, 0) == None
 }
@@ -410,15 +391,15 @@ test "allocation compiler declarations own only observed reserved references" {
 test "allocation world rebinding moves every declaration or none" {
   let declaration = fixture_key("body")
   let effect_key = fixture_key("effect")
-  let origin = table([entry(effect_key, NominalId, 0, 1), entry(declaration, TypeParameter, 0, 2)]).expect("origin")
+  let origin = table([entry(effect_key, EffectParameter, 0, 1), entry(declaration, TypeParameter, 0, 2)]).expect("origin")
   let moved = in_world(origin, "world", "session").expect("rebound")
   assert in_world(moved, "session", "world") == Some(origin)
   assert in_world(origin, "wrong", "session") == None
-  let header_only = table([entry(effect_key, NominalId, 0, 1)]).expect("header only")
+  let header_only = table([entry(effect_key, EffectParameter, 0, 1)]).expect("header only")
   assert in_world(header_only, "wrong", "session") == None
-  assert relocate.nominal(between(origin, moved).expect("isolated worlds"), 1) == None
+  assert relocate.effect_var(between(origin, moved).expect("isolated worlds"), 1) == None
   let foreign = DeclKey { ..effect_key, scope: ModuleKey { ..effect_key.scope, world: "foreign" } }
-  let mixed = table([entry(effect_key, NominalId, 0, 1), entry(foreign, NominalId, 0, 2)]).expect("mixed worlds")
+  let mixed = table([entry(effect_key, EffectParameter, 0, 1), entry(foreign, EffectParameter, 0, 2)]).expect("mixed worlds")
   assert in_world(mixed, "world", "session") == None
 }
 
@@ -437,26 +418,26 @@ test "allocation absent source is explicit rather than a wildcard" {
 test "allocation matches provenance and domains rather than equal integers" {
   let a = fixture_key("a")
   let b = fixture_key("b")
-  let old = table([entry(a, NominalId, 0, 1), entry(b, NominalId, 0, 2), entry(a, TraitId, 0, 1)]).expect("old")
-  let next = table([entry(a, NominalId, 0, 2), entry(b, NominalId, 0, 1), entry(a, TraitId, 0, 3)]).expect("next")
+  let old = table([entry(a, TypeParameter, 0, 1), entry(b, TypeParameter, 0, 2), entry(a, EffectParameter, 0, 1)]).expect("old")
+  let next = table([entry(a, TypeParameter, 0, 2), entry(b, TypeParameter, 0, 1), entry(a, EffectParameter, 0, 3)]).expect("next")
   let ids = between(old, next).expect("mapping")
-  assert relocate.nominal(ids, 1) == Some(2) && relocate.nominal(ids, 2) == Some(1)
-  assert relocate.trait_id(ids, 1) == Some(3)
+  assert relocate.type_var(ids, 1) == Some(2) && relocate.type_var(ids, 2) == Some(1)
+  assert relocate.effect_var(ids, 1) == Some(3)
   assert relocate.local_id(ids, 1) == None
   let changed = DeclKey { ..a, scope: ModuleKey { ..a.scope, world: "other" } }
-  let foreign = table([entry(changed, NominalId, 0, 1)]).expect("foreign")
-  assert relocate.nominal(between(old, foreign).expect("no matches"), 1) == None
-  let renamed = table([entry(fixture_key("renamed"), NominalId, 0, 1)]).expect("rename")
-  assert relocate.nominal(between(old, renamed).expect("no rename match"), 1) == None
+  let foreign = table([entry(changed, TypeParameter, 0, 1)]).expect("foreign")
+  assert relocate.type_var(between(old, foreign).expect("no matches"), 1) == None
+  let renamed = table([entry(fixture_key("renamed"), TypeParameter, 0, 1)]).expect("rename")
+  assert relocate.type_var(between(old, renamed).expect("no rename match"), 1) == None
 }
 
 test "allocation constant intervals validate the declared type without function metadata" {
   let owner = fixture_key("VALUE")
-  let before = table([entry(owner, NominalId, 0, 10)]).expect("constant old type")
-  let after = table([entry(owner, NominalId, 0, 20)]).expect("constant new type")
+  let before = table([entry(owner, TypeParameter, 0, 10)]).expect("constant old type")
+  let after = table([entry(owner, TypeParameter, 0, 20)]).expect("constant new type")
   let headers = between(before, after).expect("constant header IDs")
-  let old_ty = builtin_types.TyAdt(10, [])
-  let next_ty = builtin_types.TyAdt(20, [])
+  let old_ty = builtin_types.TyAdt(7, [builtin_types.TyVar("T", 10)])
+  let next_ty = builtin_types.TyAdt(7, [builtin_types.TyVar("T", 20)])
   let ids = constant_relocation(headers, 30, 2, 40, old_ty, next_ty).expect("constant interval")
   assert relocate.carries_interval(ids, 30, 2, 40)
   assert relocate.ty(ids, old_ty) == Some(next_ty)
@@ -479,13 +460,13 @@ test "allocation rejects competing owners and inconsistent binding observations"
 test "allocation combines original module owners without alias identities" {
   let a = fixture_key("provider")
   let b = DeclKey { ..a, scope: ModuleKey { ..a.scope, logical_module: "consumer", emission_owner: "consumer", source: "consumer.dawn" } }
-  let provider = table([entry(a, NominalId, 0, 1)]).expect("provider")
-  let consumer = table([entry(b, NominalId, 0, 2)]).expect("consumer")
+  let provider = table([entry(a, TypeParameter, 0, 1)]).expect("provider")
+  let consumer = table([entry(b, TypeParameter, 0, 2)]).expect("consumer")
   let merged = combine([provider, consumer]).expect("combined")
   let ids = between(merged, merged).expect("combined IDs")
-  assert relocate.nominal(ids, 1) == Some(1) && relocate.nominal(ids, 2) == Some(2)
+  assert relocate.type_var(ids, 1) == Some(1) && relocate.type_var(ids, 2) == Some(2)
   assert combine([provider, provider]) == Some(provider)
-  let collision = table([entry(b, NominalId, 0, 1)]).expect("separate table")
+  let collision = table([entry(b, TypeParameter, 0, 1)]).expect("separate table")
   assert combine([provider, collision]) == None
 }
 
@@ -507,23 +488,22 @@ test "allocation signature binders keep lexical slots across renamed variables" 
 test "allocation body intervals shift by construction and permute evidence by role" {
   let a = fixture_key("A")
   let b = fixture_key("B")
-  let old = table([entry(a, NominalId, 0, 1), entry(b, NominalId, 0, 2)]).expect("old headers")
-  let next = table([entry(a, NominalId, 0, 2), entry(b, NominalId, 0, 1)]).expect("next headers")
+  let old = table([entry(a, EffectParameter, 0, 1), entry(b, EffectParameter, 0, 2)]).expect("old headers")
+  let next = table([entry(a, EffectParameter, 0, 2), entry(b, EffectParameter, 0, 1)]).expect("next headers")
   let headers = between(old, next).expect("header IDs")
   let sig = Sig { name: "body", param_tys: [], param_names: [], param_defaults: [], ret: TyUnit,
-    eff: ELabeled(EPure, [(1, "A"), (2, "B")]), is_builtin: false, tparams: [], constraints: [],
+    eff: builtin_types.eff_union([EffVar("a", 1), EffVar("b", 2)]), is_builtin: false, tparams: [], constraints: [],
     eparams: [], owner: None, trait_id: None, op_of: None, inferring: false }
   let moved = relocate.signature(headers, sig).expect("new signature")
   let ids = body_relocation(headers, 20, 5, 40, sig, moved, [21, 22]).expect("body interval")
   assert relocate.carries_interval(ids, 20, 5, 40)
   assert relocate.local_id(ids, 20) == Some(40)
-  # The two entry evidence parameters swap because their labels did; every
+  # The two entry evidence parameters swap because their variables did; every
   # other ID in the interval is the plain shift.
   assert relocate.local_id(ids, 21) == Some(42) && relocate.local_id(ids, 22) == Some(41)
   assert relocate.local_id(ids, 24) == Some(44)
   assert relocate.local_id(ids, 19) == None && relocate.local_id(ids, 25) == None
   assert relocate.type_var(ids, 21) == Some(41) && relocate.effect_var(ids, 24) == Some(44)
-  assert relocate.nominal(ids, 20) == None && relocate.trait_id(ids, 20) == None
   let pure = Sig { ..sig, eff: EPure }
   # A following body relocates against the same header IDs. Nothing about the
   # interval just built reaches it: allocations are disjoint by minting.

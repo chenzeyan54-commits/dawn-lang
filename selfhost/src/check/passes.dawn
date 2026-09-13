@@ -43,9 +43,10 @@ use check/types.{
   has_impl_at, insert_impl, type_args_of, sub_goals
 }
 
+use check/identity.{TypeDecl, TraitDecl, EffectDecl}
 use check/cx.{
   AliasE, Cx, ModExports, Origin, OPrelude, OImport, OLocal, cx_new, test_cx, cerr,
-  cerr_h, cerr_o, fresh, fresh_effvar, alias_shadow, alias_shadow_at, effect_of, resolve_eff_at,
+  cerr_h, cerr_o, fresh, fresh_effvar, mint, alias_shadow, alias_shadow_at, effect_of, resolve_eff_at,
   label_eff, java_enabled_read, java_find_class_read, java_class_name_read,
   resolve_alias_target, resolve_type, resolve_return_type, is_const_serializable,
   const_refusal_hint, no_sig,
@@ -705,12 +706,13 @@ pub fn pass_type_shells(cx: Cx, m: Module) -> (Cx, List[Option[Shell]]) = {
           cx1 = cxv
           evs = evs ++ [v]
         }
-        # an opaque type is a type, so it takes an id off the same counter;
-        # a transparent alias is a spelling and needs none
+        # an opaque type is a type, so it derives an id from its declaration
+        # the way an ADT does; a transparent alias is a spelling and needs none
         var aid = -1
         if d.is_opaque {
-          aid = cx1.next_id
-          cx1 = Cx { ..cx1, next_id: cx1.next_id + 1 }
+          let (cxa, oid) = mint(cx1, TypeDecl, d.name, d.nlo, d.nhi)
+          cx1 = cxa
+          aid = oid
         }
         cx1 = Cx {
           ..cx1,
@@ -756,7 +758,7 @@ pub fn pass_type_shells(cx: Cx, m: Module) -> (Cx, List[Option[Shell]]) = {
           "Show and Ord can be derived")
       }
     }
-    let (cx3, aid) = fresh(cx1)
+    let (cx3, aid) = mint(cx1, TypeDecl, d.name, d.nlo, d.nhi)
     cx1 = cx3
     var accepted: List[(Int, Int)] = []
     var first_ok = false
@@ -1180,7 +1182,7 @@ pub fn pass_effects(cx: Cx, m: Module) -> Cx !io = {
       cx1 = cerr(cx1, "effect `" ++ d.name ++ "` is defined twice", d.nlo, d.nhi)
       continue
     }
-    let (cx2, eid) = fresh(cx1)
+    let (cx2, eid) = mint(cx1, EffectDecl, d.name, d.nlo, d.nhi)
     cx1 = cx2
     let saved_tp = cx1.current_tparams
     let saved_ev = cx1.current_eff_vars
@@ -1380,7 +1382,7 @@ pub fn pass_register_traits(cx: Cx, m: Module) -> Cx !io = {
     }
     cx1 = refuse_hard_reserved_type_param(cx1, d.tp, d.tplo, d.tphi)
     let (cx2, tvar) = fresh_tvar(cx1, d.tp)
-    let (cx3, tid) = fresh(cx2)
+    let (cx3, tid) = mint(cx2, TraitDecl, d.name, d.nlo, d.nhi)
     cx1 = cx3
     # associated types register before the methods, and the trait enters the
     # table provisionally with them, so a method signature can already project

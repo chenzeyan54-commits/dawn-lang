@@ -25,7 +25,6 @@ def main():
     assert not owning_assertion("FAIL  elsewhere :: relocation control\n  assertion failed: expected\n")
     original = (ROOT / "selfhost/src/check/relocate.dawn").read_text()
     variants = [
-        ("wrong-nominal-domain", "map.get(ids.nominals, id)", "map.get(ids.traits, id)"),
         ("implicit-identity", "match map.get(ids.type_vars, id) { Some(moved) -> Some(moved), None -> shifted(ids, id) }",
          "Some(id)"),
         # A body's own allocations are an interval, not a table. These five
@@ -55,21 +54,29 @@ def main():
          "if interval.start == start && interval.count == count && interval.target == target { return true }",
          "if interval.start == start && interval.target == target { return true }"),
         ("noninjective-map", "not injective(ids)", "false"),
-        ("evidence-collision", "map.has(evidence, source_key) || set.has(target_keys, target_key)", "false"),
         ("wrong-evidence-key", "map.get(ids.evidence, key)", "map.get(ids.evidence, key + 1)"),
+        # Nominal and trait references no longer move, so the three evidence
+        # bands are read back from the key itself rather than from a table.
+        # Each of the three readings owns a control: a variable key that the
+        # relocation does not carry must still fail closed, and the effect and
+        # trait a label or associated key names must be the one its arithmetic
+        # says.
+        ("identity-evidence-band", "None -> if key_is_variable(key) { None } else { Some(key) }",
+         "None -> Some(key)"),
+        ("label-band-effect", 'let prefix = ev_label_name(key_effect_id(key), "")',
+         'let prefix = ev_label_name(key, "")'),
+        ("associated-band-trait", "  let tr = key_trait_id(key)\n  for (tv, moved) in map.entries(ids.type_vars) {",
+         "  let tr = key\n  for (tv, moved) in map.entries(ids.type_vars) {"),
+        ("role-band-label", "if key_is_label(key) { return Some(LabelSlot(key_effect_id(key))) }",
+         "if key_is_label(key) { return Some(LabelSlot(key)) }"),
         ("stale-label-order", "Some(eff_with_labels(moved, out))", "Some(ELabeled(moved, out))"),
         ("stale-union", "Some(eff_union(parts))", "Some(e)"),
         ("stale-opaque-target", "types(ids, args)?, ty(ids, target)?", "types(ids, args)?, target"),
-        ("stale-associated-trait", "Some(TyAssoc(ty(ids, subject)?, trait_id(ids, tr)?, name))",
-         "Some(TyAssoc(ty(ids, subject)?, tr, name))"),
         ("stale-function-effect", "effect_row(ids, eff)?", "eff"),
         ("stale-collection-child", "Some(TyArray(ty(ids, elem)?))", "Some(TyArray(elem))"),
-        ("reversed-dictionary-domains", "Some((trait_id(ids, tr)?, type_var(ids, tv)?))",
-         "Some((type_var(ids, tv)?, trait_id(ids, tr)?))"),
+        ("reversed-dictionary-domains", "Some((tr, type_var(ids, tv)?))",
+         "Some((type_var(ids, tv)?, tr))"),
         ("stale-symbol-evidence", "Some(key) -> Some(evidence_key(ids, key)?)", "Some(key) -> Some(key)"),
-        ("remapped-field-slot", "Some((nominal(ids, effect_id)?, slot))",
-         "Some((nominal(ids, effect_id)?, local_id(ids, slot)?))"),
-        ("stale-constraint", "moved ++ [trait_id(ids, tr)?]", "moved ++ [tr]"),
         ("stale-handler-installation", "Some((local_id(ids, installation)?, ty(ids, value)?))",
          "Some((installation, ty(ids, value)?))"),
         ("stale-forwarded-witness", "Some(WForward(local_id(ids, id)?))", "Some(WForward(id))"),

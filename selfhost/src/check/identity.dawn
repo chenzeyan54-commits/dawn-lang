@@ -5,6 +5,7 @@
 use std/map
 use std/list
 use std/str
+use std/bytes
 use front/parser
 use front/token.{Diag, DiagOwner}
 use front/ast.{Module, TypeRef, TNamed, TQual, TAssoc, TTuple, TFn, EffArg,
@@ -182,6 +183,103 @@ fn shape_text(t: TypeShape) -> String =
     TupleType(elems) -> "t" ++ shapes_text(elems)
     FunctionType(params, ret, es) -> "F" ++ shapes_text(params) ++ shape_text(ret) ++ effect_row_text(es)
   }
+
+## A nominal or trait declaration, as the four minting sites in
+## `check/passes.dawn` see it: the module that emits it and the one path part
+## that names it. This is the whole of what a derived id is a function of.
+##
+## `world` and `source` are deliberately absent. `world` is `"cold"` on the
+## cold path and the session's name in a session, and `source` is the file
+## path the caller happened to pass in, uncanonicalised; either one inside a
+## derived id would make the emitted bytes depend on which run produced them
+## or on where the checkout lives.
+pub type Minted = { owner: String, kind: Kind, name: String }
+
+pub fn minted(owner: String, kind: Kind, name: String) -> Minted =
+  Minted { owner: owner, kind: kind, name: name }
+
+## The spelling a derived id hashes. Injective for the same reason
+## `path_text` is: the owner carries its own length, and the part that
+## follows it is already a prefix-free encoding.
+pub fn minted_text(m: Minted) -> String = atom(m.owner) ++ path_text([Named(m.kind, m.name)])
+
+## How a collision diagnostic names one of the two declarations.
+pub fn minted_show(m: Minted) -> String = {
+  let what = kind_word(m.kind) ++ " `" ++ m.name ++ "`"
+  if m.owner == "" { what } else { what ++ " in module `" ++ m.owner ++ "`" }
+}
+
+fn kind_word(k: Kind) -> String =
+  match k {
+    FunctionDecl -> "function"
+    TypeDecl -> "type"
+    TraitDecl -> "trait"
+    EffectDecl -> "effect"
+    ConstDecl -> "constant"
+    TestDecl -> "test"
+    MethodDecl -> "method"
+    ConstructorDecl -> "constructor"
+    OperationDecl -> "operation"
+    ParameterDefault -> "parameter default"
+    AssociatedTypeDecl -> "associated type"
+    AssociatedEffectDecl -> "associated effect"
+  }
+
+## FNV-1a over the UTF-8 bytes, written out in `Int` arithmetic rather than
+## taken from the `Hash` trait. Two reasons, and both of them are about the
+## bytes this feeds. `Hash` on the JVM bottoms out in `String.hashCode`,
+## which is 32 bits wide and is not the function the native runtime computes;
+## a derived id has to be the same integer in the JVM compiler and in the
+## native one, or the two stages of `native-fixpoint.sh` can never agree on a
+## class name. And the multiply has to wrap: every C compilation in this
+## repository passes `-fwrapv` for exactly this kind of arithmetic.
+fn fnv1a64(s: String) -> Int = {
+  let b = bytes.utf8(s)
+  let n = bytes.len(b)
+  var h = -3750763034362895579
+  var i = 0
+  while i < n {
+    h = (h ^ (bytes.at(b, i) & 255)) * 1099511628211
+    i = i + 1
+  }
+  h
+}
+
+## The floor of the derived band. Above every counter allocation
+## (`first_minted_id` is a single digit) and above every reserved prelude id,
+## so a derived id can never be mistaken for either.
+pub fn derived_floor() -> Int = 4294967296
+
+## The width of the derived band: 47 bits, kept off the low end of the digest
+## rather than the high end. Two things read those bits. `hash(Int)` in this
+## language is `v ^ (v >>> 32)` truncated to 32 bits, so a band this wide puts
+## entropy on both sides of that fold instead of leaving the low word to carry
+## it alone. And `label_key` multiplies an effect id by three, which
+## `2^32 + 2^47` survives with most of `Int` to spare.
+pub fn derived_width() -> Int = 140737488355327
+
+## murmur3's 64-bit finalizer, over the digest and before the truncation.
+## FNV-1a's weakness is in its low bits and the low bits are exactly what the
+## band keeps, over inputs as structured as a module path followed by a
+## declaration name. The finalizer spreads every input bit across the whole
+## word first, so the 47 bits that survive are 47 bits of the whole digest.
+## Multiplication wraps and `>>>` is the logical shift, so this is the same
+## arithmetic on the JVM and on native.
+fn fmix64(x: Int) -> Int = {
+  var h = x
+  h = h ^ (h >>> 33)
+  h = h * -49064778989728563
+  h = h ^ (h >>> 29)
+  h = h * -4265267296055464877
+  h = h ^ (h >>> 32)
+  h
+}
+
+## The id itself: a pure function of the spelling and of nothing else.
+pub fn derive_text(spelling: String) -> Int =
+  derived_floor() + (fmix64(fnv1a64(spelling)) & derived_width())
+
+pub fn derive(m: Minted) -> Int = derive_text(minted_text(m))
 
 fn entry(scope: ModuleKey, path: List[Part], declaration: Int, member: Option[Int]) -> Entry =
   Entry { key: DeclKey { scope: scope, path: path }, declaration: declaration, member: member }
@@ -583,4 +681,94 @@ test "a diagnostic resolves against the revision being rendered" {
   assert absolute(map.from([("other", fixture_spans(source))]), raised) == raised
   let already = Diag { ..raised, owner: None }
   assert absolute(map.from([("pkg/m", fixture_spans(source))]), already) == already
+}
+
+test "identity derives an id from the declaration and from nothing else" {
+  let a = minted("pkg/m", TypeDecl, "Cell")
+  assert derive(a) == derive(minted("pkg/m", TypeDecl, "Cell"))
+  # the three components each separate
+  assert derive(a) != derive(minted("pkg/n", TypeDecl, "Cell"))
+  assert derive(a) != derive(minted("pkg/m", TypeDecl, "Cells"))
+  # `type X` and `effect X` share one id space in `Cx.adts`, because an
+  # effect's evidence record is an ADT filed under the effect's own id. The
+  # kind letter in the spelling is what keeps them apart now that a counter
+  # no longer does.
+  assert derive(a) != derive(minted("pkg/m", EffectDecl, "Cell"))
+  assert derive(a) != derive(minted("pkg/m", TraitDecl, "Cell"))
+  # the owner is length-prefixed, so it cannot bleed into the name
+  assert minted_text(minted("ab", TypeDecl, "C")) != minted_text(minted("a", TypeDecl, "bC"))
+  assert derive(minted("ab", TypeDecl, "C")) != derive(minted("a", TypeDecl, "bC"))
+}
+
+test "identity keeps its derived band clear of allocations and reserved ids" {
+  let names = ["Cell", "Ask", "Carry", "Op", "", "长", "a/b/c"]
+  let owners = ["", "main", "std/list", "dawn\$pkg\$json/value"]
+  for owner in owners {
+    for name in names {
+      for kind in [TypeDecl, EffectDecl, TraitDecl] {
+        let id = derive(minted(owner, kind, name))
+        assert id >= derived_floor()
+        assert id <= derived_floor() + derived_width()
+        # `label_key` triples an effect id; the band has to survive that
+        assert 3 * id > 0
+      }
+    }
+  }
+  # The two ends of the band are stated as numbers rather than sampled,
+  # because what they have to clear is not a digest. The floor clears every
+  # integer `Cx.next_id` can reach in one program (`first_minted_id` is a
+  # single digit and the counter walks up by ones), and the ceiling leaves
+  # room for `label_key` to multiply an effect id by three.
+  assert derived_floor() == 4294967296
+  assert derived_width() == 140737488355327
+  assert 3 * (derived_floor() + derived_width()) > 0
+}
+
+test "identity hashes with FNV-1a and murmur3's finalizer so both backends agree" {
+  # the published FNV-1a vectors, as signed 64-bit
+  assert fnv1a64("") == -3750763034362895579
+  assert fnv1a64("a") == -5808556873153909620
+  assert fnv1a64("foobar") == -8821353812377114648
+  # murmur3 fmix64, which is a bijection and so fixes only zero
+  assert fmix64(0) == 0
+  assert fmix64(1) == 6866073966979089171
+  assert fmix64(-1) == -1668694585057809095
+}
+
+test "identity spreads a one-character edit across the whole derived band" {
+  # The band keeps the low 47 bits, and those are the bits FNV-1a is weakest
+  # in: the last byte of the spelling reaches the top of the word through one
+  # multiply and nothing else. Over the 325 pairs below the raw digest puts
+  # two of them as few as 5 bits apart; with murmur3's finalizer in front of
+  # the truncation the closest pair is 15. The threshold is 12, so this is
+  # the assertion `fmix64` is here to pass and a bare FNV-1a fails.
+  #
+  # It matters twice over. Two ids that are close are two ids that a later
+  # widening of the band could collide, and `Map[Int, _]` buckets on
+  # `v ^ (v >>> 32)` truncated to 32 bits, so correlated ids are a degraded
+  # hash table for every one of `adts`, `traits` and `effect_infos`.
+  let names = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+    "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"]
+  var closest = 64
+  for a in names {
+    for b in names {
+      if a != b {
+        let d = derive(minted("pkg/m", TypeDecl, a)) ^ derive(minted("pkg/m", TypeDecl, b))
+        var bits = 0
+        var k = 0
+        while k < 64 {
+          if (d >>> k) & 1 == 1 { bits = bits + 1 }
+          k = k + 1
+        }
+        if bits < closest { closest = bits }
+      }
+    }
+  }
+  assert closest >= 12
+  # and the low word, which is all `Map[Int, _]` ever looks at, separates the
+  # two kinds that share `Cx.adts` as well as it separates two names
+  assert derive(minted("pkg/m", TypeDecl, "A")) & 4294967295 !=
+    derive(minted("pkg/m", TypeDecl, "B")) & 4294967295
+  assert derive(minted("pkg/m", TypeDecl, "A")) & 4294967295 !=
+    derive(minted("pkg/m", EffectDecl, "A")) & 4294967295
 }

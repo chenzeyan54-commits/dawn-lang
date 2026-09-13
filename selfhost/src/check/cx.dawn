@@ -12,6 +12,8 @@ use std/list
 use std/map
 use std/set
 use check/write_journal
+use check/identity
+use check/identity.{Minted, minted, minted_show}
 use front/token.{Diag, DiagOwner}
 use front/ast.{TypeRef, TNamed, TQual, TAssoc, TTuple, TFn, EffArg}
 use check/types.{
@@ -128,6 +130,15 @@ pub type Frame = {
 pub type Cx = {
   diags: List[Diag],
   next_id: Int,
+  # Every nominal and trait id this program has minted, and the declaration
+  # each one was derived from. A derived id is a pure function of that
+  # declaration, so the table is not a counter and nothing reads it to pick
+  # the next number: it exists so that two declarations landing on the same
+  # 47-bit digest are reported rather than silently sharing an entry in
+  # `adts`, `traits` and `effect_infos`. It spans the whole program, which is
+  # why it travels with the carry (`driver/stdlib.dawn`, `driver/analyze.dawn`)
+  # the way `next_id` does.
+  identities: Map[Int, Minted],
   adts: Adts,
   traits: Traits,
   # name-keyed views of the current module's scope
@@ -324,6 +335,7 @@ pub fn cx_new(owner_class: Option[String], src_path: Option[String]) -> Cx = {
     # id, so the first user trait steps over the counter's opening value.
     # first_minted_id reads the tables instead, and the test below walks them.
     next_id: first_minted_id(),
+    identities: map.empty(),
     adts: prelude_adts(),
     traits: prelude_traits(),
     fns: map.empty(),
@@ -404,6 +416,53 @@ test "the shared counter starts past every prelude id" {
   # and it is still derived: a literal put back here would pass the loops above
   # for exactly as long as it happened to be large enough
   assert cx.next_id == first_minted_id()
+}
+
+test "a minted id comes from the declaration, not from the counter" {
+  let here = Cx { ..cx_new(Some("pkg/m"), Some("/one/src/m.dawn")), next_id: 40 }
+  let (after, id) = mint(here, identity.TypeDecl, "Cell", 0, 1)
+  assert after.diags == []
+  # not an allocation: the counter did not move, and the id is nowhere near
+  # the band the counter hands out
+  assert after.next_id == here.next_id
+  assert id > first_minted_id() + 1000000
+  assert map.get(after.identities, id) == Some(minted("pkg/m", identity.TypeDecl, "Cell"))
+  # The same module checked from a second checkout is the same id. `src_path`
+  # is the file path the caller handed in, uncanonicalised, so a derivation
+  # that read it would make the emitted class names depend on where the
+  # repository sits.
+  let elsewhere = cx_new(Some("pkg/m"), Some("/two/src/m.dawn"))
+  let (_, again) = mint(elsewhere, identity.TypeDecl, "Cell", 0, 1)
+  assert again == id
+  # minting the same declaration twice is not a collision with itself
+  let (twice, repeat) = mint(after, identity.TypeDecl, "Cell", 0, 1)
+  assert repeat == id && twice.diags == []
+  # the module, the kind and the name each separate. `type X` and `effect X`
+  # matter most: an effect files its evidence record in `adts` under the
+  # effect's own id, so those two share one table.
+  let (_, elsewhere_id) = mint(cx_new(Some("pkg/n"), None), identity.TypeDecl, "Cell", 0, 1)
+  let (_, effect_id) = mint(here, identity.EffectDecl, "Cell", 0, 1)
+  let (_, trait_of_id) = mint(here, identity.TraitDecl, "Cell", 0, 1)
+  let (_, other_name) = mint(here, identity.TypeDecl, "Cells", 0, 1)
+  assert elsewhere_id != id && effect_id != id && trait_of_id != id && other_name != id
+}
+
+test "two declarations that derive one id are reported rather than merged" {
+  let base = cx_new(Some("pkg/m"), None)
+  let (_, id) = mint(base, identity.TypeDecl, "Cell", 0, 1)
+  # A 47-bit digest is not a proof of distinctness. This plants the outcome a
+  # collision would have -- the id already interned under another declaration
+  # -- because the real thing is not reachable by writing a test module.
+  let squatter = minted("pkg/other", identity.EffectDecl, "Ask")
+  let seeded = Cx { ..base, identities: map.insert(base.identities, id, squatter) }
+  let (after, same) = mint(seeded, identity.TypeDecl, "Cell", 7, 9)
+  assert same == id
+  assert len(after.diags) == 1
+  assert after.diags[0].msg == "the derived identity of type `Cell` in module `pkg/m` " ++
+    "collides with effect `Ask` in module `pkg/other`"
+  assert after.diags[0].lo == 7 && after.diags[0].hi == 9
+  # and the table is not quietly repointed at the loser
+  assert map.get(after.identities, id) == Some(squatter)
 }
 
 ## Where a name in the module's function namespace came from. The pass order --
@@ -530,6 +589,33 @@ pub fn check_value_arity(cx: Cx, count: Int, lo: Int, hi: Int) -> Cx =
 # ---- fresh ids ----
 
 pub fn fresh(cx: Cx) -> (Cx, Int) = (Cx { ..cx, next_id: cx.next_id + 1 }, cx.next_id)
+
+## The id of a nominal or trait declaration. Not an allocation: it is
+## `identity.derive` of the declaration itself, so inserting or removing an
+## unrelated declaration moves nothing, and the JVM compiler and the native
+## one agree about it without having checked the same modules in the same
+## order.
+##
+## Interning is the whole of the bookkeeping. A digest is not a proof of
+## distinctness, and two declarations that collide would share one row of
+## `adts`/`traits`/`effect_infos` -- the second silently replacing the first.
+## Reported, and reported by name: there is no deterministic perturbation to
+## fall back on, because a perturbed id would be a function of which other
+## declarations this program happens to contain, which is exactly the
+## property this change exists to remove.
+pub fn mint(cx: Cx, kind: identity.Kind, name: String, lo: Int, hi: Int) -> (Cx, Int) = {
+  let decl = minted(cx.owner_class.unwrap_or(""), kind, name)
+  let id = identity.derive(decl)
+  match map.get(cx.identities, id) {
+    Some(other) -> if other != decl {
+      return (cerr_h(cx, "the derived identity of " ++ minted_show(decl) ++
+          " collides with " ++ minted_show(other),
+        lo, hi, "rename one of the two declarations"), id)
+    }
+    None -> ()
+  }
+  (Cx { ..cx, identities: map.insert(cx.identities, id, decl) }, id)
+}
 
 pub fn fresh_effvar(cx: Cx, name: String) -> (Cx, Eff) = {
   let (cx1, id) = fresh(cx)
@@ -1331,14 +1417,14 @@ pub fn revalidate_context_read_under(m: Mapping, candidate: Cx, fact: FunctionRe
   match fact {
     semantic_reads.ConstructorCount(id, _) | semantic_reads.ConstructorNames(id, _) |
     semantic_reads.ConstructorHeaderAnswer(id, _) | semantic_reads.NominalTypeShape(id, _, _, _, _) -> {
-      if not map.has(initial.adts, m.nominal(id)?) { return Some(false) }
+      if not map.has(initial.adts, id) { return Some(false) }
     }
     semantic_reads.ConstructorFields(id, slot, _) | semantic_reads.ConstructorArity(id, slot, _) -> {
-      let info = match map.get(initial.adts, m.nominal(id)?) { Some(info) -> info, None -> return Some(false) }
+      let info = match map.get(initial.adts, id) { Some(info) -> info, None -> return Some(false) }
       if slot < 0 || slot >= len(info.ctors) { return Some(false) }
     }
     semantic_reads.DeclaredEffectInfo(id, _) -> {
-      if not map.has(initial.effect_infos, m.nominal(id)?) { return Some(false) }
+      if not map.has(initial.effect_infos, id) { return Some(false) }
     }
     semantic_reads.DeclaredEffect(name, _) -> {
       match map.get(initial.effects, name) {
@@ -1361,23 +1447,23 @@ pub fn revalidate_context_read_under(m: Mapping, candidate: Cx, fact: FunctionRe
       next }
     semantic_reads.NominalTypeName(None, name, _) -> { let (next, _) = local_nominal_name_read(initial, name)
       next }
-    semantic_reads.ConstructorCount(id, _) -> { let (next, _) = constructor_count_read(initial, m.nominal(id)?)
+    semantic_reads.ConstructorCount(id, _) -> { let (next, _) = constructor_count_read(initial, id)
       next }
-    semantic_reads.ConstructorNames(id, _) -> { let (next, _) = constructor_names_read(initial, m.nominal(id)?)
+    semantic_reads.ConstructorNames(id, _) -> { let (next, _) = constructor_names_read(initial, id)
       next }
-    semantic_reads.ConstructorHeaderAnswer(id, _) -> { let (next, _) = constructor_header_read(initial, m.nominal(id)?)
+    semantic_reads.ConstructorHeaderAnswer(id, _) -> { let (next, _) = constructor_header_read(initial, id)
       next }
-    semantic_reads.ConstructorFields(id, slot, _) -> { let (next, _) = constructor_fields_read(initial, m.nominal(id)?, slot)
+    semantic_reads.ConstructorFields(id, slot, _) -> { let (next, _) = constructor_fields_read(initial, id, slot)
       next }
-    semantic_reads.ConstructorArity(id, slot, _) -> { let (next, _) = constructor_arity_read(initial, m.nominal(id)?, slot)
+    semantic_reads.ConstructorArity(id, slot, _) -> { let (next, _) = constructor_arity_read(initial, id, slot)
       next }
-    semantic_reads.NominalTypeShape(id, _, _, _, _) -> { let (next, _) = constructor_nominal_shape_read(initial, m.nominal(id)?)
+    semantic_reads.NominalTypeShape(id, _, _, _, _) -> { let (next, _) = constructor_nominal_shape_read(initial, id)
       next }
     semantic_reads.LocalEffectName(name, _) -> { let (next, _) = local_effect_name_read(initial, name)
       next }
     semantic_reads.EffectCandidates(_) -> { let (next, _) = effect_candidates_read(initial)
       next }
-    semantic_reads.DeclaredEffectInfo(id, _) -> { let (next, _) = declared_effect_info_read(initial, m.nominal(id)?)
+    semantic_reads.DeclaredEffectInfo(id, _) -> { let (next, _) = declared_effect_info_read(initial, id)
       next }
     semantic_reads.ScopedTypeParameter(name, _) -> { let (next, _) = scoped_type_parameter_read(initial, name)
       next }

@@ -21,12 +21,12 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--java-home", required=True, type=Path)
     parser.add_argument("--typed", action="store_true", help="compare the production typed-tree mapper against the cold bodies")
-    typed_variants = ["local", "capture", "dynamic", "pack-order", "evidence-origin",
-                      "inferred-write", "test-state", "symbol-order", "default-write", "default-dictionary",
+    typed_variants = ["local", "capture", "dynamic",
+                      "inferred-write", "test-state", "default-write", "default-dictionary",
                       "impl-owner", "impl-parameters", "impl-roles", "default-diagnostics",
-                      "module-functions", "module-signatures", "module-method-boundary", "module-registered-tag", "constant-type",
-                      "header-alias", "header-impl", "header-adt", "header-effect",
-                      "header-state-key", "header-state-bounds", "header-state-surface", "read-state"]
+                      "module-functions", "module-signatures", "module-method-boundary", "module-registered-tag",
+                      "header-alias", "header-impl", "header-adt",
+                      "header-state-bounds", "header-state-surface", "read-state"]
     parser.add_argument("--typed-mutant", choices=typed_variants)
     parser.add_argument("--typed-all", action="store_true", help="run the typed positive and its compiling mutations")
     variants = ["skip-symbol", "skip-captures", "skip-spans", "skip-operator-spans", "ambiguous-key",
@@ -78,19 +78,16 @@ def main():
         target = output / "selfhost/src/check" / ("checker.dawn" if args.typed_mutant in ("default-dictionary", "read-state") else
                     "relocate_header.dawn" if args.typed_mutant.startswith("header-") else
                     "allocation.dawn" if args.typed_mutant.startswith("impl-") else
-                    "body_product.dawn" if args.typed_mutant in ("inferred-write", "test-state", "symbol-order", "default-write", "default-diagnostics") else "relocate_tree.dawn")
+                    "body_product.dawn" if args.typed_mutant in ("inferred-write", "test-state", "default-write", "default-diagnostics") else "relocate_tree.dawn")
         tree = target.read_text()
         replacements = {
             "read-state": ("Some(_) -> Cx { ..cx, function_reads: semantic_reads.candidates(cx.function_reads, names) }",
                            "Some(_) -> Cx { ..cx, next_id: cx.next_id + 1, function_reads: semantic_reads.candidates(cx.function_reads, names) }"),
-            "header-state-key": ("impls = map.insert(impls, next_key, moved)", "impls = map.insert(impls, key, moved)"),
-            "header-state-bounds": ("current_tparam_bounds: projected_map(p.current_tparam_bounds, id => relocate.type_var(v.ids, id),\n      bounds => projected_list(bounds, tr => relocate.trait_id(v.ids, tr)))?", "current_tparam_bounds: p.current_tparam_bounds"),
+            "header-state-bounds": ("current_tparam_bounds: projected_map(p.current_tparam_bounds, id => relocate.type_var(v.ids, id),\n      bounds => Some(bounds))?", "current_tparam_bounds: p.current_tparam_bounds"),
             "header-state-surface": ("observable_impls: projected_list(p.observable_impls, i => implementation(v, i))?", "observable_impls: p.observable_impls"),
             "header-alias": ("aliases: projected_map(e.aliases, names, a => alias_info(v, a))?", "aliases: e.aliases"),
             "header-impl": ("impls: projected_list(e.impls, info => implementation(v, info))?", "impls: e.impls"),
-            "header-adt": ("adt_infos: projected_map(e.adt_infos, id => relocate.nominal(v.ids, id), info => adt(v, info))?", "adt_infos: e.adt_infos"),
-            "header-effect": ("effect_infos: projected_map(e.effect_infos, id => relocate.nominal(v.ids, id), info => effect_info(v, info))?", "effect_infos: e.effect_infos"),
-            "constant-type": ("ty: relocate.ty(v.ids, c.ty)?, init: expression(v, c.init)?", "ty: c.ty, init: expression(v, c.init)?"),
+            "header-adt": ("adt_infos: projected_map(e.adt_infos, same, info => adt(v, info))?", "adt_infos: e.adt_infos"),
             "default-diagnostics": ("diags: current.diags ++ product.diagnostics",
                                     'diags: if match product.frame.current_sig { Some(s) -> s.name == "sample\\$default\\$0", None -> false } { current.diags } else { current.diags ++ product.diagnostics }'),
             "default-dictionary": ("TDefault { body: dx, dict_syms: dsyms }", "TDefault { body: dx, dict_syms: [] }"),
@@ -99,15 +96,11 @@ def main():
             "impl-owner": ("sig.name != method.name || sig.owner != cx.owner_class", "sig.name != method.name || false"),
             "impl-parameters": ("sig.tparams != info.tparams", "false"),
             "impl-roles": ("sig.is_builtin ||\n                  sig.trait_id != None || sig.op_of != None", "sig.is_builtin"),
-            "symbol-order": ("sort_by(moved_symbols, (a, b) => cmp(a.key, b.key))", "moved_symbols"),
             "inferred-write": ("fns: apply_changes(current.fns, product.signatures)", "fns: current.fns"),
             "test-state": ("in_test: product.in_test", "in_test: if product.frame.current_sig == None { true } else { product.in_test }"),
             "local": ("Some(XLocal(relocate.local_id(v.ids, id)?,", "Some(XLocal(id,"),
             "capture": ("names, expression(v, body)?, local_ids(v, captures)?,", "names, expression(v, body)?, captures,"),
             "dynamic": ("Some(XCallDyn(relocate.local_id(v.ids, id)?,", "Some(XCallDyn(id,"),
-            "pack-order": ("let parts = ordered_parts(pack_parts(v, x)?)?", "let parts = pack_parts(v, x)?"),
-            "evidence-origin": ("Some(XEvRead(relocate.evidence_key(v.ids, key)?, moved,",
-                                "Some(XEvRead(relocate.evidence_key(v.ids, key)?, origin,"),
         }
         old, new = replacements[args.typed_mutant]
         if tree.count(old) != 1:
@@ -262,21 +255,15 @@ def main():
                                 "module-signatures": "module assembly: replayed Cx differs from cold module state",
                                 "module-method-boundary": "module assembly: replayed module differs from cold module",
                                 "module-registered-tag": "module assembly: replayed module differs from cold module",
-                                "constant-type": "module assembly: replayed module differs from cold module",
                                 "constant-span": "module assembly: replayed module differs from cold module",
                                 "header-alias": "header metadata: projected exports differ from cold headers",
                                 "header-impl": "header metadata: projected exports differ from cold headers",
                                 "header-adt": "header metadata: projected exports differ from cold headers",
-                                "header-effect": "header metadata: projected exports differ from cold headers",
-                                "header-state-key": "header state: projected context differs from cold headers",
                                 "header-state-bounds": "header state: projected context differs from cold headers",
                                 "header-state-surface": "header state: projected context differs from cold headers",
                                 "default-write": "default state: replayed Cx differs from cold body boundary",
-                                "symbol-order": "reordered header: replayed Cx differs from cold body boundary",
                                 "test-state": "test state: replayed Cx differs from cold body boundary"}.get(args.typed_mutant)
-                               or ("reordered header: relocated body differs from cold check"
-                               if args.typed_mutant in ("pack-order", "evidence-origin")
-                               else "relocated body differs from shifted cold check"))
+                               or "relocated body differs from shifted cold check")
         if (result.returncode == 0 or "java.lang.AssertionError:" not in result.stderr
                 or expected_comparison not in result.stderr
                 or "NoSuchMethodError" in result.stderr):

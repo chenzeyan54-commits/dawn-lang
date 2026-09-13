@@ -72,8 +72,33 @@ body 平移；函数 key 只覆盖唯一命名的顶层函数。八个可编译�
 完整迁移首先区分 nominal（含声明效果的 evidence ADT）、trait、type variable、
 effect variable 和本地分配（symbol、handler安装）五个引用域。同一个整数可在不同域表示不同身份；每域映射
 须单射，缺少引用映射返回失败以供冷回退，不能默认为旧 ID。类型递归遍历覆盖所有
-Ty/Eff 构造器，效果集合在映射后按目标 ID 重新规范化。编码 evidence key 由各域映射
-显式生成，不对负数 key 用除法猜测原域。此层暂不启用复用，只为后续 TAST/Cx 迁移提供基础。
+Ty/Eff 构造器，效果集合在映射后按目标 ID 重新规范化。此层暂不启用复用，只为后续 TAST/Cx 迁移提供基础。
+
+**前两个域已经不需要映射了。** nominal 与 trait 的整数不再由计数器发放，而是
+`identity.derive(声明)`：模块的 emission owner、声明种类字母和名字拼成一个前缀无歧义的
+串，FNV-1a 64 位后过一遍 murmur3 的终混，取低 47 位落进 `[2^32, 2^32 + 2^47)`。
+它与计数器域（`first_minted_id()` 起的小整数）和 prelude 的保留号两不相交，
+`label_key` 乘三之后仍在 `Int` 内。于是：
+
+- 在一个声明前面插入无关声明**不再平移**它后面的任何 nominal/trait 号，
+  消费者引用 provider 的类型或 trait 时两边算出同一个整数，
+  `allocation` 台账里这两个域的条目全部删除，`relocate` 里对应的两张表也删除。
+- **摘要不是区分性的证明。** 每次取号都先查 `Cx.identities`（id → 声明）：
+  同号不同声明是硬错误，诊断点名两个声明。不做确定性微扰，因为微扰会让一个 id
+  取决于本程序恰好还有哪些声明，而这正是这次改动要去掉的性质。
+  这张表随 `next_id` 走同一条 carry（`driver/stdlib`、`driver/analyze`），
+  因为跨模块撞车和模块内撞车一样致命。
+- 派生输入里**没有** `ModuleKey.world` 和 `ModuleKey.source`：前者冷跑是 `"cold"`、
+  会话里是会话名，后者是调用方原样传入、未规范化的文件路径。
+  任何一个进去，发射的字节就会取决于是哪一次运行、仓库检出在哪里。
+- 三条 evidence band 因此改由 key 自身读回：`label`（`3e`）与 `associated`（`3t+2`）
+  自答，只有 `variable`（`3v+1`）仍要查表，查不到照旧 fail closed。
+  不对负数 key 用除法猜测原域这条约束仍然成立：band 判定用的是 `%3` 的两个残数，
+  不是除法的商。
+- 代价是发射字节：`structeq$Adt<N>`、`Op<id>_`、`dict$<tid>$` 与 Core 里的裸整数
+  标签键全部改写，隐藏 evidence 参数的顺序从「声明序」变成「派生序」（稳定但不可读）。
+  唯一泄漏进诊断文本的 id 序是 `checker.sam_snapshot` 里 `ctl` 效果的点名，
+  它改为按名字排序（`types.eff_ctl_labels`）。
 handler安装 ID 也来自 fresh，但不一定存在于 syms；不能只从符号表收集本地 ID。
 部分内部调用将 prompt/evidence key 编成 XInt 参数，后续 TAST 迁移必须按内部操作的
 参数语义处理，不能把它们当普通数字原样保留，也不能将用户数字字面量一起改写。
@@ -211,9 +236,17 @@ body_segment_relocation只描述已拆分的检查区间，允许签名仍携带
 跨模块来源沿声明模块台账传递，consumer只新增自己的声明，不能从导入别名重造key。
 先通过真实exports_of/导入pass的两模块重排案例验证：合并provider与consumer台账时
 仍执行同域ID/owner冲突检查，provider内部顺序变化由provider的稳定key解释。
-此合并本身不验证导出面或依赖有效性；生产AnalysisCarry/模块调度的接线另行完成。
-首个真实案例使用选择性导入Ask/Tell，完整body/Cx重放与冷检查一致，并拒绝consumer
-自造provider身份。当前效果语法不接受!dep.Ask，限定模块名的类型/函数案例另行补齐。
+此合并本身不验证导出面或依赖有效性。生产接线已完成：analyze_module_step用carry里
+各provider已发布的台账、编译器保留身份和本模块自己的台账合成引用台账，随ModuleStep
+交给产物。provider台账缺失时它的声明得不到任何映射，
+读到该引用的产物回退冷算而不猜ID；本模块未具名的模块不算provider，即使其声明经由
+别的模块进入本作用域。同域内两条台账认领同一分配、或同一绑定带两个分配，都拒绝
+整次合并。**合并里剩下的是 binder 域**：nominal 与 trait 的整数由声明派生，消费者自己算得出，
+不需要向 provider 要；type/effect parameter 仍出自计数器，消费者拿到的 provider 泛型签名里
+带着 provider 的 TyVar/EffVar，这些仍必须 join。「provider 这一版发没发台账」本身也仍是
+复用授权信号，派生不回答这个问题。真实案例现为三个：选择性导入Ask/Tell、限定类型作签名加限定函数调用、
+限定类型作body注解加限定常量；provider在两版本间重排，consumer body重放与冷检查的
+完整Cx一致。当前效果语法不接受!dep.Ask，故没有限定效果案例。
 限定函数调用的callee查找必须读取旧header的owner+原函数名，而非只查consumer短名。
 relocate_tree.callee_signature将覆盖本地/std/模块导入签名表，重复相同记录允许，
 同身份不同签名拒绝；trait/builtin保持独立分支。该线性查找是正确性边界，
@@ -222,14 +255,14 @@ relocate_tree.callee_signature将覆盖本地/std/模块导入签名表，重复
 替代[-1024,next_id)稠密header映射，并扩大到完整Cx对照。对照发现symbol值虽然
 都已正确迁移，旧顺序插入仍改变Map的可观察顺序；投影后按目标分配ID恢复插入顺序。
 台账收集入口扩展到具名模块的局部类型、alias、trait及方法、效果和函数签名，
-要求来源路径与发射owner匹配；导入及整模块装配仍需接线。
+要求来源路径与发射owner匹配；整模块装配仍需接线。
 impl采集显式接收header pass的逐impl方法签名表：ImplI保留父级类型参数，
 方法效果binder却只在该返回表里。源码范围仅用于同版本内关联真实ImplI，
 跨版本仍按ImplHead候选key连接；不能用范围相同作为复用有效性判断。
 真实header案例已增加两个泛型impl的顺序交换，直接比较映射后的完整方法签名；
 入口拒绝缺失/错序签名表和不匹配的owner、类型参数及签名角色，三个移除守卫的
 编译负控已命中具名拒绝断言。签名表必须来自同次真实header pass；结构守卫不代替
-这个调用方契约，也不验证缓存依赖。导入来源接线仍待完成。
+这个调用方契约，也不验证缓存依赖。
 ADT的效果参数原先只保留名字，字段解析时的真实binder ID随临时作用域丢失；
 现将已分配的ID按声明顺序保存在AdtI.bound_eparams，不新增取号或改变顺序。
 不能扫描字段中的同名变量反推身份，未使用的binder也必须保留。真实header正例已同时
@@ -306,7 +339,8 @@ Product别名携带TFun，常量通过ConstantProduct携带真实TConst，不构
 完整header元数据投影方案：独立relocate_header覆盖AdtI/CtorI、AliasE、TraitI/MethodSig、
 EffectI、ImplI及ModExports；复用分域ID映射，不将构造器槽/字段槽当ID平移。
 源码坐标必须按声明owner和可选source选择映射，尤其导出的AliasE仍带声明模块的
-target/nlo/nhi；透明alias的-1不是nominal引用。投影保留owner、audience和词法顺序，
+target/nlo/nhi；透明alias的-1不是nominal引用（不透明alias的id是派生值，与ADT、
+trait、effect的id一样跨修订恒等，投影对它什么也不做）。投影保留owner、audience和词法顺序，
 不复制新冷结果作为旧产物内容；跨声明重排后的表顺序装配与依赖有效性另由调度负责。
 此段为实现前约束，尚未声称header cache可用。
 
@@ -429,7 +463,7 @@ body新类型变量案例，也不宣称任意推断类型均已覆盖。另有�
 在默认值发生类型错误，全部移动源码位置后比较诊断和完整Cx；丢默认诊断的编译负控
 要求命中该错误态的具名断言。
 
-### 来源carry接线（进行中）
+### 来源carry接线
 
 AnalysisCarry增加可选HeaderProvenance：保存world标签与各模块的可选分配表。普通冷
 入口不记录用户模块来源；opaque Session的内部transition启用，用户表随prefix释放，
@@ -437,8 +471,12 @@ std来源baseline随Session释放，
 不会从Update导出或跨Session拼接。内部world标签只在该容器内解释，不是全局唯一ID。
 用户模块在真实check_module_headers后、body前生成本地header/impl来源；解析/header错误或来源
 不确定时记录None。std表来自下面的真实header入口，不拿最终Cx重建丢失的impl注册签名。
-后续重放遇到缺失来源必须冷回退；这一步只接来源生成/传递，不启用body缓存，也不
-表示依赖有效性和生产函数调度已完成；compiler intrinsic来源使用下述显式生成器。
+后续重放遇到缺失来源必须冷回退；compiler intrinsic来源使用下述显式生成器。
+consumer的引用台账由module_references在同一transition内合成：编译器保留身份、本模块
+台账，以及carry中每个被本模块具名导入的provider台账。结果只随ModuleStep返回，不写回
+modules表，后者仍只发布各模块自己的声明，因此import不会把provider身份改记到consumer
+名下。这一步只接来源生成/传递与引用合成，不启用body缓存，也不表示依赖有效性和生产
+函数调度已完成。
 
 std接线使用load_std的真实ModuleHeaders，立即生成来源表，不从最终Cx推回impl签名。
 std的Cx没有源码路径，ModuleKey.source的空字符串明确表示无路径；Some(path)仍须
@@ -519,9 +557,11 @@ Associated type/effect resolution must retain the scoped subject answer, its
 optional ordered trait-bound list, and each queried trait's associated-member
 names with the type/effect axis identified. Missing subjects short-circuit bounds
 and members; repeated bounds still follow the existing owner deduplication rule.
-Subjects project as their actual types, while bound/member trait IDs require a
-separate trait-domain callback. Reusing the nominal mapper or fabricating a type
-to smuggle an integer into another reference domain is not valid projection.
+Subjects project as their actual types. Bound and member trait IDs are derived
+from the declaration and relocate to themselves, so the trait-domain callback
+that used to move them is the identity; what the boundary still owes is the
+subject's own type and the axis label, and fabricating a type to smuggle an
+integer into another reference domain remains invalid projection.
 
 ### Ordinary effect read boundary (implementation in progress)
 
@@ -533,7 +573,8 @@ variable reads retain both existing rows and misses before fresh allocation.
 Repeated atoms must read the updated scope and must not allocate again. Both
 answer forms use the complete effect-row projector, which preserves the existing
 distinction between nominal label IDs and effect-variable IDs. They cannot use
-one raw-ID mapping for both. Observation must preserve complete state, diagnostics and allocation;
+one raw-ID mapping for both: a label is a derived identity and carries through
+untouched, a variable is an allocation and has to be looked up. Observation must preserve complete state, diagnostics and allocation;
 these facts alone do not establish runtime query wiring or cache admission.
 
 ### Type environment read boundary (implementation in progress)

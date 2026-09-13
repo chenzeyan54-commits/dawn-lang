@@ -164,7 +164,10 @@ header来自生产check_module_headers的ModuleHeaders，不再按源码锚点�
 
 `relocate.py` 验证生产 `check/relocate` 基础层：Ty/Eff、Sig/Sym 和 witness 的引用域
 映射、缺失引用冷回退、效果重新规范化、evidence 编码/生成名称及完整角色的ABI顺序。
-23个成功编译负控必须命中具名断言。
+该层只剩两个绑定域：nominal 与 trait 的整数由声明派生（`check/cx.mint`），
+跨修订恒等，表里不再有它们的条目，三条 evidence band 因此改由 key 本身读回
+（label 与 associated 自答，variable 仍须查表并 fail closed），四个负控守这一读法。
+22个成功编译负控必须命中具名断言。
 
 `body-probe.py --typed --typed-all --java-home <JDK> --output <新目录>` 运行生产树投影
 的私有对照：23个真实函数、22次非均匀源码编辑及一次真实effect声明重排，七个树投影编译
@@ -177,7 +180,21 @@ test block状态的完整冷模块对照，丢封定签名写入、保留错误i
 另有丢默认值字典符号的编译负控，必须命中泛型默认值的具名字典断言。
 另有丢默认参数诊断的编译负控，必须命中默认错误态的具名断言。
 Compilation or linking failures do not count as passing negative controls;
-typed-all now contains 30 compiling controls. Typed mode also compares assembly
+typed-all now contains 21 compiling controls, down from 30 when nominal and
+trait ids started deriving from their declarations. Six of the nine that left
+could no longer be told apart from the production code by the reordered-header
+sample, because a declaration reorder does not move a derived id: a ground
+label stays put, so an evidence pack cannot be permuted (pack-order,
+evidence-origin) and a body's symbols cannot be either (symbol-order); an
+impl-table key is a trait id and an ADT head, so rekeying is the identity
+(header-state-key); and the value sample's constants are declared at types
+with no binders in them (constant-type). pack-order, evidence-origin and
+constant-type moved to `projection.py`, which owns inline assertions, and are
+held by `check/relocate_tree` tests that hand the relocation type variables
+that do swap; symbol-order was already held by `state-product.py`.
+header-effect went with the production code it mutated: an `EffectI` has
+nothing left to relocate, so `relocate_header.effect_info` is deleted rather
+than left as an identity. Typed mode also compares assembly
 of 23 body products in their original coordinates. The 22 source-edit replays use
 production `body_product` capture, projection and assembly, not the old private
 write-set replay. Fixed-header allocation/reference views still come from the
@@ -198,12 +215,18 @@ opaque/透明alias、trait及方法、效果和函数签名binder，同时反转
 显式/推断默认值类型错误两例，共六例；全部在源码前增加注释，比较移动后的诊断及位置。
 尚未覆盖全部复杂表达式，也未接入生产缓存调度。
 已不再生成稠密header identity表。固定header的其他案例暂仍用稠密夹具映射。
-`allocation.py`有十七个编译负控，守身份/ID冲突、目标版本选择、负槽与引用域及常量声明类型，
+`allocation.py`有二十二个编译负控，守身份/ID冲突、目标版本选择、负槽与引用域及常量声明类型，
 以及body evidence置换、未观察临时ID、分配终点、前序台账保留、world、无路径边界、
-compiler nominal和runtime擦除绑定；
+compiler trait binder和runtime擦除绑定；
+台账的 nominal/trait 半边已随派生身份删除（消费者不需要映射，两个声明也不可能争同一个号），
+继承那两条判词的是 `check/cx.mint` 的 intern 表，五个负控在同一个脚本里守它：
+撞车被静默接受、不登记、顺手推进计数器、把机器相关的 src_path 读进派生输入、丢掉声明种类。
 CI的incremental-allocation独立运行该脚本，
-并运行`provenance.py`的六个生产生成器负控：丢用户/std/compiler来源、丢provider carry、
-错误header放行和漏std world重绑定；必须命中真实module transition的具名断言。
+并运行`provenance.py`的十三个生产生成器负控：丢用户/std/compiler来源、丢provider carry、
+错误header放行、漏std world重绑定，三个丢 intern 表跨模块 carry 的控制，
+以及四个消费者侧的：丢 provider 台账仍解析引用、消费者自铸 provider 的 binder、
+消费者声明抢 provider 已占的分配、按位置匹配改名的声明；
+必须命中真实module transition的具名断言。
 native门禁另显式执行allocation模块测试；当前已被生产driver引用，与主图有重叠，计数不相加。
 另有两个真实两模块导出/导入案例：provider交换效果或类型声明顺序，consumer分别
 选择性导入效果、通过模块别名访问类型和泛型函数，合并原声明模块与consumer台账后
@@ -251,11 +274,14 @@ relocate_header及其header_product依赖的55项owning测试，不与其他targ
 header_product captures complete header scope tables, diagnostic suffixes and
 allocation intervals without retaining the entire Cx or a Java capability. Real
 header fixtures compare the complete assembled Cx, then project the complete state
-into moved ID/source coordinates and compare against cold Cx. Three compiling
-controls omit impl-key relocation or retain old bounds/observable impls; these are
-part of the 30 typed-all controls.
-header-state.py的九个编译负控守环境、分配、诊断前后缀、常量表、类型作用域及
+into moved ID/source coordinates and compare against cold Cx. Two compiling
+controls retain old bounds or old observable impls; these are part of the 21
+typed-all controls. The impl-key control went with derived ids: an impl table
+is keyed by a trait id and an ADT head, and neither moves any more.
+header-state.py的十一个编译负控守环境、分配、诊断前后缀、intern 表、常量表、类型作用域及
 type-span清空状态；完整Cx捕获/装配和HeaderProduct投影字段审计另有五个结构负控。
+nominal/trait 的取号在 header pass 里，所以 intern 表是这个边界写的字段之一，
+它整张随产物走而不做投影：派生值在候选修订里是同一个整数。
 这些完整表快照仍保留生产顺序，不是逐声明delta，不能合并任意独立声明编辑；
 输入环境有效性、当前顺序装配和生产调度仍须接线。没有借此启用header cache。
 
@@ -276,8 +302,9 @@ test、默认辅助函数签名登记及泛型字典保留；另两个负控守i
 （合计18个）。这只是同revision生产边界，
 不是模块cache有效性证明，也尚未接上跨revision的具名header重组。
 源码token相等不证明AST相等，尤其不能忽略换行的语义。
-`identity.py` 验证生产声明候选身份及八个成功编译负控：重复父声明及子路径、
-类型/关联效果的绑定槽归一、默认参数歧义、模块world隔离。具名owning断言必须失败，
+`identity.py` 验证生产声明候选身份及十三个成功编译负控：重复父声明及子路径、
+类型/关联效果的绑定槽归一、默认参数歧义、模块world隔离，以及派生身份本身的五个：
+拼写丢掉种类字母或模块、跳过终混、派生区间的上下界。具名owning断言必须失败，
 编译或链接失败不算负控。typed模式现在通过适配器调用生产声明索引；legacy模式
 保留原型身份实现及原来的八个负控。候选key不证明依赖环境或body有效。
 
@@ -302,14 +329,16 @@ cases against complete cold Cx and module products; its read-state mutant must h
 the whole-Cx assertion. Recording remains disabled by default and is not complete
 namespace coverage or production body-cache admission.
 
-`export-reads.py` adds 26 compiling controls for qualified constant and constructor
+`export-reads.py` adds 23 compiling controls for qualified constant and constructor
 answers, export presence, and private-name/candidate/type-constructor diagnostics.
 The additional fourteen complete-state oracle cases exercise these expression,
 call, qualified match and let/for refutability paths without stripping anything except the
 intentional observation log. Four controls retain the recursive refutability
 context and its let/for consumers, including the original short circuits.
-Projection separates constant type references from constructor nominal IDs and
-preserves constructor slots and diagnostic kinds. Four further controls retain
+Projection separates constant type references from constructor slots and
+diagnostic kinds; the nominal half of that separation retired with the mapper,
+because a derived nominal id relocates to itself and no control can tell the two
+apart any more. Four further controls retain
 qualified pattern presence, constructor and diagnostic answers, including their
 kind. Error recovery preserves nested pattern observations. Type resolution,
 local constructors, ADT/trait/impl and Java dependencies are still incomplete;
@@ -348,11 +377,12 @@ Both header forms share extraction and projection, with independent reference
 domains. Builtin/current-environment dependencies, source-view runtime wiring, associated types/effects and
 Java reflection still need their own observed dependencies and validity boundary.
 
-`associated-reads.py` adds 15 compiling controls for scoped subjects, optional
+`associated-reads.py` adds 11 compiling controls for scoped subjects, optional
 ordered bounds, and type/effect member lists. Owning cases retain absent versus
 empty bounds, duplicate-bound owner deduplication, missing members and ambiguity
-on both axes. Projection uses independent type, nominal and trait mappings;
-the body-product owner exercises the actual trait callback. Six additional
+on both axes. The four controls that separated the trait axis from the nominal
+one retired with derived ids: both mappers are now the identity, so nothing
+distinguishes them. Six additional
 whole-Cx/module cases compare observed and cold associated resolution, including
 error recovery. These observations do not yet establish complete effect or
 scope dependencies, runtime query wiring, or production cache admission.

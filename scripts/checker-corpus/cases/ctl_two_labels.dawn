@@ -1,0 +1,24 @@
+# checker.dawn: when a row names two `ctl` effects, which one the refusal is
+# about is settled by name, not by id and not by declaration order.
+#
+# `sam_snapshot` reports `eff_ctl_labels(...)[0]`, and a row stores its labels
+# in id order. An id derives from the declaration now, so id order is a digest
+# order: stable, but arbitrary and unrelated to anything a reader can see.
+# `eff_ctl_labels` therefore sorts by name, and this case is what holds that
+# down. The two names are chosen so that all three candidate orders disagree:
+# `Async` is declared first and has the smaller derived id, `Abort` is the one
+# a sort by name puts first, and it is `Abort` that the golden below names.
+use java "java.lang.Thread"
+
+pub ctl effect Async {
+  fn wait(ms: Int) -> Unit
+}
+
+pub ctl effect Abort {
+  fn abort() -> Unit
+}
+
+pub fn both() -> Thread !io !Async !Abort = Thread.new(() => {
+  wait(1)
+  abort()
+})

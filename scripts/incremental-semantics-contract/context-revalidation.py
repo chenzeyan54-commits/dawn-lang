@@ -30,8 +30,8 @@ def main():
     variants.extend([
         ('accept-changed', 'Some(semantic_reads.observed_equal(m, fact, observed.function_reads))',
          'Some(true)', owner),
-        ('accept-removed-nominal', 'if not map.has(initial.adts, m.nominal(id)?) { return Some(false) }',
-         'if not map.has(initial.adts, m.nominal(id)?) { return Some(true) }',
+        ('accept-removed-nominal', 'if not map.has(initial.adts, id) { return Some(false) }',
+         'if not map.has(initial.adts, id) { return Some(true) }',
          'context revalidation rejects removed nominal IDs and invalid slots'),
         ('accept-invalid-slot', 'if slot < 0 || slot >= len(info.ctors) { return Some(false) }',
          'if slot < 0 || slot >= len(info.ctors) { return Some(true) }',

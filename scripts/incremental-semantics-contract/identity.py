@@ -18,6 +18,22 @@ def main():
     original = (ROOT / "selfhost/src/check/identity.dawn").read_text()
     variants = [
         ("duplicate-parent", "if unique { out = out ++ [e] }", "out = out ++ [e]"),
+        # The derived id: what it is a function of, and what it must not be a
+        # function of. The spelling is the whole input, so dropping the kind
+        # letter or the owner from it merges two declarations, and skipping
+        # the finalizer leaves the low bits -- the only ones a 47-bit band
+        # keeps, and the only ones `Map[Int, _]` buckets on -- correlated
+        # across two names that differ in one character.
+        ("spelling-drops-kind", 'Named(kind, name) -> "N" ++ kind_text(kind) ++ atom(name)',
+         'Named(kind, name) -> "N" ++ atom(name)'),
+        ("spelling-drops-owner", "pub fn minted_text(m: Minted) -> String = atom(m.owner) ++ path_text",
+         "pub fn minted_text(m: Minted) -> String = atom(\"\") ++ path_text"),
+        ("derive-skips-finalizer", "derived_floor() + (fmix64(fnv1a64(spelling)) & derived_width())",
+         "derived_floor() + (fnv1a64(spelling) & derived_width())"),
+        ("derive-leaves-the-band", "pub fn derived_floor() -> Int = 4294967296",
+         "pub fn derived_floor() -> Int = 7"),
+        ("derive-overflows-the-label-key", "pub fn derived_width() -> Int = 140737488355327",
+         "pub fn derived_width() -> Int = 9223372036854775807"),
         ("parent-not-checked", "var depth = 1", "var depth = len(e.entry.key.path)"),
         ("binder-spelling", "return BoundType(i)", "return NamedType(name, [], [])"),
         ("default-ambiguity", "if same == 1 {", "if same >= 1 {"),

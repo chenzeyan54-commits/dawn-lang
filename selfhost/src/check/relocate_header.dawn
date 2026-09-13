@@ -40,11 +40,11 @@ pub fn constructor(v: HeaderView, c: CtorI) -> Option[CtorI] = {
     Some(FieldI { ..f, ty: relocate.ty(v.ids, f.ty)? })
   }
   let fields = projected_list(c.fields, move)?
-  Some(CtorI { ..c, adt: relocate.nominal(v.ids, c.adt)?, fields: fields })
+  Some(CtorI { ..c, fields: fields })
 }
 
 pub fn adt(v: HeaderView, a: AdtI) -> Option[AdtI] = {
-  Some(AdtI { ..a, id: relocate.nominal(v.ids, a.id)?,
+  Some(AdtI { ..a,
     tparams: projected_list(a.tparams, t => relocate.ty(v.ids, t))?,
     bound_eparams: projected_list(a.bound_eparams, e => relocate.effect_row(v.ids, e))?,
     ctors: projected_list(a.ctors, c => constructor(v, c))? })
@@ -61,16 +61,11 @@ pub fn trait_info(v: HeaderView, t: TraitI) -> Option[TraitI] = {
     Some((name, relocate.effect_row(v.ids, eff)?))
   }
   let defaults = projected_list(t.eff_defaults, move_default)?
-  Some(TraitI { ..t, id: relocate.trait_id(v.ids, t.id)?, tvar: relocate.ty(v.ids, t.tvar)?,
+  Some(TraitI { ..t, tvar: relocate.ty(v.ids, t.tvar)?,
     methods: methods, eff_defaults: defaults })
 }
 
-pub fn effect_info(v: HeaderView, e: EffectI) -> Option[EffectI] = {
-  Some(EffectI { ..e, id: relocate.nominal(v.ids, e.id)? })
-}
-
 pub fn implementation(v: HeaderView, i: ImplI) -> Option[ImplI] = {
-  let constraints = projected_list(i.constraints, bs => projected_list(bs, tr => relocate.trait_id(v.ids, tr)))?
   let move_associated: fn((String, Ty)) -> Option[(String, Ty)] = entry => {
     let (name, t) = entry
     Some((name, relocate.ty(v.ids, t)?))
@@ -81,8 +76,8 @@ pub fn implementation(v: HeaderView, i: ImplI) -> Option[ImplI] = {
     Some((name, relocate.effect_row(v.ids, e)?))
   }
   let effects = projected_list(i.eff_bindings, move_effect)?
-  Some(ImplI { ..i, trait_id: relocate.trait_id(v.ids, i.trait_id)?, subject: relocate.ty(v.ids, i.subject)?,
-    tparams: projected_list(i.tparams, t => relocate.ty(v.ids, t))?, constraints: constraints,
+  Some(ImplI { ..i, subject: relocate.ty(v.ids, i.subject)?,
+    tparams: projected_list(i.tparams, t => relocate.ty(v.ids, t))?,
     assoc_bindings: associated, eff_bindings: effects,
     lo: v.position(i.owner, i.src_path, i.lo)?, hi: v.end_position(i.owner, i.src_path, i.hi)? })
 }
@@ -115,12 +110,11 @@ pub fn type_source(v: HeaderView, owner: Option[String], t: TypeRef) -> Option[T
 pub fn alias_info(v: HeaderView, a: AliasE) -> Option[AliasE] = {
   # Transparent aliases deliberately have no nominal allocation.
   if not a.is_opaque && a.id != -1 { return None }
-  let id = if a.is_opaque { relocate.nominal(v.ids, a.id)? } else { a.id }
   let target = match a.target {
     Some(t) -> Some(type_source(v, Some(a.owner), t)?)
     None -> None
   }
-  Some(AliasE { ..a, id: id, target: target,
+  Some(AliasE { ..a, target: target,
     tparams: projected_list(a.tparams, t => relocate.ty(v.ids, t))?,
     eparams: projected_list(a.eparams, e => relocate.effect_row(v.ids, e))?,
     nlo: v.position(Some(a.owner), None, a.nlo)?, nhi: v.end_position(Some(a.owner), None, a.nhi)? })
@@ -128,25 +122,22 @@ pub fn alias_info(v: HeaderView, a: AliasE) -> Option[AliasE] = {
 
 ## Preserve insertion/lexical order. Reordering declarations requires a
 ## separate current-order assembly, not sorting these maps by numeric IDs.
+##
+## The name-keyed tables whose values are nominal or trait ids, and the
+## effect metadata keyed by one, are absent from the update: a derived id is
+## the same integer in the candidate revision, so the spread carries them
+## unchanged and there is nothing here to get wrong.
 pub fn exports(v: HeaderView, e: ModExports) -> Option[ModExports] = {
   let names: fn(String) -> Option[String] = name => Some(name)
-  let move_ctor: fn((Int, Int)) -> Option[(Int, Int)] = entry => {
-    let (id, slot) = entry
-    Some((relocate.nominal(v.ids, id)?, slot))
-  }
-  let ctors = projected_map(e.ctors, names, move_ctor)?
+  let same: fn(Int) -> Option[Int] = id => Some(id)
   Some(ModExports { ..e,
     fns: projected_map(e.fns, names, s => relocate.signature(v.ids, s))?,
-    types_by_name: projected_map(e.types_by_name, names, id => relocate.nominal(v.ids, id))?,
     aliases: projected_map(e.aliases, names, a => alias_info(v, a))?,
     alias_resolved: projected_map(e.alias_resolved, names, t => relocate.ty(v.ids, t))?,
-    ctors: ctors, consts: projected_map(e.consts, names, t => relocate.ty(v.ids, t))?,
-    traits_by_name: projected_map(e.traits_by_name, names, id => relocate.trait_id(v.ids, id))?,
-    effects: projected_map(e.effects, names, id => relocate.nominal(v.ids, id))?,
-    effect_infos: projected_map(e.effect_infos, id => relocate.nominal(v.ids, id), info => effect_info(v, info))?,
+    consts: projected_map(e.consts, names, t => relocate.ty(v.ids, t))?,
     impls: projected_list(e.impls, info => implementation(v, info))?,
-    adt_infos: projected_map(e.adt_infos, id => relocate.nominal(v.ids, id), info => adt(v, info))?,
-    trait_infos: projected_map(e.trait_infos, id => relocate.trait_id(v.ids, id), info => trait_info(v, info))? })
+    adt_infos: projected_map(e.adt_infos, same, info => adt(v, info))?,
+    trait_infos: projected_map(e.trait_infos, same, info => trait_info(v, info))? })
 }
 
 fn type_span(v: HeaderView, owner: Option[String], path: Option[String], s: TySpan) -> Option[TySpan] = {
@@ -161,10 +152,7 @@ pub fn state(v: HeaderView, p: HeaderProduct, owner: Option[String], path: Optio
   allocation_start: Int) -> Option[HeaderProduct] = {
   if p.allocation_count < 0 || allocation_start + p.allocation_count < allocation_start { return None }
   let names: fn(String) -> Option[String] = name => Some(name)
-  let move_ctor: fn((Int, Int)) -> Option[(Int, Int)] = entry => {
-    let (id, slot) = entry
-    Some((relocate.nominal(v.ids, id)?, slot))
-  }
+  let same: fn(Int) -> Option[Int] = id => Some(id)
   var impls: Impls = map.empty()
   for (key, info) in map.entries(p.impl_table) {
     if key != (info.trait_id, head_of(info.subject)?) { return None }
@@ -182,32 +170,26 @@ pub fn state(v: HeaderView, p: HeaderProduct, owner: Option[String], path: Optio
   }
   Some(HeaderProduct { ..p, allocation_start: allocation_start,
     diagnostics: projected_list(p.diagnostics, move_diag)?,
-    adts: projected_map(p.adts, id => relocate.nominal(v.ids, id), a => adt(v, a))?,
-    traits: projected_map(p.traits, id => relocate.trait_id(v.ids, id), t => trait_info(v, t))?,
+    adts: projected_map(p.adts, same, a => adt(v, a))?,
+    traits: projected_map(p.traits, same, t => trait_info(v, t))?,
     fns: projected_map(p.fns, names, s => relocate.signature(v.ids, s))?,
-    adts_by_name: projected_map(p.adts_by_name, names, id => relocate.nominal(v.ids, id))?,
     aliases: projected_map(p.aliases, names, a => alias_info(v, a))?,
     alias_resolved: projected_map(p.alias_resolved, names, t => relocate.ty(v.ids, t))?,
-    ctors_by_name: projected_map(p.ctors_by_name, names, move_ctor)?,
-    traits_by_name: projected_map(p.traits_by_name, names, id => relocate.trait_id(v.ids, id))?,
     local_impls: projected_list(p.local_impls, i => implementation(v, i))?,
     observable_impls: projected_list(p.observable_impls, i => implementation(v, i))?,
     impl_table: impls,
     module_fn_sigs: projected_map(p.module_fn_sigs, key => Some(key), s => relocate.signature(v.ids, s))?,
     consts: projected_map(p.consts, names, t => relocate.ty(v.ids, t))?,
-    effects: projected_map(p.effects, names, id => relocate.nominal(v.ids, id))?,
-    effect_infos: projected_map(p.effect_infos, id => relocate.nominal(v.ids, id), e => effect_info(v, e))?,
     current_eff_vars: projected_map(p.current_eff_vars, names, e => relocate.effect_row(v.ids, e))?,
     current_tparams: projected_map(p.current_tparams, names, t => relocate.ty(v.ids, t))?,
     current_tparam_bounds: projected_map(p.current_tparam_bounds, id => relocate.type_var(v.ids, id),
-      bounds => projected_list(bounds, tr => relocate.trait_id(v.ids, tr)))?,
+      bounds => Some(bounds))?,
     module_exports: projected_map(p.module_exports, names, e => exports(v, e))?,
     ty_spans: projected_map(p.ty_spans, span_key, s => type_span(v, owner, path, s))? })
 }
 
 fn fixture_view() -> HeaderView = {
-  let ids = relocate.new(map.from([(10, 110)]), map.from([(20, 120)]),
-    map.from([(30, 130)]), map.from([(40, 140)])).expect("header fixture IDs")
+  let ids = relocate.new(map.from([(30, 130)]), map.from([(40, 140)])).expect("header fixture IDs")
   HeaderView { ids: ids,
     position: (owner, path, n) => if owner == Some("decl") && (path == None || path == Some("decl.dawn")) { Some(n + 1000) } else { None },
     end_position: (owner, path, n) => if owner == Some("decl") && (path == None || path == Some("decl.dawn")) { Some(n + 2000) } else { None } }
@@ -220,15 +202,18 @@ test "header metadata projects binders constructors and retained audience" {
     ctors: [CtorI { adt: 10, name: "Cell", fields: [field] }], derives_show: true, derives_ord: false,
     owner: Some("decl"), audience: AModule("decl"), bound_eparams: [EffVar("e", 40)] }
   let moved = adt(v, a).expect("header ADT")
-  assert moved.id == 110 && moved.tparams == [TyVar("T", 130)] && moved.bound_eparams == [EffVar("e", 140)]
-  assert moved.ctors == [CtorI { adt: 110, name: "Cell", fields: [FieldI { name: "run",
-    ty: TyFn([TyVar("T", 130)], TyAdt(110, []), EffVar("e", 140)) }] }]
+  # the ADT's own id is derived and stays; its binders are allocations and move
+  assert moved.id == 10 && moved.tparams == [TyVar("T", 130)] && moved.bound_eparams == [EffVar("e", 140)]
+  assert moved.ctors == [CtorI { adt: 10, name: "Cell", fields: [FieldI { name: "run",
+    ty: TyFn([TyVar("T", 130)], TyAdt(10, []), EffVar("e", 140)) }] }]
   assert moved.owner == a.owner && moved.audience == a.audience && moved.derives_show && not moved.derives_ord
   let none: Map[Int, Int] = map.empty()
-  let empty_ids = relocate.new(none, none, none, none).expect("empty header IDs")
+  let empty_ids = relocate.new(none, none).expect("empty header IDs")
   assert adt(HeaderView { ..v, ids: empty_ids }, a) == None
-  let e = EffectI { id: 10, name: "Ask", owner: Some("decl"), audience: AModule("decl"), ops: ["second", "first"], ctl: true }
-  assert effect_info(v, e) == Some(EffectI { ..e, id: 110 })
+  # An `EffectI` has nothing left that a relocation could move: its id is
+  # derived from its declaration and every other field is a name, an audience
+  # or a flag. The visitor that used to rewrite it is gone, and the record
+  # travels on the spread.
 }
 
 test "header metadata projects trait and impl associated bindings and locations" {
@@ -238,24 +223,26 @@ test "header metadata projects trait and impl associated bindings and locations"
     tparams: [TyVar("T", 30)], constraints: [[20]], eparams: [], owner: Some("decl"), trait_id: Some(20), op_of: None, inferring: false }
   let t = TraitI { id: 20, name: "Carry", tvar: TyVar("T", 30), is_pub: true, owner: Some("decl"), src_path: Some("decl.dawn"),
     methods: [("get", MethodSig { sig: sig, has_default: true })], assoc: ["Item"], eff_assoc: ["Run"],
-    eff_defaults: [("Run", ELabeled(EPure, [(10, "Ask")]))], injects: false }
+    eff_defaults: [("Run", ELabeled(EffVar("e", 40), [(10, "Ask")]))], injects: false }
   let moved = trait_info(v, t).expect("header trait")
-  assert moved.id == 120 && moved.tvar == TyVar("T", 130) && not moved.injects
+  assert moved.id == 20 && moved.tvar == TyVar("T", 130) && not moved.injects
   let (_, method) = moved.methods[0]
   assert method.has_default
-  assert method.sig.ret == TyAssoc(TyVar("T", 130), 120, "Item")
-  assert method.sig.eff == EffAssoc("T", 130, 120, "Run")
-  assert method.sig.trait_id == Some(120) && method.sig.param_tys == [TyVar("T", 130)]
-  assert len(method.sig.constraints) == 1 && len(method.sig.constraints[0]) == 1 && method.sig.constraints[0][0] == 120
-  assert moved.eff_defaults == [("Run", ELabeled(EPure, [(110, "Ask")]))]
+  assert method.sig.ret == TyAssoc(TyVar("T", 130), 20, "Item")
+  assert method.sig.eff == EffAssoc("T", 130, 20, "Run")
+  assert method.sig.trait_id == Some(20) && method.sig.param_tys == [TyVar("T", 130)]
+  assert len(method.sig.constraints) == 1 && len(method.sig.constraints[0]) == 1 && method.sig.constraints[0][0] == 20
+  # the label is a derived id and stays; the effect variable beside it is an
+  # allocation and moves, which is what the projector still has to do here
+  assert moved.eff_defaults == [("Run", ELabeled(EffVar("e", 140), [(10, "Ask")]))]
   let i = ImplI { trait_id: 20, subject: TyAdt(10, [TyVar("T", 30)]), tparams: [TyVar("T", 30)], constraints: [[20]],
     lo: 1, hi: 4, derived: true, owner: Some("decl"), src_path: Some("decl.dawn"), provided: ["get"],
-    assoc_bindings: [("Item", TyVar("T", 30))], eff_bindings: [("Run", ELabeled(EPure, [(10, "Ask")]))] }
+    assoc_bindings: [("Item", TyVar("T", 30))], eff_bindings: [("Run", ELabeled(EffVar("e", 40), [(10, "Ask")]))] }
   let mi = implementation(v, i).expect("header impl")
-  assert mi.trait_id == 120 && mi.subject == TyAdt(110, [TyVar("T", 130)]) && mi.tparams == [TyVar("T", 130)]
-  assert len(mi.constraints) == 1 && len(mi.constraints[0]) == 1 && mi.constraints[0][0] == 120
+  assert mi.trait_id == 20 && mi.subject == TyAdt(10, [TyVar("T", 130)]) && mi.tparams == [TyVar("T", 130)]
+  assert len(mi.constraints) == 1 && len(mi.constraints[0]) == 1 && mi.constraints[0][0] == 20
   assert mi.assoc_bindings == [("Item", TyVar("T", 130))]
-  assert mi.eff_bindings == [("Run", ELabeled(EPure, [(110, "Ask")]))]
+  assert mi.eff_bindings == [("Run", ELabeled(EffVar("e", 140), [(10, "Ask")]))]
   assert mi.lo == 1001 && mi.hi == 2004 && mi.derived && mi.provided == ["get"]
   assert implementation(v, ImplI { ..i, owner: Some("foreign") }) == None
   assert implementation(v, ImplI { ..i, src_path: Some("foreign.dawn") }) == None
@@ -274,6 +261,6 @@ test "header metadata projects alias syntax only in its declaring source" {
     TTuple([TQual("dep", "Cell", [], [], 1005, 2006), TAssoc("T", "Item", 1007, 2008)], 1005, 2009), ["e"], 1000, 2010))
   assert alias_info(v, AliasE { ..a, owner: "foreign" }) == None
   assert alias_info(v, AliasE { ..a, id: 10 }) == None
-  assert alias_info(v, AliasE { ..a, is_opaque: true, id: 10 }).expect("opaque alias").id == 110
+  assert alias_info(v, AliasE { ..a, is_opaque: true, id: 10 }).expect("opaque alias").id == 10
   assert alias_info(v, AliasE { ..a, target: None }).expect("imported alias").target == None
 }

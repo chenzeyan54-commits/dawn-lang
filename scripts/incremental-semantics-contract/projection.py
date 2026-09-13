@@ -39,6 +39,26 @@ def main():
             ("header-inference-state", "cx: cx1, sigs: sigs, impl_sigs: impl_sigs", "cx: cx1, sigs: map(sigs, s => Sig { ..s, inferring: false }), impl_sigs: impl_sigs"),
             ("header-const-types", "impl_sigs: impl_sigs, const_tys: const_tys }", "impl_sigs: impl_sigs, const_tys: [] }"),
         ]),
+        # These two moved here from body-probe.py's typed mutants when nominal
+        # and trait ids started deriving from their declarations. Their old
+        # owner was the reordered-header sample, and a declaration reorder can
+        # no longer permute an evidence pack: a ground label is a derived
+        # identity and stays put, and a declaration's own binders are minted in
+        # one lexical sweep so they keep their order among themselves. The
+        # inline test below is where the behaviour still has a judgment,
+        # because it hands the relocation two type variables that do swap.
+        ("relocate_tree", "tree relocation reconstructs ground packs and associated environment order", [
+            ("pack-order", "let parts = ordered_parts(pack_parts(v, x)?)?", "let parts = pack_parts(v, x)?"),
+            ("evidence-origin", "Some(XEvRead(relocate.evidence_key(v.ids, key)?, moved,",
+             "Some(XEvRead(relocate.evidence_key(v.ids, key)?, origin,"),
+        ]),
+        ("relocate_tree", "tree relocation assembles defaults symbols and permuted call evidence", [
+            # Also moved from body-probe's typed mutants: the value sample's
+            # constants are declared at types with no binders in them, so a
+            # derived-id world leaves `relocate.ty` nothing to do there.
+            ("constant-type", "ty: relocate.ty(v.ids, c.ty)?, init: expression(v, c.init)?",
+             "ty: c.ty, init: expression(v, c.init)?"),
+        ]),
         ("relocate_tree", "tree callee lookup preserves declaring owners across module aliases", [
             # The production lookup is the index, so these three mutate the
             # index. The linear scan they used to mutate is now only the

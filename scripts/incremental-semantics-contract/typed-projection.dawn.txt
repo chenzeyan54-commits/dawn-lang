@@ -104,7 +104,7 @@ fn local_view(before: Cx, after: Cx, delta: Int) -> View = {
     id = id + 1
   }
   let none: Map[Int, Int] = map.empty()
-  let ids = relocate.body_interval(relocate.new(stable, stable, stable, stable)
+  let ids = relocate.body_interval(relocate.new(stable, stable)
     .expect("fixture relocation tables"), before.next_id, after.next_id - before.next_id,
     before.next_id + delta, none).expect("fixture body interval")
   View { ids: ids, symbols: after.syms,
@@ -133,7 +133,7 @@ pub fn source_state(current: Cx, before: Cx, after: Cx, body: TFun, delta: Int) 
     id = id + 1
   }
   let none: Map[Int, Int] = map.empty()
-  let ids = relocate.body_interval(relocate.new(stable, stable, stable, stable)
+  let ids = relocate.body_interval(relocate.new(stable, stable)
     .expect("state relocation tables"), before.next_id, after.next_id - before.next_id,
     current.next_id, none).expect("state body interval")
   let view = View { ids: ids, symbols: after.syms,
@@ -186,10 +186,15 @@ pub fn metadata_sample() -> MetadataTrial !io = {
     } else { None } }
   let old_exports = exports_of(old.cx, syntax, "metadata", "metadata")
   let cold = exports_of(next.cx, next_syntax, "metadata", "metadata")
-  if map.get(old_exports.types_by_name, "Box") == map.get(cold.types_by_name, "Box") ||
+  # A nominal id derives from the declaration, so shifting the counter under
+  # the second revision leaves `Box` exactly where it was; what the projection
+  # still has work to do on is the binder domain, and the two signatures below
+  # are what prove this fixture reaches it.
+  if map.get(old_exports.types_by_name, "Box") != map.get(cold.types_by_name, "Box") ||
     map.len(old_exports.aliases) != 2 || map.len(old_exports.effects) != 1 || len(old_exports.impls) == 0 {
     panic("metadata coverage")
   }
+  if old_exports.fns == cold.fns { panic("metadata binder coverage") }
   let projected = relocate_header.exports(view, old_exports).expect("metadata projection")
   let product = header_product.capture(initial, old.cx).expect("metadata header capture")
   let assembled = header_product.assemble(initial, product).expect("metadata header assembly")
@@ -798,12 +803,12 @@ fn import_sample(kind: Int) -> StateTrial !io = {
     else { map.get(provider.effects, "Ask").expect("old exported effect") }
   let new_ask = if qualified { map.get(new_provider.adts_by_name, "First").expect("new exported type") }
     else { map.get(new_provider.effects, "Ask").expect("new exported effect") }
-  if old_ask == new_ask || relocate.nominal(allocation.between(old_table, new_table).expect("program IDs"), old_ask) != Some(new_ask) {
-    panic("provider effect identity did not move")
-  }
-  if relocate.nominal(allocation.between(old_local, new_local).expect("consumer IDs"), old_ask) != None {
-    panic("consumer invented imported provenance")
-  }
+  # A derived id: the provider declares the same thing in both revisions, so
+  # the reference the consumer holds is the same integer and no ledger entry
+  # has to say so. The join still has to exist for the binder domains.
+  if old_ask != new_ask { panic("provider identity moved under a reorder") }
+  if allocation.between(old_table, new_table) == None { panic("program join refused") }
+  if allocation.between(old_local, new_local) == None { panic("consumer join refused") }
   let decl = module_fns(syntax)[0]
   let (after, body) = check_fn(before, decl, sigs[0])
   let ids = allocation.body_relocation(allocation.between(old_table, new_table).expect("import header IDs"),
@@ -1047,7 +1052,8 @@ pub fn header_sample() -> HeaderTrial !io = {
   let old_tell = map.get(before.effects, "Tell").expect("old Tell")
   let new_ask = map.get(next.effects, "Ask").expect("new Ask")
   let new_tell = map.get(next.effects, "Tell").expect("new Tell")
-  if old_ask != new_tell || old_tell != new_ask || old_ask == old_tell { panic("effect order did not reverse") }
+  # Reordering the two effect declarations leaves both of their ids alone.
+  if old_ask != new_ask || old_tell != new_tell || old_ask == old_tell { panic("effect identity moved under a reorder") }
   let scope = module_key("header-world", "header", "header", "header.dawn")
   var old_entries = allocation.local_headers(scope, old_ast, before).expect("old header provenance")
   var new_entries = allocation.local_headers(scope, new_ast, next).expect("new header provenance")
@@ -1089,10 +1095,10 @@ pub fn header_sample() -> HeaderTrial !io = {
     match (old_method, new_method) {
       (function_product.ImplMethod(_, _, old_sig, old_info), function_product.ImplMethod(_, _, new_sig, new_info)) -> {
         if relocate.signature(ids, old_sig) != Some(new_sig) || relocate.ty(ids, old_info.subject) != Some(new_info.subject) ||
-            relocate.trait_id(ids, old_info.trait_id) != Some(new_info.trait_id) { panic("named impl header projection") }
+            old_info.trait_id != new_info.trait_id { panic("named impl header projection") }
       }
       (function_product.TraitDefault(_, _, old_sig, old_tid), function_product.TraitDefault(_, _, new_sig, new_tid)) -> {
-        if relocate.signature(ids, old_sig) != Some(new_sig) || relocate.trait_id(ids, old_tid) != Some(new_tid) {
+        if relocate.signature(ids, old_sig) != Some(new_sig) || old_tid != new_tid {
           panic("named default header projection")
         }
       }
@@ -1100,15 +1106,12 @@ pub fn header_sample() -> HeaderTrial !io = {
     }
   }
   if next.next_id + (after.next_id - before.next_id) != checked.next_id { panic("body allocation endpoint differs from cold") }
-  if relocate.nominal(ids, old_ask) != Some(new_ask) || relocate.nominal(ids, old_tell) != Some(new_tell) {
-    panic("header role mismatch")
-  }
   for name in ["First", "Second"] {
     let old_id = map.get(before.adts_by_name, name).expect("old ADT ID")
     let new_id = map.get(next.adts_by_name, name).expect("new ADT ID")
     let old_adt = map.get(before.adts, old_id).expect("old ADT")
     let new_adt = map.get(next.adts, new_id).expect("new ADT")
-    if old_id == new_id || relocate.nominal(ids, old_id) != Some(new_id) ||
+    if old_id != new_id ||
       relocate.ty(ids, old_adt.tparams[0]) != Some(new_adt.tparams[0]) ||
       relocate.effect_row(ids, old_adt.bound_eparams[0]) != Some(new_adt.bound_eparams[0]) {
       panic("ADT header provenance mismatch")
@@ -1121,7 +1124,7 @@ pub fn header_sample() -> HeaderTrial !io = {
       relocate.effect_row(ids, old_alias.eparams[0]) != Some(new_alias.eparams[0]) {
       panic("alias binder provenance mismatch")
     }
-    if old_alias.is_opaque && relocate.nominal(ids, old_alias.id) != Some(new_alias.id) {
+    if old_alias.is_opaque && old_alias.id != new_alias.id {
       panic("opaque alias provenance mismatch")
     }
   }
@@ -1132,7 +1135,7 @@ pub fn header_sample() -> HeaderTrial !io = {
     let new_trait = map.get(next.traits, new_id).expect("new trait")
     let (_, old_method) = old_trait.methods[0]
     let (_, new_method) = new_trait.methods[0]
-    if old_id == new_id || relocate.trait_id(ids, old_id) != Some(new_id) ||
+    if old_id != new_id ||
       relocate.ty(ids, old_trait.tvar) != Some(new_trait.tvar) ||
       relocate.signature(ids, old_method.sig) != Some(new_method.sig) {
       panic("trait header provenance mismatch")

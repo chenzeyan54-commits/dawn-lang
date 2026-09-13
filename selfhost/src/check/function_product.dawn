@@ -356,8 +356,10 @@ test "method products preserve impl and default owners across declaration reorde
       assert key == ad[0]
       assert syntax.name == "twice" && syntax.body != None
       assert sig.trait_id == Some(tid)
+      # a trait id derives from its declaration, so reordering the two trait
+      # declarations leaves both of them where they were
       assert Some(tid) == map.get(next.cx.traits_by_name, "Forward")
-      assert Some(tid) != map.get(old.cx.traits_by_name, "Forward")
+      assert Some(tid) == map.get(old.cx.traits_by_name, "Forward")
     }
     _ -> { assert false }
   }

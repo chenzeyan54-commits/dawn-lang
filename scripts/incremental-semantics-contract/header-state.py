@@ -34,8 +34,12 @@ def audit(cx, product):
 
 
 def audit_projection(product, visitor):
-    moved = set("allocation_start diagnostics adts traits fns adts_by_name aliases alias_resolved ctors_by_name traits_by_name local_impls observable_impls impl_table module_fn_sigs consts effects effect_infos current_eff_vars current_tparams current_tparam_bounds module_exports ty_spans".split())
-    retained = set("allocation_count fn_origin alias_resolving local_traits module_aliases imported_names const_order all_const_names java_classes record_ty_spans".split())
+    # A nominal or trait id derives from its declaration, so the four
+    # name-keyed tables whose values are those ids, and the constructor map
+    # keyed by one, are carried rather than projected: their contents are the
+    # same integers in the candidate revision.
+    moved = set("allocation_start diagnostics adts traits fns aliases alias_resolved local_impls observable_impls impl_table module_fn_sigs consts current_eff_vars current_tparams current_tparam_bounds module_exports ty_spans".split())
+    retained = set("allocation_count identities fn_origin adts_by_name ctors_by_name traits_by_name effects effect_infos alias_resolving local_traits module_aliases imported_names const_order all_const_names java_classes record_ty_spans".split())
     if fields(product, "HeaderProduct") != moved | retained or moved & retained:
         raise RuntimeError("Unclassified header projection field")
     block = visitor.split("Some(HeaderProduct { ..p,", 1)[1].split(" })", 1)[0]
@@ -83,6 +87,8 @@ def main():
          " { return None }\n  let limit = current.next_id + product.allocation_count"),
         ("diagnostic-prefix", "current.diags ++ product.diagnostics", "product.diagnostics"),
         ("diagnostic-suffix", "current.diags ++ product.diagnostics", "current.diags"),
+        ("identity-table", "identities: after.identities", "identities: before.identities"),
+        ("identity-install", "identities: product.identities", "identities: current.identities"),
         ("constant-table", "consts: product.consts", "consts: current.consts"),
         ("type-scope", "current_tparams: product.current_tparams", "current_tparams: current.current_tparams"),
         ("span-reset", "ty_spans: product.ty_spans", "ty_spans: current.ty_spans"),

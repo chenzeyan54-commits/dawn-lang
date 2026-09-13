@@ -8,6 +8,9 @@ pub fn analyze_reference(loaded: LoadResult, std: StdCtx, opts: CtOpts, js: Jsig
   var out: List[CheckedMod] = []
   # ids continue across modules so grafted ADT/trait ids never collide
   var nid = std.next_id
+  # and so does the intern table behind the derived nominal/trait ids: a digest
+  # collision between two modules is as fatal as one inside a module
+  var interned = std.identities
   # The program's impls, accumulated the way `exports` is -- but for a
   # different reason. An export is reachable only through a `use`; an impl is
   # in force everywhere (spec §3.5), so this table is not what the importer
@@ -53,6 +56,7 @@ pub fn analyze_reference(loaded: LoadResult, std: StdCtx, opts: CtOpts, js: Jsig
       line_starts: lexer.line_starts_of(mf.text),
       mod_path: Some(mf.mod_path),
       next_id: nid,
+      identities: interned,
       # std's impls are part of the baseline, not something `use` turns on --
       # and neither are the ones the modules before this got to
       impl_table: base_impls,
@@ -74,6 +78,7 @@ pub fn analyze_reference(loaded: LoadResult, std: StdCtx, opts: CtOpts, js: Jsig
       for d in ct.diags { diags = diags ++ [LocDiag { path: mf.path, d: d }] }
     }
     nid = cx.next_id
+    interned = cx.identities
     # registration already rejected anything that collided with a key already
     # in this table, so every row here is either new or the one put there
     for pr in map.entries(cx.impl_table) {

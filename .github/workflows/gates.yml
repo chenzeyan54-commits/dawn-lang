@@ -1097,8 +1097,16 @@ jobs:
     # subject count: five thirteenths here (191.15, taken as 192), four
     # thirteenths in each of the two jobs below. The three shards add back up
     # to the 497s that left this job.
-    # budget: 3x 571s planning value (java-reads' observation plus prefix's shard 0)
-    timeout-minutes: 29
+    # 2026-09-14: derived nominal/trait ids grew allocation.py and provenance.py
+    # (incremental-7) and identity.py and header-state.py (incremental-3) past
+    # what those two jobs can claim under the 950s pole, so one step moves out
+    # of each and lands here, where there was room. Measured locally on an idle
+    # machine at HEAD: function-products.py 81s, query-runtime.py 44s, so
+    # 571 + 2 * (81 + 44) = 821s. No harness is removed from the run and no
+    # job is added, so the account's queue floor is unchanged; what moves is
+    # which runner does the work.
+    # budget: 3x 821s planning value (java-reads, prefix's shard 0, and the two steps that moved here)
+    timeout-minutes: 42
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -1138,6 +1146,14 @@ jobs:
       # Oracle regression measured 228.37s under concurrent load; retain it.
       - name: Java class metadata read contracts
         run: python3 scripts/incremental-semantics-contract/java-reads.py
+
+      # moved from incremental-7 and incremental-3 on 2026-09-14; see the
+      # budget note above. Both keep every control they had.
+      - name: named function and method header products
+        run: python3 scripts/incremental-semantics-contract/function-products.py
+
+      - name: query runtime contracts
+        run: python3 scripts/incremental-semantics-contract/query-runtime.py
 
   incremental-2:
     runs-on: ubuntu-latest
@@ -1183,7 +1199,13 @@ jobs:
     # a faster local result. New planning total: 870 + 40 = 910s.
     # One additional header-journal control reserves another 2*5s planning
     # allowance; the existing 46-minute timeout also covers the 920s total.
-    # budget: 3x 920s planning value (existing baseline plus new controls)
+    # 2026-09-14: derived nominal/trait ids add five mutants to identity.py and
+    # two to header-state.py. Measured locally on an idle machine, identity went
+    # 26s to 40s and header-state 34s to 45s, so the existing baseline plus
+    # twice the 25s delta is 970s, which is over the pole. query-runtime.py
+    # (44s locally) moves to incremental-1 to pay for it:
+    # 920 - 2 * 44 + 2 * 25 = 882s.
+    # budget: 3x 882s planning value (existing baseline, less query runtime, plus the new controls)
     timeout-minutes: 46
     steps:
       - uses: actions/checkout@v4
@@ -1214,7 +1236,6 @@ jobs:
           python3 scripts/incremental-semantics-contract/identity.py
           python3 scripts/incremental-semantics-contract/header-metadata.py
           python3 scripts/incremental-semantics-contract/header-state.py
-          python3 scripts/incremental-semantics-contract/query-runtime.py
 
       # was the incremental-state-products job until 2026-09-11.
       # All 19 state-product mutants took 155.55s on 2026-09-08.
@@ -1351,8 +1372,15 @@ jobs:
     runs-on: ubuntu-latest
     # allocation 419s + diagnostic-1 359s
     # = 778s of work, plus one 36s setup = 814s.
-    # budget: 3x 814s planning value (two merged jobs' worst observations)
-    timeout-minutes: 41
+    # 2026-09-14: derived nominal/trait ids add five mint mutants to
+    # allocation.py and seven carry/consumer mutants to provenance.py.
+    # Measured locally on an idle machine, allocation went 54s to 74s and
+    # provenance 101s to 202s, so the existing baseline plus twice the 121s
+    # delta is 1056s, which is over the pole. function-products.py (81s
+    # locally) moves to incremental-1 to pay for it:
+    # 814 - 2 * 81 + 2 * 121 = 894s.
+    # budget: 3x 894s planning value (two merged jobs' observations, less function products, plus the new controls)
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -1371,7 +1399,6 @@ jobs:
         run: |
           python3 scripts/incremental-semantics-contract/allocation.py
           python3 scripts/incremental-semantics-contract/provenance.py
-          python3 scripts/incremental-semantics-contract/function-products.py
 
       # was the incremental-diagnostic-1 job until 2026-09-11.
       # All 124 controls passed across three shards on 2026-09-08; slowest 289.33s.

@@ -27,12 +27,7 @@ def main():
         ("cx", "effect-members-consumer", "trait_associated_members_read(cx, tid, semantic_reads.AssociatedEffect)\n        cx = members_cx", "trait_associated_members_read(cx, tid, semantic_reads.AssociatedEffect)\n        cx = cx"),
         ("semantic_reads", "subject-domain", "let moved_parameter = match answer { None -> None, Some(ty) -> Some(type_value(ty)?) }", "let moved_parameter = answer"),
         ("semantic_reads", "bound-subject-domain", "ParameterBounds(type_value(subject)?, moved_bounds)", "ParameterBounds(subject, moved_bounds)"),
-        ("semantic_reads", "bounds-domain", "ids = ids ++ [trait_value(id)?]", "ids = ids ++ [id]"),
-        ("semantic_reads", "members-domain", "TraitAssociatedMembers(trait_value(id)?, kind, names)", "TraitAssociatedMembers(id, kind, names)"),
-        ("semantic_reads", "trait-not-nominal", "TraitAssociatedMembers(trait_value(id)?, kind, names)", "TraitAssociatedMembers(nominal(id)?, kind, names)"),
         ("semantic_reads", "projected-axis", "TraitAssociatedMembers(trait_value(id)?, kind, names)", "TraitAssociatedMembers(trait_value(id)?, AssociatedType, names)"),
-        ("body_product", "trait-callback", "trait_value: id => relocate.trait_id(v.ids, id), binder_value: id => relocate.type_var(v.ids, id),",
-         "trait_value: id => Some(id), binder_value: id => relocate.type_var(v.ids, id),"),
     ]
     sources = {name: (ROOT / "selfhost/src/check" / (name + ".dawn")).read_text()
                for name in ("cx", "semantic_reads", "body_product")}

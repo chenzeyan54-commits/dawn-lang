@@ -26,9 +26,10 @@ use check/passes.{
 use check/checker.{check_module, check_module_headers, check_module_bodies, assemble_module_bodies, exports_of, check_fn, check_fn_inferred}
 use check/body_execution
 use check/allocation
+use check/allocation.{TypeParameter}
 use check/relocate
 use check/identity
-use check/identity.{module_key}
+use check/identity.{module_key, Minted, DeclKey, Named, FunctionDecl}
 use ir/interp.{eval_comptime, CtOut, CtOpts, ct_default}
 use check/jsig.{Jsig, jsig_refused}
 use driver/fsmem
@@ -36,7 +37,7 @@ use driver/stdlib.{
   StdCtx, load_std, std_load_error_text, std_module_of, is_std_dir, read_index
 }
 use check/tast.{TFun, TModule}
-use check/types.{Sym, Impls}
+use check/types.{Sym, Impls, TyVar}
 use front/parser
 use front/lexer
 use fspath/fspath
@@ -741,6 +742,11 @@ pub type AnalysisCarry = {
   exports: Map[String, ModExports],
   impls: Impls,
   next_id: Int,
+  # the intern table behind every derived nominal and trait id, program-wide.
+  # It advances between modules for the same reason `next_id` does: a digest
+  # collision between two modules' declarations is exactly as fatal as one
+  # inside a single module, and only a table that spans both can see it
+  identities: Map[Int, Minted],
   provenance: Option[HeaderProvenance],
   # The position view lives on the carry rather than on `ModuleStep` because
   # its readers are not the step that produced it: a diagnostic or a lowering
@@ -766,6 +772,10 @@ pub type ModuleStep = {
   checked: CheckedMod,
   diags: List[LocDiag],
   after: AnalysisCarry,
+  ## The ledger this module's own products resolve their references against,
+  ## absent whenever any part of it is. It is not published to later modules:
+  ## what they may read is this module's own declarations, in `after`.
+  references: Option[allocation.Table],
   body_records: Option[List[body_execution.Saved]],
   check_runs: Int,
   comptime_runs: Int
@@ -775,8 +785,8 @@ pub fn initial_carry(std: StdCtx) -> AnalysisCarry = {
   # The bundled library is already checked; its own sources are given a view
   # when one of them is analyzed again as an ordinary module.
   let no_spans: Map[String, identity.DeclSpans] = map.empty()
-  AnalysisCarry { exports: std.exports, impls: std.impls, next_id: std.next_id, provenance: None,
-    decl_spans: no_spans }
+  AnalysisCarry { exports: std.exports, impls: std.impls, next_id: std.next_id,
+    identities: std.identities, provenance: None, decl_spans: no_spans }
 }
 
 pub fn initial_carry_with_provenance(std: StdCtx, world: String) -> AnalysisCarry = {
@@ -799,6 +809,41 @@ fn analysis_world(carry: AnalysisCarry) -> String =
     Some(origin) -> origin.world
     None -> "cold"
   }
+
+## The ledger a module's references resolve against: its own declarations,
+## the ledger every module it names published earlier in this analysis, and
+## the compiler's reserved identities. Providers are read from the carry and
+## never from this module's spelling of an import, so a consumer mints no
+## identity for a declaration it did not make. A provider that published none
+## contributes nothing: its declarations then get no mapping at all, and the
+## products that read one refuse reuse rather than guess an ID. A module this
+## one does not name is not a provider here, even when its declarations
+## reached this scope through one that is. Two ledgers claiming one allocation
+## in one domain refuse the whole join, because admitting either would map a
+## reference to its rival.
+##
+## What is left in the join is the binder domains. A provider's nominal and
+## trait ids derive from its declarations, so a consumer computes them rather
+## than looking them up; its type and effect parameters are still allocations
+## off `Cx.next_id`, and a consumer that imported a generic function holds the
+## provider's `TyVar` ids inside the signature it was handed. This is also
+## still where "did the provider publish a ledger at all" is answered, which
+## is a reuse authorization in its own right and not something derivation
+## replaces.
+pub fn module_references(
+  origin: HeaderProvenance, syntax: Module, mod_path: String, local: Option[allocation.Table]
+) -> Option[allocation.Table] = {
+  var tables: List[allocation.Table] = [origin.intrinsics?, local?]
+  for u in module_uses(syntax) {
+    if u.path != mod_path {
+      match map.get(origin.modules, u.path) {
+        Some(Some(provider)) -> { tables = tables ++ [provider] }
+        _ -> ()
+      }
+    }
+  }
+  allocation.combine(tables)
+}
 
 fn analysis_event(
   observer: Option[AnalysisObserver], name: String, stage: AnalysisStage, entering: Bool
@@ -935,6 +980,7 @@ fn module_step_with_recording(
     # names the span view a diagnostic raised in this module resolves against
     mod_path: Some(mf.mod_path),
     next_id: before.next_id,
+    identities: before.identities,
     # std's impls are part of the baseline, not something `use` turns on --
     # and neither are the ones the modules before this got to
     impl_table: base_impls,
@@ -947,6 +993,7 @@ fn module_step_with_recording(
   var check_runs = 0
   var comptime_runs = 0
   var local_provenance: Option[allocation.Table] = None
+  var references: Option[allocation.Table] = None
   var body_records: Option[List[body_execution.Saved]] = None
   if not parse_failed {
     analysis_event(observer, mf.mod_path, AnalyzeCheck, true)
@@ -964,6 +1011,7 @@ fn module_step_with_recording(
             None -> ()
           }
         }
+        references = module_references(origin, mf.m, mf.mod_path, local_provenance)
         if record_bodies {
           let recorded = body_execution.record(scope, headers)
           body_records = Some(recorded.entries)
@@ -1007,8 +1055,10 @@ fn module_step_with_recording(
     input: mf,
     checked: checked,
     diags: diags,
+    references: references,
     body_records: body_records,
     after: AnalysisCarry { exports: exports, impls: impls, next_id: cx.next_id,
+      identities: cx.identities,
       decl_spans: map.insert(before.decl_spans, mf.mod_path, spans),
       provenance: match before.provenance {
         None -> None
@@ -1884,11 +1934,22 @@ test "module provenance carry keeps exporting owners across header reorder" {
       std_tables = std_tables ++ [origin.expect("std table")]
     }
     assert initial_origins.intrinsics != None
+    # the intern table behind std's derived ids reaches a user module through
+    # the same carry that hands it `next_id`
+    assert initial.identities == std.identities
+    assert map.len(initial.identities) > 0
     assert allocation.combine(std_tables ++ [initial_origins.intrinsics.expect("compiler origins")]) != None
     var tables: List[allocation.Table] = []
+    var references: List[allocation.Table] = []
     var ids: List[Int] = []
-    let first = "pub type First = { value: Int }\n"
-    let second = "pub type Second = { value: Int }\n"
+    var binders: List[Int] = []
+    # Each block carries a nominal declaration and a binder one. Reordering the
+    # two blocks leaves both `First` and `Second` where they were -- a nominal
+    # id derives from the declaration -- and swaps the two type parameters,
+    # which are still allocations off the counter. So this fixture separates
+    # the half of the join derivation removed from the half it did not.
+    let first = "pub type First = { value: Int }\npub fn first_of[T](x: T) -> T = x\n"
+    let second = "pub type Second = { value: Int }\npub fn second_of[T](x: T) -> T = x\n"
     for text in [first ++ second, second ++ first] {
       let (syntax, pd) = parser.parse_module(text)
       let input = LoadedModule { mod_path: "library", class_name: "library", path: "/provenance/library.dawn",
@@ -1901,9 +1962,19 @@ test "module provenance carry keeps exporting owners across header reorder" {
       assert map.get(origins.modules, "library") != Some(None)
       let table = map.get(origins.modules, "library").expect("provider record").expect("provider table")
       let id = map.get(step.checked.cx.adts_by_name, "First").expect("provider ID")
+      let binder = match map.get(step.checked.cx.fns, "first_of").expect("provider generic").tparams[0] {
+        TyVar(_, v) -> v
+        _ -> { assert false
+          0 }
+      }
+      # the module's own derived ids join the carry, so the next module
+      # interns against them rather than starting an empty table
+      assert map.get(step.after.identities, id) != None
+      assert map.len(step.after.identities) > map.len(initial.identities)
       tables = tables ++ [table]
       ids = ids ++ [id]
-      let consumer_text = "use library as dep\nfn consume(x: dep.First) -> dep.First = x\n"
+      binders = binders ++ [binder]
+      let consumer_text = "use library as dep\nfn consume(x: dep.First) -> dep.First = dep.first_of(x)\n"
       let (consumer_ast, consumer_pd) = parser.parse_module(consumer_text)
       let consumer = LoadedModule { mod_path: "consumer", class_name: "consumer", path: "/provenance/consumer.dawn",
         text: consumer_text, m: consumer_ast, pdiags: consumer_pd, pkg: None }
@@ -1914,14 +1985,75 @@ test "module provenance carry keeps exporting owners across header reorder" {
       let ordinary = analyze_module_step(consumer, step.after, std, ct_default(), jsig_refused(), None)
       assert match ordinary.body_records { None -> true, Some(_) -> false }
       assert consumed.checked.tm == ordinary.checked.tm && consumed.diags == ordinary.diags
+      assert map.get(consumed.after.identities, id) != None
       let carried = consumed.after.provenance.expect("consumer provenance")
       assert carried.world == initial_origins.world
       assert map.get(carried.modules, "library") == Some(Some(table))
       let local = map.get(carried.modules, "consumer").expect("consumer record").expect("consumer table")
-      assert relocate.nominal(allocation.between(local, local).expect("consumer IDs"), id) == None
+      assert allocation.between(local, local) != None
+
+      # The consumer resolves the provider's type parameter against the ledger
+      # the carry brought, not against anything it made up: the joined ledger
+      # answers the provider's binder, the consumer's own ledger does not.
+      let joined = consumed.references.expect("consumer reference ledger")
+      assert module_references(origins, consumer_ast, "consumer", Some(local)) == Some(joined)
+      assert relocate.type_var(allocation.between(joined, joined).expect("joined IDs"), binder) == Some(binder)
+      assert relocate.type_var(allocation.between(local, local).expect("consumer IDs"), binder) == None
+      references = references ++ [joined]
+
+      # A provider that published no ledger contributes nothing. The consumer
+      # keeps its own references and gets no answer for the provider's, so a
+      # product reading one refuses reuse instead of guessing an allocation.
+      assert map.get(origins.modules, "library") != Some(None)
+      let stripped = HeaderProvenance { ..origins, modules: map.insert(origins.modules, "library", None) }
+      let without = module_references(stripped, consumer_ast, "consumer", Some(local)).expect("references without provider")
+      assert relocate.type_var(allocation.between(without, without).expect("stripped IDs"), binder) == None
+
+      # Minting the provider's own binder in the consumer's ledger is refused:
+      # one binding cannot hold two allocations.
+      let library_scope = module_key(origins.world, "library", "library", "/provenance/library.dawn")
+      let forged = allocation.table([allocation.entry(
+        DeclKey { scope: library_scope, path: [Named(FunctionDecl, "first_of")] }, TypeParameter, 0, binder + 1000)])
+        .expect("forged consumer ledger")
+      assert module_references(origins, consumer_ast, "consumer", Some(forged)) == None
+
+      # A consumer declaration claiming an allocation the provider already owns
+      # in the same domain is refused for the opposite reason: one allocation
+      # cannot hold two bindings.
+      let consumer_scope = module_key(origins.world, "consumer", "consumer", "/provenance/consumer.dawn")
+      let colliding = allocation.table([allocation.entry(
+        DeclKey { scope: consumer_scope, path: [Named(FunctionDecl, "local_of")] }, TypeParameter, 0, binder)])
+        .expect("colliding consumer ledger")
+      assert module_references(origins, consumer_ast, "consumer", Some(colliding)) == None
     }
-    assert ids[0] != ids[1]
-    assert relocate.nominal(allocation.between(tables[0], tables[1]).expect("reordered IDs"), ids[0]) == Some(ids[1])
+    # The two revisions declare the same two types in the opposite order. A
+    # nominal id derives from the declaration, so the provider's `First` is
+    # the same integer in both, and the ledger carries no entry that would
+    # have to say so. The two type parameters are allocations and do move,
+    # which is the half of the join that is still load-bearing.
+    assert ids[0] == ids[1]
+    assert binders[0] != binders[1]
+    assert relocate.type_var(allocation.between(tables[0], tables[1]).expect("reordered IDs"), binders[0]) == Some(binders[1])
+    assert relocate.type_var(allocation.between(references[0], references[1]).expect("reordered reference IDs"),
+      binders[0]) == Some(binders[1])
+
+    # The same allocation under a renamed declaration is a different identity,
+    # so the join refuses it rather than carrying the old product's reference
+    # over. A nominal id cannot be tested this way any more -- renaming the
+    # declaration changes the derived id itself -- so the case is the binder's.
+    let renamed_text = "pub type First = { value: Int }\npub fn renamed_of[T](x: T) -> T = x\n" ++ second
+    let (renamed_ast, renamed_pd) = parser.parse_module(renamed_text)
+    let renamed_input = LoadedModule { mod_path: "library", class_name: "library", path: "/provenance/library.dawn",
+      text: renamed_text, m: renamed_ast, pdiags: renamed_pd, pkg: None }
+    let renamed_step = analyze_module_step(renamed_input, initial, std, ct_default(), jsig_refused(), None)
+    assert len(renamed_step.diags) == 0
+    assert match map.get(renamed_step.checked.cx.fns, "renamed_of").expect("renamed generic").tparams[0] {
+      TyVar(_, v) -> v == binders[0]
+      _ -> false
+    }
+    let renamed_table = map.get(renamed_step.after.provenance.expect("renamed provenance").modules, "library")
+      .expect("renamed record").expect("renamed table")
+    assert relocate.type_var(allocation.between(tables[0], renamed_table).expect("renamed IDs"), binders[0]) == None
     for text in ["fn broken(", "fn broken(x: Missing) -> Unit = ()\n"] {
       let (syntax, pd) = parser.parse_module(text)
       let input = LoadedModule { mod_path: "broken", class_name: "broken", path: "/provenance/broken.dawn",
