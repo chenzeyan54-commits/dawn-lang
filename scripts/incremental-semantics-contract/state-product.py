@@ -60,7 +60,12 @@ def main():
         ("environment-key", "Some(other) -> value == other, None -> false", "Some(other) -> value == other, None -> true"),
         ("environment-size", "map.len(a) == map.len(b) && map.fold", "map.fold"),
         ("allocation-start", "current.next_id != product.allocation_start", "false"),
-        ("unobserved-allocation", "while id < old_limit", "while false"),
+        # The interval a product recorded has to be the interval the
+        # relocation carries, which is what the walk over every allocated ID
+        # used to establish one lookup at a time.
+        ("unobserved-allocation",
+         "if not relocate.carries_interval(v.ids, p.allocation_start, p.allocation_count, allocation_start) { return None }",
+         "if false { return None }"),
         ("bound-domain", "out = out ++ [relocate.trait_id(v.ids, tr)?]", "out = out ++ [tr]"),
         ("used-effect-domain", "used = used ++ [relocate.effect_row(v.ids, e)?]", "used = used ++ [e]"),
         ("handler-cell", "Some(cell) -> Some(relocate.local_id(v.ids, cell)?)", "Some(cell) -> Some(cell)"),

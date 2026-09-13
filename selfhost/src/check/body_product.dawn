@@ -8,7 +8,7 @@ use std/list
 use std/set
 use check/cx.{Cx, Frame, cx_new, write_symbol, write_signature, write_alias, write_bounds}
 use check/types.{Sig, Sym, Ty, Eff, CtorI, FieldI, EffectI, AWorld, TyInt, TyUnit, TyVar, TyAdt, TyList, TyAssoc, TyFn, EPure, EffVar, EUnion, ELabeled, BuiltinTypeI, BtStdOnly, BtLeaf}
-use check/tast.{TFun, TConst, XUnit, XLocal}
+use check/tast.{TFun, TConst, XUnit, XLocal, XInt, XCallBuiltin}
 use front/token.{Diag, DiagOwner}
 use front/ast.{TypeRef, TNamed}
 use check/relocate
@@ -337,16 +337,13 @@ pub fn project_constant_with_source(v: View, p: ConstantProduct, allocation_star
 fn project_body[T](v: View, p: BodyProduct[T], allocation_start: Int,
   project_tree: fn(T) -> Option[T], source_value: fn(String, TypeRef) -> Option[TypeRef],
   keep_reads: Bool) -> Option[BodyProduct[T]] = {
-  if p.allocation_count < 0 { return None }
-  let old_limit = p.allocation_start + p.allocation_count
-  let limit = allocation_start + p.allocation_count
-  if old_limit < p.allocation_start || limit < allocation_start { return None }
-  var id = p.allocation_start
-  while id < old_limit {
-    let moved = relocate.local_id(v.ids, id)?
-    if moved < allocation_start || moved >= limit { return None }
-    id = id + 1
-  }
+  # Allocation is an interval even for fresh IDs which never enter syms, such
+  # as handler installations, so the relocation has to carry the whole
+  # interval and not just the symbols the tree happens to mention. It does
+  # carry it, as three numbers, and requiring them to be this product's own
+  # interval landing where this caller is installing it is the whole of the
+  # bijection: inside an interval the relocation is arithmetic.
+  if not relocate.carries_interval(v.ids, p.allocation_start, p.allocation_count, allocation_start) { return None }
   let moved_symbols = projected_changes(p.symbols, id => relocate.local_id(v.ids, id), s => projected_symbol(v, s))?
   # Fresh symbols enter Cx.syms in allocation order. Evidence ABI permutation
   # can reverse their mapped IDs; replaying the old insertion order would
@@ -396,7 +393,8 @@ test "body product constants project their real tree and share state admission" 
     current_tparams: map.from([("T", ty)]) }
   let saved = capture_constant(before, after, constant).expect("constant capture")
   let none: Map[Int, Int] = map.empty()
-  let ids = relocate.new(none, none, map.from([(1, 2)]), none, map.from([(10, 40)])).expect("constant ids")
+  let headers = relocate.new(none, none, map.from([(1, 2)]), none).expect("constant headers")
+  let ids = relocate.body_interval(headers, 10, 1, 40, none).expect("constant ids")
   let v = View { ids: ids, symbols: after.syms,
     callee: (owner, name, builtin, tr) => None }
   let moved = project_constant(v, saved, 40).expect("constant projection")
@@ -425,7 +423,8 @@ test "body product separates alias declaration positions from body positions" {
   let f = fixture_function(before)
   let p = capture(before, after, f).expect("capture source read")
   let empty: Map[Int, Int] = map.empty()
-  let ids = relocate.new(empty, empty, empty, empty, empty).expect("source fixture ids")
+  let ids = relocate.body_interval(relocate.new(empty, empty, empty, empty).expect("source fixture headers"),
+    before.next_id, 0, before.next_id, empty).expect("source fixture ids")
   let view = View { ids: ids, symbols: after.syms,
     callee: (owner, name, builtin, tr) => Some(f.sig) }
   let header = HeaderView { ids: ids,
@@ -551,13 +550,43 @@ test "body product restores symbol insertion order after a binding permutation" 
   let after = Cx { ..before, next_id: 12, syms: map.from([(10, x), (11, y)]) }
   let p = capture(before, after, f).expect("capture permutation")
   let none: Map[Int, Int] = map.empty()
-  let ids = relocate.new(none, none, none, none, map.from([(10, 41), (11, 40)])).expect("swapped IDs")
+  let headers = relocate.new(none, none, none, none).expect("swapped headers")
+  let ids = relocate.body_interval(headers, 10, 2, 40, map.from([(10, 41), (11, 40)])).expect("swapped IDs")
   let view = View { ids: ids, symbols: after.syms,
     callee: (owner, name, builtin, tr) => Some(f.sig) }
   let projected = project(view, p, 40).expect("project permutation")
   let result = assemble(Cx { ..before, next_id: 40 }, projected).expect("assemble permutation")
   assert map.keys(result.syms) == [40, 41]
   assert map.get(result.syms, 40) == Some(y) && map.get(result.syms, 41) == Some(x)
+}
+
+test "body product relocates an allocation that never becomes a symbol" {
+  # A handler installation is a fresh ID the body allocates and no symbol ever
+  # names: it reaches the tree as the prompt operand of `ctl_run`. It is
+  # covered because it is inside the interval, not because anything recorded
+  # it, and that is the claim this fixture holds down.
+  let before = Cx { ..cx_new(None, None), next_id: 10 }
+  let base = fixture_function(before)
+  let prompt = XCallBuiltin("ctl_run", [XInt(11, 0, 1)], [], [], 0, 1, TyUnit)
+  let f = TFun { ..base, body: prompt }
+  let x = Sym { name: "x", ty: TyInt, mutable: false, dlo: 0, dhi: 1,
+    dict_of: None, ev_of: None, cell_of: Some((11, TyInt)) }
+  let after = Cx { ..before, next_id: 12, syms: map.from([(10, x)]) }
+  let p = capture(before, after, f).expect("capture installation")
+  let none: Map[Int, Int] = map.empty()
+  let headers = relocate.new(none, none, none, none).expect("installation headers")
+  let ids = relocate.body_interval(headers, 10, 2, 40, none).expect("installation interval")
+  let view = View { ids: ids, symbols: after.syms,
+    callee: (owner, name, builtin, tr) => Some(f.sig) }
+  let projected = project(view, p, 40).expect("project installation")
+  assert projected.tree.body == XCallBuiltin("ctl_run", [XInt(41, 0, 1)], [], [], 0, 1, TyUnit)
+  let result = assemble(Cx { ..before, next_id: 40 }, projected).expect("assemble installation")
+  assert map.get(result.syms, 40).expect("installed symbol").cell_of == Some((41, TyInt))
+  assert result.next_id == 42
+  # An interval that stops one short of the installation cannot carry this
+  # product at all: the relocation it was built from is not this product's.
+  let short = relocate.body_interval(headers, 10, 1, 40, none).expect("short interval")
+  assert project(View { ..view, ids: short }, p, 40) == None
 }
 
 test "body product projects every state reference and the whole allocation interval" {
@@ -638,8 +667,9 @@ test "body product projects every state reference and the whole allocation inter
       eff_witness: map.from([(EffVar("e", 3), (0, 1, "callee"))]) } }
   let p = capture(before, after, f).expect("capture projected fixture")
   let none: Map[Int, Int] = map.empty()
-  let locals = map.from([(10, 40), (11, 41)])
-  let ids = relocate.new(map.from([(4, 44), (3, 43)]), map.from([(2, 22)]), map.from([(1, 11)]), map.from([(3, 33)]), locals).expect("projection ids")
+  let headers = relocate.new(map.from([(4, 44), (3, 43)]), map.from([(2, 22)]), map.from([(1, 11)]),
+    map.from([(3, 33)])).expect("projection headers")
+  let ids = relocate.body_interval(headers, 10, 2, 40, none).expect("projection ids")
   let view = View { ids: ids, symbols: after.syms,
     callee: (owner, name, builtin, tr) => Some(f.sig) }
   let q = project(view, p, 40).expect("project product")
@@ -719,7 +749,8 @@ test "body product projects every state reference and the whole allocation inter
   # render sites add that declaration's start in the revision they render, so
   # a product carries it through untouched whatever moved.
   assert cx.diags == [owned_diagnostic()]
-  let missing = relocate.new(none, map.from([(2, 22)]), map.from([(1, 11)]), map.from([(3, 33)]), map.from([(10, 40)])).expect("partial ids")
+  let missing = relocate.body_interval(relocate.new(none, map.from([(2, 22)]), map.from([(1, 11)]),
+    map.from([(3, 33)])).expect("partial headers"), 10, 2, 40, none).expect("partial ids")
   assert project(View { ..view, ids: missing }, p, 40) == None
   assert project(view, p, 41) == None
 }
@@ -736,8 +767,8 @@ fn owned_diagnostic() -> Diag =
 ## the wrong reason.
 fn fixture_read_relocation() -> Ids = {
   let empty: Map[Int, Int] = map.empty()
-  relocate.new(map.insert(map.insert(empty, 1, 11), 2, 12), map.insert(empty, 3, 13),
-    map.insert(empty, 4, 14), map.insert(empty, 5, 15), map.insert(empty, 6, 16))
+  relocate.body_interval(relocate.new(map.insert(map.insert(empty, 1, 11), 2, 12), map.insert(empty, 3, 13),
+    map.insert(empty, 4, 14), map.insert(empty, 5, 15)).expect("read relocation headers"), 6, 1, 16, empty)
     .expect("read relocation fixture")
 }
 
@@ -886,7 +917,7 @@ test "body product read comparison reorders normalized rows before comparing" {
   # one. A comparison that walked the row in place would accept the order the
   # recording happened to have.
   let ids = relocate.new(empty, empty, empty,
-    map.insert(map.insert(empty, 5, 17), 7, 15), empty).expect("permuting relocation")
+    map.insert(map.insert(empty, 5, 17), 7, 15)).expect("permuting relocation")
   let m = read_mapping(fixture_read_view(ids), (owner, node) => None)
   let recorded = semantic_reads.ScopedEffectVariable("e",
     Some(EUnion([(5, "a"), (7, "b")], [], false)))

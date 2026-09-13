@@ -207,7 +207,7 @@ pub fn state(v: HeaderView, p: HeaderProduct, owner: Option[String], path: Optio
 
 fn fixture_view() -> HeaderView = {
   let ids = relocate.new(map.from([(10, 110)]), map.from([(20, 120)]),
-    map.from([(30, 130)]), map.from([(40, 140)]), map.empty()).expect("header fixture IDs")
+    map.from([(30, 130)]), map.from([(40, 140)])).expect("header fixture IDs")
   HeaderView { ids: ids,
     position: (owner, path, n) => if owner == Some("decl") && (path == None || path == Some("decl.dawn")) { Some(n + 1000) } else { None },
     end_position: (owner, path, n) => if owner == Some("decl") && (path == None || path == Some("decl.dawn")) { Some(n + 2000) } else { None } }
@@ -224,7 +224,8 @@ test "header metadata projects binders constructors and retained audience" {
   assert moved.ctors == [CtorI { adt: 110, name: "Cell", fields: [FieldI { name: "run",
     ty: TyFn([TyVar("T", 130)], TyAdt(110, []), EffVar("e", 140)) }] }]
   assert moved.owner == a.owner && moved.audience == a.audience && moved.derives_show && not moved.derives_ord
-  let empty_ids = relocate.new(map.empty(), map.empty(), map.empty(), map.empty(), map.empty()).expect("empty header IDs")
+  let none: Map[Int, Int] = map.empty()
+  let empty_ids = relocate.new(none, none, none, none).expect("empty header IDs")
   assert adt(HeaderView { ..v, ids: empty_ids }, a) == None
   let e = EffectI { id: 10, name: "Ask", owner: Some("decl"), audience: AModule("decl"), ops: ["second", "first"], ctl: true }
   assert effect_info(v, e) == Some(EffectI { ..e, id: 110 })

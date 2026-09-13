@@ -169,7 +169,7 @@ header来自生产check_module_headers的ModuleHeaders，不再按源码锚点�
 `body-probe.py --typed --typed-all --java-home <JDK> --output <新目录>` 运行生产树投影
 的私有对照：23个真实函数、22次非均匀源码编辑及一次真实effect声明重排，七个树投影编译
 负控必须命中独立Java比较器的完整TFun断言。另有六个推断函数/调用者状态（标量、
-泛型闭包、效果多态闭包返回），使用生产header台账与body_plan逐函数累计映射，和一个
+泛型闭包、效果多态闭包返回），使用生产header台账与逐函数的分配区间，和一个
 test block状态的完整冷模块对照，丢封定签名写入、保留错误in_test的两个编译负控
 必须分别命中对应的完整Cx断言。header重排进一步比较完整Cx，并增加丢symbol目标
 插入排序的负控。另有三个impl入口负控，移除owner、类型参数和签名角色守卫，
@@ -190,10 +190,10 @@ opaque/透明alias、trait及方法、效果和函数签名binder，同时反转
 直接核对各域ID与方法签名映射，并拒绝来源路径不符的header。另连接
 `local_impl_headers`读取生产header pass的泛型impl方法签名，核对顺序交换后的完整签名，
 并拒绝缺失、错序和metadata不匹配的签名表；再连接
-显式intrinsic保留身份。`body_plan`预留旧产物完整取号区间，按完整ABI角色置换
+显式intrinsic保留身份。`body_relocation`按旧产物记下的区间做平移，按完整ABI角色置换
 顶层evidence，不从冷body读取目标ID；默认参数仍拒绝，独立产物接线待完成。
 默认参数正例另通过check_param_default分别捕获两个Int默认值，使用纯默认签名
-预留各自区间并重放，累积台账再供主body产物投影与重放，两类签名均与完整冷Cx/TFun及模块函数比较；
+按各自区间重放，这些区间再随重定位一起交给主body产物投影与重放，两类签名均与完整冷Cx/TFun及模块函数比较；
 另覆盖泛型默认闭包调用trait方法、携带字典引用：普通/泛型与显式/推断四例，加上
 显式/推断默认值类型错误两例，共六例；全部在源码前增加注释，比较移动后的诊断及位置。
 尚未覆盖全部复杂表达式，也未接入生产缓存调度。

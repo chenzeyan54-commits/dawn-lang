@@ -26,10 +26,9 @@ def main():
         ('current-handler-cell', 'take_cell: cx.take_cell', 'take_cell: None'),
         ('current-constant-cutoff', 'const_cutoff: cx.const_cutoff', 'const_cutoff: None'),
         ('current-loop-jumps', 'loop_jumps: cx.loop_jumps', 'loop_jumps: set.empty()'),
-        # The declaration's own bytes. `scalar_shape.same` above asks a
-        # question this subsumes here -- identical text parses to the same
-        # body -- so it has no fixture of its own to fail any more, and the
-        # control that owns the positions is this one.
+        # The declaration's own bytes. This is the whole pairing of the two
+        # bodies now: identical text parses to the same tree, so admission
+        # asks for the bytes rather than walking two parsed bodies.
         ('changed-declaration-text',
          'if not source_projection.same_text(prepared.old_tokens, prepared.tokens,\n'
          '    prior.lo, prior.hi, d.lo, d.hi) { return None }',
@@ -41,9 +40,23 @@ def main():
         ('recorded-binders', 'let names = scalar_shape.binders(prior.body, prior_sig.param_names)?',
          'let names: List[String] = []'),
         ('header-only-interval',
-         'let ids = allocation.reserved_plan(prepared.reserver, key,\n'
-         '    p.allocation_start, p.allocation_count, cx.next_id, prior_sig, sig, [])?',
-         'let ids = allocation.reserver_ids(prepared.reserver)'),
+         'let ids = allocation.body_relocation(prepared.headers,\n'
+         '    p.allocation_start, p.allocation_count, cx.next_id, prior_sig, sig, no_evidence)?',
+         'let ids = prepared.headers'),
+        # The product is retained under a declaration key, so the key the
+        # candidate declaration is looked up with has to be the one this
+        # revision's own enumeration gives it. Reading the recorded revision's
+        # positions, or treating a syntax index as an identity, both reach for
+        # a product under a key that is not this declaration's.
+        ('candidate-key-revision',
+         'for located in identity.located(scope, next.syntax) {',
+         'for located in identity.located(scope, source_snapshot.syntax(settled.source)) {'),
+        ('candidate-key-index',
+         'candidates = map.insert(candidates, located.span.lo, (located.entry.key, located.entry.declaration))',
+         'candidates = map.insert(candidates, located.entry.declaration, (located.entry.key, located.entry.declaration))'),
+        ('candidate-key-ignored',
+         'let (key, declaration) = map.get(prepared.candidates, d.lo)?',
+         'let (key, declaration) = map.values(prepared.candidates)[0]'),
     ]
     with tempfile.TemporaryDirectory(prefix='dawn-scalar-replay-') as temp:
         root = Path(temp)

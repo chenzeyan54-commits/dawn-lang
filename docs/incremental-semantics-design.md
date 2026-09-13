@@ -201,9 +201,10 @@ check_fn_inferred_body，保持签名封定与fns写入原序；默认值重放�
 默认值重放的丢符号写入负控要求命中完整Cx断言。泛型默认闭包调用trait方法，
 携带字典引用的显式/推断两例也已与冷状态对照；丢默认字典负控要求命中具名字典断言。
 默认诊断和全部复杂表达式仍待扩展。
-分配计划返回累积的旧/新台账，默认参数按稳定子key登记其区间后传给后继产物。
-主body专用body_segment_plan只描述已拆分的检查区间，允许签名仍携带defaults标记；
-调用方须已处理defaults并提供其映射。原body_plan仍拒绝未拆分的带默认值整函数，
+默认参数与主body是同一声明的不同检查边界，各自有自己的分配区间；后继边界的
+重定位带着前面边界的区间，因为它要引用它们绑定的东西。主body专用
+body_segment_relocation只描述已拆分的检查区间，允许签名仍携带defaults标记；
+调用方须已处理defaults并提供其区间。body_relocation仍拒绝未拆分的带默认值整函数，
 不能通过取消守卫来假装一个连续区间足以表达所有独立入口。
 上述四类默认参数案例已同时重放主body，并与独立冷函数、模块及完整Cx比较；
 新版本主body的检查只作为对照，不提供目标分配ID。
@@ -248,9 +249,9 @@ exactly what the scan answers for the same `cx`, including the conflict
 refusal, which the inline tests assert over synthetic duplicate keys and the
 typed-projection fixtures assert on every query they make. The index is owned
 by `scalar_replay`'s prepared candidate and lives exactly as long as it: it is
-built once per candidate revision beside the allocation reservation, from the
+built once per candidate revision beside the header relocation, from the
 header revision's `cx`, so widening admission cannot put a module-sized pass on
-the per-body path. Admission of named calls stays closed. `scalar_shape.same`
+the per-body path. Admission of named calls stays closed. `scalar_shape.binders`
 pairs no call node and `recorded` accepts no read but `AssignableType`, so the
 relocation each admitted body receives still refuses every call site; the index
 is the prerequisite for widening that class, not the widening.
@@ -826,10 +827,9 @@ locals. Admission pairs the two parsed bodies over a closed expression and
 statement class instead of trusting equal token streams: the token projection
 drops newlines, so one token stream can carry two statement boundaries and two
 meanings. Every variable reference must belong to a corresponding lexical
-binder, the recorded allocation interval is reserved at the current scheduler
-entry, and every fresh symbol and journal event is projected. The interval is a
-bijection onto the reserved target range, including fresh IDs that never enter
-the symbol table. Calls, closures, generic contexts, annotations and unsupported
+binder, the recorded allocation interval is shifted to the current scheduler
+entry, and every fresh symbol and journal event is projected. The shift covers
+the whole interval, including fresh IDs that never enter the symbol table. Calls, closures, generic contexts, annotations and unsupported
 statements stay cold until their query-context proofs exist.
 
 Binder names carry one dependency the write journal does not record. The
@@ -933,10 +933,9 @@ candidate body. Replay then takes that value, and per body it asks only what
 the candidate revision can change: the header half of class membership, the
 declaration pairing, the recorded header relocated onto the candidate one, the
 alias question over the recorded binder names, and the reserved allocation
-interval. Class membership of the *recorded* body is not re-asked anywhere: the
-pairing proves it, because `scalar_shape.same` succeeds only when both trees
-consist of nodes this class supports, and a guard no fixture can distinguish is
-not a guard.
+interval. Class membership of the *recorded* body is settled where its binder
+names are collected, by a walk that fails closed on every node the class does
+not support.
 
 The recorded binder list replaces a second walk of the candidate body. It is
 sound because the pairing establishes the two bodies have the same block
@@ -945,17 +944,35 @@ establishes the same seed; the alias diagnostic `checker.declare` reports leaves
 no journal entry, so the question itself must still be asked of the candidate
 module's alias table, and it is.
 
-Reserving a body interval no longer rebuilds the module. `allocation.body_plan`
-built two extended binding tables and a whole relocation for every body, so a
-module's entire header table was walked once per body; that is why the guard was
-flat in module size and large. `allocation.reserver` does the pair-dependent work
-once (the header relocation, its reverse index, and the IDs each table already
-owns in the three domains an interval reserves) and `allocation.reserved_plan`
-then costs the interval. It is pinned to the old path by an inline oracle:
-for the same inputs it returns exactly `body_plan`'s relocation, or refuses
-exactly where `body_plan` refuses. `relocate.extend` is the matching primitive,
-equal to rebuilding with `relocate.new` over the merged maps and refusing the
-same conflicts, without revisiting the maps it extends.
+A body's own allocations are not a ledger. Reserving them used to mean
+registering one binding per allocated ID in both revisions' tables and asking
+what the join made of them, which is why reserving an interval was once a
+module-sized pass and then, once that was prepared per revision, still an
+entry per ID. An ID is an allocation: a body's interval begins at the `next_id`
+its declaration was entered with, so every ID any header owns was minted before
+it, no ID is ever minted twice, and the candidate revision mints an interval of
+the same length at its own entry. The correspondence is therefore arithmetic,
+`target + (id - start)`, and `relocate.body_interval` records the three numbers
+rather than the entries. The entry evidence pack is the one part of an interval
+that is not the plain shift, because its ABI order follows the relocated
+signature rather than allocation order; that permutation stays explicit, is
+checked to be a permutation of the interval onto itself, and is the only
+override the shift consults. Installing a product then asks whether the
+relocation carries exactly the interval that product recorded, landing where
+the caller is installing it, which is all the walk over every allocated ID ever
+established. The interval covers the IDs that never become symbols, handler
+installations among them, because they were minted inside it and not because
+anything wrote them down. A declaration checked as several boundaries, a
+function with parameter defaults, carries one interval per boundary.
+
+A retained product is addressed by the declaration it came from. Replay asks
+this revision's own declaration enumeration which identity the candidate
+declaration has and looks the product up under that, instead of spelling a key
+out of the declaration's name a second time; a name two declarations claim has
+no identity in that enumeration, so nothing keyed by it is reachable. With the
+key doing the pairing, what is left to check between the two declarations is
+that they are the same kind of thing and that the recorded header carries onto
+the candidate one.
 
 Token facts are taken once per revision too. `source_projection.between_indexed`
 re-lexed both declaration slices on every admitted body and then wrote one map
@@ -963,17 +980,18 @@ entry per code point, twice over, and the executor paid that per reused body.
 A snapshot now lexes its revision once and keeps, for each function
 declaration, its token kinds, its token spellings and its token boundaries;
 pairing two declarations is two list comparisons, and the relocation it returns
-answers each boundary from the token that covers it by binary search. The map
-`between` materialized is gone: `relocate_tree.View` takes two boundary lookups
-rather than two tables. The original `between`/`between_indexed` remain, and
-remain the equality oracle: an inline test compares the paired form against them
-position by position over a declaration range.
+answers whether the two declarations are the same tokens and the same bytes.
+The map `between` materialized is gone, and so is `between` itself: a product
+holds offsets into its own declaration, so there are no positions left to
+project.
 
-Pairing is still two parsed trees, not two token streams. A token comparison
-that ignores newlines cannot separate `let b = a` followed by `- x` from
-`let b = a - x`: one token sequence, two parses. That pair is an inline test and
-a fixture in the product oracle, and it is why `scalar_shape.same` stays on the
-replay path rather than being replaced by the token comparison.
+Admission is not a comparison of two parsed trees. A token comparison that
+ignores newlines cannot separate `let b = a` followed by `- x` from
+`let b = a - x`: one token sequence, two parses. What separates them is the
+requirement the offsets already imposed, that the declaration's own bytes are
+unchanged, since identical text parses to the recorded tree. That pair is an
+inline test and a fixture in the product oracle, and the tree pairing it used
+to justify is gone from the replay path.
 
 Measured 2026-09-12 on the local benchmark (1000 bodies per class, 30 rounds
 dropping 12, three campaigns per side interleaved, JVM 21 SerialGC, shared
@@ -987,9 +1005,9 @@ For the classes replay refuses, what it pays to reuse nothing fell to 1.5 to
 
 Replay still loses, and the margin is now small enough to name what is left. The
 marginal cost of reusing one primitive-parameter body is 34.8µs against 13.8µs
-to check it cold, and it decomposes as: `body_product.project` 19.8µs,
-`allocation.reserved_plan` 6.5µs, `scalar_shape.same` with the binder scan
-2.2µs, the token pairing 2.3µs, `body_product.assemble` 1.4µs. Relocating a
+to check it cold, and it decomposes as: `body_product.project` 19.8µs, the
+allocation reservation of the day 6.5µs, the tree pairing of the day with the
+binder scan 2.2µs, the token pairing 2.3µs, `body_product.assemble` 1.4µs. Relocating a
 typed tree now costs more than type-checking the body that produced it, so the
 projection of the product, not admission, is the next thing that has to get
 cheaper.

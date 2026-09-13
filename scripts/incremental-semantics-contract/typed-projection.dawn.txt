@@ -20,7 +20,6 @@ use compiler/check/tast_positions
 use compiler/check/body_product
 use compiler/check/header_product
 use compiler/check/allocation
-use compiler/check/allocation.{NominalId, LocalSymbol, TypeParameter, EffectParameter}
 use compiler/check/identity.{ModuleKey, DeclKey, Named, FunctionDecl, ParameterDefault, EffectDecl, module_key,
   path_text, declaration_spans, span_at}
 use compiler/front/parser
@@ -99,14 +98,15 @@ fn shifted_syms(before: Cx, after: Cx, delta: Int, width: Int) -> Cx = {
 
 fn local_view(before: Cx, after: Cx, delta: Int) -> View = {
   var stable: Map[Int, Int] = map.empty()
-  var locals: Map[Int, Int] = map.empty()
   var id = -1024
-  while id < after.next_id {
+  while id < before.next_id {
     stable = map.insert(stable, id, id)
-    locals = map.insert(locals, id, if id >= before.next_id { id + delta } else { id })
     id = id + 1
   }
-  let ids = relocate.new(stable, stable, stable, stable, locals).expect("fixture relocation tables")
+  let none: Map[Int, Int] = map.empty()
+  let ids = relocate.body_interval(relocate.new(stable, stable, stable, stable)
+    .expect("fixture relocation tables"), before.next_id, after.next_id - before.next_id,
+    before.next_id + delta, none).expect("fixture body interval")
   View { ids: ids, symbols: after.syms,
     callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
 }
@@ -128,11 +128,14 @@ pub fn body_in_source(f: TFun, before: Cx, after: Cx, delta: Int, cx: Cx, m: Mod
 pub fn source_state(current: Cx, before: Cx, after: Cx, body: TFun, delta: Int) -> Cx = {
   var stable: Map[Int, Int] = map.empty()
   var id = -1024
-  while id < after.next_id {
-    stable = map.insert(stable, id, if id >= before.next_id { id + delta } else { id })
+  while id < before.next_id {
+    stable = map.insert(stable, id, id)
     id = id + 1
   }
-  let ids = relocate.new(stable, stable, stable, stable, stable).expect("state relocation tables")
+  let none: Map[Int, Int] = map.empty()
+  let ids = relocate.body_interval(relocate.new(stable, stable, stable, stable)
+    .expect("state relocation tables"), before.next_id, after.next_id - before.next_id,
+    current.next_id, none).expect("state body interval")
   let view = View { ids: ids, symbols: after.syms,
     callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
   let saved = body_product.capture(before, after, body).expect("state capture: " ++ body.name)
@@ -531,10 +534,11 @@ fn value_module_sample() -> ModuleTrial !io = {
     }
   }
   let reserved = allocation.compiler_headers(scope.world).expect("value compiler origins")
-  var old_table = allocation.combine([reserved,
+  let old_table = allocation.combine([reserved,
     allocation.table(allocation.local_headers(scope, syntax, old_headers.cx).expect("old value origins")).expect("old value table")]).expect("old value combined")
-  var next_table = allocation.combine([reserved,
+  let next_table = allocation.combine([reserved,
     allocation.table(allocation.local_headers(scope, next_syntax, next_headers.cx).expect("new value origins")).expect("new value table")]).expect("new value combined")
+  let header_ids = allocation.between(old_table, next_table).expect("value header IDs")
   var replayed = next_headers.cx
   var moved_constants: List[TConst] = []
   var moved_tests: List[TFun] = []
@@ -543,17 +547,15 @@ fn value_module_sample() -> ModuleTrial !io = {
       function_product.ConstantHeader(_, d, ty, _) -> {
         let saved = map.get(constants, key).expect("saved constant")
         let p = saved.product
-        let plan = allocation.constant_plan(old_table, next_table, key, p.allocation_start,
+        let ids = allocation.constant_relocation(header_ids, p.allocation_start,
           p.allocation_count, replayed.next_id, p.tree.ty, ty).expect("constant allocation")
-        let view = View { ids: plan.ids, symbols: saved.after.syms,
+        let view = View { ids: ids, symbols: saved.after.syms,
           callee: (owner, name, builtin, tr) => checked_callee(saved.before, owner, name, builtin, tr) }
         let projected = body_product.project_constant(view, p, replayed.next_id).expect("constant projection")
         let installed = body_product.assemble(replayed, projected).expect("constant replay")
         let moved_by = d.lo - p.tree.lo
         replayed = shifted_syms(replayed, installed, moved_by, str.len(text))
         moved_constants = moved_constants ++ [shifted_constant(moved_by, str.len(text), projected.tree)]
-        old_table = plan.old_allocations
-        next_table = plan.next_allocations
       }
       _ -> panic("next constant role")
     }
@@ -564,21 +566,20 @@ fn value_module_sample() -> ModuleTrial !io = {
         let saved = map.get(tests, key).expect("saved test")
         let p = saved.product
         # Test signatures have only fixed Unit/io metadata, no header binders.
-        let plan = allocation.body_plan(old_table, next_table, key, p.allocation_start,
-          p.allocation_count, replayed.next_id, p.tree.sig, p.tree.sig, []).expect("test allocation")
+        let no_evidence: List[Int] = []
+        let ids = allocation.body_relocation(header_ids, p.allocation_start,
+          p.allocation_count, replayed.next_id, p.tree.sig, p.tree.sig, no_evidence).expect("test allocation")
         let prior = match function_product.value(old_named, key).expect("prior test") {
           function_product.TestHeader(_, old) -> old
           _ -> panic("prior test role")
         }
-        let view = View { ids: plan.ids, symbols: saved.after.syms,
+        let view = View { ids: ids, symbols: saved.after.syms,
           callee: (owner, name, builtin, tr) => checked_callee(saved.before, owner, name, builtin, tr) }
         let projected = body_product.project(view, p, replayed.next_id).expect("test projection")
         let installed = body_product.assemble(replayed, projected).expect("test replay")
         let moved_by = d.lo - prior.lo
         replayed = shifted_syms(replayed, installed, moved_by, str.len(text))
         moved_tests = moved_tests ++ [shifted(moved_by, str.len(text), projected.tree)]
-        old_table = plan.old_allocations
-        next_table = plan.next_allocations
       }
       _ -> panic("next test role")
     }
@@ -637,8 +638,9 @@ fn method_module_sample() -> ModuleTrial !io = {
     allocation.local_impl_headers(scope, syntax, old_headers.cx, old_headers.impl_sigs).expect("old impl headers")
   let next_entries = allocation.local_headers(scope, next_syntax, next_headers.cx).expect("next method headers") ++
     allocation.local_impl_headers(scope, next_syntax, next_headers.cx, next_headers.impl_sigs).expect("next impl headers")
-  var old_table = allocation.combine([reserved, allocation.table(old_entries).expect("old method table")]).expect("old combined methods")
-  var next_table = allocation.combine([reserved, allocation.table(next_entries).expect("next method table")]).expect("next combined methods")
+  let old_table = allocation.combine([reserved, allocation.table(old_entries).expect("old method table")]).expect("old combined methods")
+  let next_table = allocation.combine([reserved, allocation.table(next_entries).expect("next method table")]).expect("next combined methods")
+  let header_ids = allocation.between(old_table, next_table).expect("method header IDs")
   var replayed = next_headers.cx
   var impls: List[TFun] = []
   var defaults: List[TFun] = []
@@ -659,12 +661,12 @@ fn method_module_sample() -> ModuleTrial !io = {
     let entry = function_product.method(next_methods, key).expect("next method")
     let prior = function_product.method(old_methods, key).expect("prior method")
     let body = map.get(saved, key).expect("method body by key")
-    let plan = allocation.body_plan(old_table, next_table, key, body.product.allocation_start,
+    let ids = allocation.body_relocation(header_ids, body.product.allocation_start,
       body.product.allocation_count, replayed.next_id, method_signature(prior), method_signature(entry),
       body.product.tree.ev_syms).expect("method allocation")
     let (old_lo, old_hi) = method_span(prior)
     let (next_lo, next_hi) = method_span(entry)
-    let view = View { ids: plan.ids, symbols: body.after.syms,
+    let view = View { ids: ids, symbols: body.after.syms,
       callee: (owner, name, builtin, tr) => checked_callee(body.before, owner, name, builtin, tr) }
     let projected = body_product.project(view, body.product, replayed.next_id).expect("method projection")
     let installed = body_product.assemble(replayed, projected).expect("method replay")
@@ -679,8 +681,6 @@ fn method_module_sample() -> ModuleTrial !io = {
         defaults = defaults ++ [TFun { ..moved_tree, default_of: Some(tid) }]
       }
     }
-    old_table = plan.old_allocations
-    next_table = plan.next_allocations
   }
   if len(impls) != 4 || len(defaults) != 2 { panic("method products missing") }
   let (assembled_cx, assembled) = assemble_module_bodies(ModuleBodies {
@@ -722,28 +722,27 @@ fn reordered_module_sample() -> ModuleTrial !io = {
     old_cx = after
   }
   let reserved = allocation.compiler_headers(scope.world).expect("named compiler origins")
-  var old_table = allocation.combine([reserved,
+  let old_table = allocation.combine([reserved,
     allocation.table(allocation.local_headers(scope, syntax, old_headers.cx).expect("old named origins")).expect("old table")]).expect("old combined")
-  var next_table = allocation.combine([reserved,
+  let next_table = allocation.combine([reserved,
     allocation.table(allocation.local_headers(scope, next_syntax, next_headers.cx).expect("next named origins")).expect("next table")]).expect("next combined")
+  let header_ids = allocation.between(old_table, next_table).expect("named header IDs")
   var replayed = next_headers.cx
   var functions: List[TFun] = []
   for key in next_keys {
     let entry = function_product.get(next_named, key).expect("next declaration")
     let prior = function_product.get(old_named, key).expect("prior declaration")
     let body = map.get(saved, key).expect("named body lookup")
-    let plan = allocation.body_plan(old_table, next_table, key, body.product.allocation_start,
+    let ids = allocation.body_relocation(header_ids, body.product.allocation_start,
       body.product.allocation_count, replayed.next_id, prior.signature, entry.signature,
       body.product.tree.ev_syms).expect("named allocation")
-    let view = View { ids: plan.ids, symbols: body.after.syms,
+    let view = View { ids: ids, symbols: body.after.syms,
       callee: (owner, name, builtin, tr) => checked_callee(body.before, owner, name, builtin, tr) }
     let projected = body_product.project(view, body.product, replayed.next_id).expect("named projection")
     let installed = body_product.assemble(replayed, projected).expect("named replay")
     let moved_by = entry.syntax.lo - prior.syntax.lo
     replayed = shifted_syms(replayed, installed, moved_by, str.len(text))
     functions = functions ++ [shifted(moved_by, str.len(text), projected.tree)]
-    old_table = plan.old_allocations
-    next_table = plan.next_allocations
   }
   let (assembled_cx, assembled) = assemble_module_bodies(ModuleBodies {
     cx: replayed, functions: functions, constants: [], impl_methods: [], trait_defaults: [], tests: [] })
@@ -807,10 +806,10 @@ fn import_sample(kind: Int) -> StateTrial !io = {
   }
   let decl = module_fns(syntax)[0]
   let (after, body) = check_fn(before, decl, sigs[0])
-  let owner = DeclKey { scope: scope, path: [Named(FunctionDecl, decl.name)] }
-  let plan = allocation.body_plan(old_table, new_table, owner, before.next_id, after.next_id - before.next_id,
+  let ids = allocation.body_relocation(allocation.between(old_table, new_table).expect("import header IDs"),
+    before.next_id, after.next_id - before.next_id,
     next.next_id, body.sig, nsigs[0], body.ev_syms).expect("import body plan")
-  let view = View { ids: plan.ids, symbols: after.syms,
+  let view = View { ids: ids, symbols: after.syms,
     callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
   let saved = body_product.capture(before, after, body).expect("import body capture")
   let projected = body_product.project(view, saved, next.next_id).expect("import body projection")
@@ -846,8 +845,11 @@ fn default_sample(inferred: Bool, generic: Bool, invalid: Bool) -> ModuleTrial !
   let decl = module_fns(syntax)[0]
   let new_decl = module_fns(new_syntax)[0]
   let scope = module_key("defaults-world", "defaults", "defaults", "defaults.dawn")
-  var old_table = allocation.table(allocation.local_headers(scope, syntax, before).expect("old default headers")).expect("old table")
-  var new_table = allocation.table(allocation.local_headers(scope, new_syntax, next).expect("new default headers")).expect("new table")
+  let old_table = allocation.table(allocation.local_headers(scope, syntax, before).expect("old default headers")).expect("old table")
+  let new_table = allocation.table(allocation.local_headers(scope, new_syntax, next).expect("new default headers")).expect("new table")
+  # The defaults and the body that follows them are separate boundaries of one
+  # declaration, so each adds its interval to the relocation the next one uses.
+  var header_ids = allocation.between(old_table, new_table).expect("default header IDs")
   let moved_by = new_decl.lo - decl.lo
   var old_cx = before
   var new_cx = next
@@ -860,18 +862,17 @@ fn default_sample(inferred: Bool, generic: Bool, invalid: Bool) -> ModuleTrial !
     let new_sig = default_sig(nsigs[0], decl.name, k, nsigs[0].param_tys[k])
     let fn_value = TFun { name: sig.name, sig: sig, param_syms: [], dict_syms: value.dict_syms,
       defaults: [], ev_syms: [], body: value.body, is_test: false, impl_of: None, default_of: None }
-    let key = DeclKey { scope: scope, path: [Named(FunctionDecl, decl.name), Named(ParameterDefault, p.name)] }
-    let plan = allocation.body_plan(old_table, new_table, key, old_cx.next_id, after.next_id - old_cx.next_id,
-      new_cx.next_id, sig, new_sig, []).expect("default allocation")
-    let view = View { ids: plan.ids, symbols: after.syms,
+    let no_evidence: List[Int] = []
+    let ids = allocation.body_relocation(header_ids, old_cx.next_id, after.next_id - old_cx.next_id,
+      new_cx.next_id, sig, new_sig, no_evidence).expect("default allocation")
+    header_ids = ids
+    let view = View { ids: ids, symbols: after.syms,
       callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
     let saved = body_product.capture(old_cx, after, fn_value).expect("default capture")
     let projected = body_product.project(view, saved, new_cx.next_id).expect("default projection")
     let default_installed = body_product.assemble(new_cx, projected).expect("default assembly")
     new_cx = shifted_syms(new_cx, default_installed, moved_by, str.len(text))
     old_defaults = old_defaults ++ [Some(value)]
-    old_table = plan.old_allocations
-    new_table = plan.next_allocations
     old_cx = after
     k = k + 1
   }
@@ -879,10 +880,9 @@ fn default_sample(inferred: Bool, generic: Bool, invalid: Bool) -> ModuleTrial !
     let (cx, _, value) = check_fn_inferred_body(old_cx, decl, sigs[0], old_defaults)
     (cx, value)
   } else { check_fn_body(old_cx, decl, sigs[0], old_defaults) }
-  let owner = DeclKey { scope: scope, path: [Named(FunctionDecl, decl.name)] }
-  let main_plan = allocation.body_segment_plan(old_table, new_table, owner,
+  let main_ids = allocation.body_segment_relocation(header_ids,
     old_cx.next_id, old_after.next_id - old_cx.next_id, new_cx.next_id, sigs[0], nsigs[0], old_body.ev_syms).expect("main allocation")
-  let main_view = View { ids: main_plan.ids, symbols: old_after.syms,
+  let main_view = View { ids: main_ids, symbols: old_after.syms,
     callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
   let main_saved = body_product.capture(old_cx, old_after, old_body).expect("main capture")
   let main_projected = body_product.project(main_view, main_saved, new_cx.next_id).expect("main projection")
@@ -934,6 +934,7 @@ fn inferred_module_sample() -> ModuleTrial !io = {
   let reserved = allocation.compiler_headers("inferred-world").expect("inferred intrinsics")
   old_table = allocation.combine([old_table, reserved]).expect("old inferred provenance")
   new_table = allocation.combine([new_table, reserved]).expect("new inferred provenance")
+  let header_ids = allocation.between(old_table, new_table).expect("inferred header IDs")
   var old = old_header
   var cold = new_header
   var replayed = new_header
@@ -952,10 +953,9 @@ fn inferred_module_sample() -> ModuleTrial !io = {
     } else {
       let delta = replayed.next_id - before.next_id
       if delta != 1 { panic("inferred fixture did not move allocation") }
-      let key = DeclKey { scope: scope, path: [Named(FunctionDecl, old_decls[i].name)] }
-      let plan = allocation.body_plan(old_table, new_table, key, before.next_id,
+      let ids = allocation.body_relocation(header_ids, before.next_id,
         after.next_id - before.next_id, replayed.next_id, old_sigs[i], new_sigs[i], body.ev_syms).expect("inferred allocation")
-      let view = View { ids: plan.ids, symbols: after.syms,
+      let view = View { ids: ids, symbols: after.syms,
         callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
       let saved = body_product.capture(before, after, body).expect("inferred capture")
       let projected = body_product.project(view, saved, replayed.next_id).expect("inferred projection: " ++ body.name)
@@ -964,8 +964,6 @@ fn inferred_module_sample() -> ModuleTrial !io = {
       replayed = shifted_syms(replayed, installed, moved_by, str.len(text))
       let moved = shifted(moved_by, str.len(text), projected.tree)
       functions = functions ++ [moved]
-      old_table = plan.old_allocations
-      new_table = plan.next_allocations
       out = out ++ [StateTrial { replayed: replayed, cold: checked, relocated: moved,
         cold_body: cold_body, module_body: whole.fns[i] }]
     }
@@ -1078,10 +1076,8 @@ pub fn header_sample() -> HeaderTrial !io = {
   let reserved = allocation.compiler_headers("header-world").expect("header intrinsics")
   let old_table = allocation.combine([allocation.table(old_entries).expect("old local table"), reserved]).expect("old header table")
   let new_table = allocation.combine([allocation.table(new_entries).expect("new local table"), reserved]).expect("new header table")
-  let body_owner = DeclKey { scope: scope, path: [Named(FunctionDecl, decl.name)] }
-  let plan = allocation.body_plan(old_table, new_table, body_owner,
+  let ids = allocation.body_relocation(allocation.between(old_table, new_table).expect("header body IDs"),
     before.next_id, after.next_id - before.next_id, next.next_id, saved.sig, nsigs[1], saved.ev_syms).expect("body allocation plan")
-  let ids = plan.ids
   let old_methods = function_product.methods(scope, old_headers).expect("old named methods")
   let new_methods = function_product.methods(scope, new_headers).expect("new named methods")
   if len(function_product.impl_keys(old_methods)) != 2 || len(function_product.default_keys(old_methods)) != 2 {
@@ -1103,7 +1099,7 @@ pub fn header_sample() -> HeaderTrial !io = {
       _ -> panic("named method role mismatch")
     }
   }
-  if plan.next_id != checked.next_id { panic("body allocation endpoint differs from cold") }
+  if next.next_id + (after.next_id - before.next_id) != checked.next_id { panic("body allocation endpoint differs from cold") }
   if relocate.nominal(ids, old_ask) != Some(new_ask) || relocate.nominal(ids, old_tell) != Some(new_tell) {
     panic("header role mismatch")
   }

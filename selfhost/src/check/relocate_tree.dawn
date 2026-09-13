@@ -608,8 +608,12 @@ test "the callee index answers exactly what the linear scan answers" {
 fn fixture_view() -> View = {
   let empty: Map[Int, Int] = map.empty()
   let swap = map.insert(map.insert(empty, 1, 20), 2, 10)
-  let ids = relocate.new(map.insert(swap, EV_PACK_ID, EV_PACK_ID), map.insert(empty, 3, 30),
-    map.insert(swap, 0, 0), swap, map.insert(map.insert(empty, 1, 91), 2, 92)).expect("valid fixture IDs")
+  let headers = relocate.new(map.insert(swap, EV_PACK_ID, EV_PACK_ID), map.insert(empty, 3, 30),
+    map.insert(swap, 0, 0), swap).expect("valid fixture IDs")
+  # The body allocated symbols 1 and 2 and the candidate revision mints 91 and
+  # 92 for them, with the entry evidence pair swapped by the ABI order.
+  let ids = relocate.body_interval(headers, 1, 2, 91, map.insert(map.insert(empty, 1, 91), 2, 92))
+    .expect("valid fixture interval")
   let symbol = Sym { name: "x", ty: TyInt, mutable: false, dlo: 10, dhi: 11,
     dict_of: None, ev_of: None, cell_of: None }
   View { ids: ids,

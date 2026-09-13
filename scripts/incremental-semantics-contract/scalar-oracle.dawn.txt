@@ -84,16 +84,21 @@ fn local_samples() -> List[Comparison] !io = {
 }
 
 ## Newlines carry statement boundaries, and the token comparison drops them.
-## The second revision here has the same token stream and a different parse;
-## the third has the same parse and different bytes. Neither is admitted: a
+## The second revision here has the same parse and different bytes; the third
+## has the same token stream and a different parse. Neither is admitted: a
 ## saved body's spans are offsets into its declaration's own text, so that
 ## text has to be the same text.
+##
+## The byte difference comes first because it is the case that reaches the
+## counted refusal below. The re-parsed one also shortens the declaration, so
+## a run that admits it walks off the end of the declaration it measured its
+## spans from, and the scheduler stops there rather than at the count.
 fn boundary_samples() -> List[Comparison] !io = {
   let before = "fn compute(x: Int) -> Int = {\n let a = 1\n let b = a\n - x\n}\n"
   replay_cases("boundary", before, [
     ("# moved\n" ++ before, 1),
-    ("fn compute(x: Int) -> Int = {\n let a = 1\n let b = a - x\n}\n", 0),
-    ("fn compute(x: Int) -> Int = {\n let a = 1\n let b =  a\n - x\n}\n", 0)
+    ("fn compute(x: Int) -> Int = {\n let a = 1\n let b =  a\n - x\n}\n", 0),
+    ("fn compute(x: Int) -> Int = {\n let a = 1\n let b = a - x\n}\n", 0)
   ])
 }
 

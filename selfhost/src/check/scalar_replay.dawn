@@ -15,8 +15,9 @@ use check/body_execution.{Recorded, SavedFunction, FunctionInput}
 use check/body_product
 use check/body_product.{Product, BodyProduct}
 use check/identity
-use check/identity.{ModuleKey, DeclKey, Named, FunctionDecl}
+use check/identity.{ModuleKey, DeclKey}
 use check/allocation
+use check/relocate.{Ids}
 use check/scalar_shape
 use check/write_journal.{SymbolKey}
 use check/source_projection
@@ -45,8 +46,8 @@ type AdmittedData = { scope: ModuleKey, ready: Option[Ready] }
 ## headers produced these products, and no caller can substitute another.
 pub opaque type Admitted = AdmittedData
 
-type Prepared = { scope: ModuleKey, ready: Ready, reserver: allocation.Reserver,
-  allowed: Map[DeclKey, Int], callees: relocate_tree.CalleeIndex,
+type Prepared = { scope: ModuleKey, ready: Ready, headers: Ids,
+  candidates: Map[Int, (DeclKey, Int)], callees: relocate_tree.CalleeIndex,
   old_tokens: source_projection.Tokens, tokens: source_projection.Tokens }
 
 fn primitive(t: Ty) -> Bool = match t {
@@ -91,12 +92,12 @@ fn snapshot_matches(h: ModuleHeaders, s: Snapshot) -> Bool = source_snapshot.syn
 ## Refusing here is refusing to record an admission verdict, not refusing a
 ## body: an unadmitted body is checked cold like any other.
 fn recorded(prior: FnDecl, prior_sig: Sig, p: Product, declaration: Int) -> Option[Prior] = {
-  # Class membership of the recorded declaration is not re-asked here. The
-  # replay path proves it: `parameters` accepts the candidate header,
-  # `relocate.signature` carries the recorded header onto it field for field,
-  # and `scalar_shape.same` pairs the two bodies, which only succeeds when
-  # both consist of nodes this class supports. A guard here would be one no
-  # fixture can distinguish, and an undistinguished guard is not a guard.
+  # Class membership of the recorded declaration is settled by
+  # `scalar_shape.binders` below, which fails closed on every node this class
+  # does not support. The replay path settles the candidate's: `parameters`
+  # accepts its header, `relocate.signature` carries the recorded header onto
+  # it field for field, and `source_projection.same_text` requires the
+  # declaration's own bytes, so the candidate body is the recorded body.
   if p.tree.sig != prior_sig || p.tree.name != prior.name ||
     p.signatures != [] || p.aliases != [] || len(p.bounds) != 0 || p.diagnostics != [] { return None }
   let reads = p.function_reads?
@@ -192,18 +193,30 @@ fn prepare(admitted: AdmittedData, next: ModuleHeaders, source: Snapshot) -> Opt
   let scope = admitted.scope
   let settled = admitted.ready?
   let next_headers = table(scope, next)?
-  let reserver = allocation.reserver(settled.headers, next_headers)?
-  var allowed: Map[DeclKey, Int] = map.empty()
-  for entry in identity.declarations(scope, next.syntax) {
-    allowed = map.insert(allowed, entry.key, entry.declaration)
+  let headers = allocation.between(settled.headers, next_headers)?
+  # The candidate revision's own declaration keys, addressed by where each
+  # declaration starts. A body reaches the executor as syntax, and this is
+  # what turns that syntax back into the identity the enumeration gave it,
+  # rather than spelling a key out of the declaration's name a second time.
+  # A name that two declarations in this revision claim has no key here at
+  # all: `identity.located` drops it, and a product keyed by it is therefore
+  # unreachable.
+  var candidates: Map[Int, (DeclKey, Int)] = map.empty()
+  for located in identity.located(scope, next.syntax) {
+    match next.syntax.decls[located.entry.declaration] {
+      DFn(_) -> if located.entry.member == None {
+        candidates = map.insert(candidates, located.span.lo, (located.entry.key, located.entry.declaration))
+      }
+      _ -> ()
+    }
   }
   # The candidate revision's function tables, keyed once by the pair a call
-  # site names. It belongs here for the same reason the reservation does:
+  # site names. It belongs here for the same reason the header relocation does:
   # `prepare` runs once per candidate revision, `relocation` runs once per
   # body, and a table built per body would cost a module-sized pass per body.
   # It is built from the header revision's `cx`, which is the revision these
   # products are relocated onto.
-  Some(Prepared { scope: scope, ready: settled, reserver: reserver, allowed: allowed,
+  Some(Prepared { scope: scope, ready: settled, headers: headers, candidates: candidates,
     callees: relocate_tree.callee_index(next.cx),
     old_tokens: source_snapshot.tokens(settled.source), tokens: source_snapshot.tokens(source) })
 }
@@ -215,25 +228,30 @@ fn prepare(admitted: AdmittedData, next: ModuleHeaders, source: Snapshot) -> Opt
 ## path builds.
 fn relocation(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[(Prior, View)] = {
   if cx.diags != [] { return None }
-  let bound = parameters(d, sig)?
-  let key = DeclKey { scope: prepared.scope, path: [Named(FunctionDecl, d.name)] }
-  let declaration = map.get(prepared.allowed, key)?
+  let _ = parameters(d, sig)?
+  # The product is retained under the key of the declaration that produced it,
+  # so this is the whole of finding it: ask the candidate revision which
+  # declaration this is, and look the product up under that. A declaration
+  # this revision spells the same way but reads as another identity, and a
+  # reorder that moves a name onto another declaration, both land on a
+  # different key and find nothing.
+  let (key, declaration) = map.get(prepared.candidates, d.lo)?
   let saved = map.get(prepared.ready.entries, key)?
   let prior = saved.syntax
   let prior_sig = saved.signature
   let p = saved.product
   # `parameters` proved the candidate declaration binds exactly `sig`'s
-  # parameter names, so equal names make `bound` the recorded body's binding
-  # set as well, and the recorded binder list describes this body too. The
-  # rest of the header is relocated field for field by the reservation below,
-  # which refuses unless the recorded signature carries onto this one.
+  # parameter names, so equal names make the recorded binder list describe
+  # this body too. The rest of the header is relocated field for field by the
+  # interval below, which refuses unless the recorded signature carries onto
+  # this one, and the declaration's own bytes are required further down.
   if prior_sig.param_names != sig.param_names { return None }
-  if not scalar_shape.same(prior.body, d.body, bound) { return None }
   for name in saved.binders {
     if map.has(cx.module_aliases, name) { return None }
   }
-  let ids = allocation.reserved_plan(prepared.reserver, key,
-    p.allocation_start, p.allocation_count, cx.next_id, prior_sig, sig, [])?
+  let no_evidence: List[Int] = []
+  let ids = allocation.body_relocation(prepared.headers,
+    p.allocation_start, p.allocation_count, cx.next_id, prior_sig, sig, no_evidence)?
   # Both revisions lexed their own declarations once, and pairing them is two
   # list comparisons over kinds and spellings. That is the snapshot's own
   # equality, and it says the recorded coordinates address this declaration in
@@ -252,9 +270,9 @@ fn relocation(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[(Prior,
     prior.lo, prior.hi, d.lo, d.hi) { return None }
   let view = View { ids: ids,
     symbols: saved.symbols,
-    # Admission is closed to named calls: `scalar_shape.same` pairs no call
-    # node and `recorded` accepts no read but `AssignableType`, so no admitted
-    # body has a callee to resolve. Widening this class is what consumes
+    # Admission is closed to named calls: `scalar_shape.binders` pairs no
+    # call node and `recorded` accepts no read but `AssignableType`, so no
+    # admitted body has a callee to resolve. Widening this class consumes
     # `prepared.callees`; until then the relocation refuses every call node.
     callee: (owner, name, builtin, trait_id) => None }
   Some((saved, view))
@@ -361,6 +379,33 @@ test "scalar replay moves unchanged bodies through the current scheduler" {
   assert actual.bodies.cx.diags == expected.cx.diags
   assert actual.bodies.cx.function_reads == expected.cx.function_reads
   assert actual.bodies.cx.body_writes == expected.cx.body_writes
+}
+
+test "scalar replay finds a product by the candidate declaration's identity" {
+  let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
+  let before = "fn answer() -> Int = 42\nfn other(x: Int) -> Int = x\n"
+  let old_snapshot = source_snapshot.of(before).expect("recorded snapshot")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(old_snapshot), map.empty())
+  let saved = body_execution.record(scope, old)
+  # A recorded product is reachable only under the key the enumeration gives
+  # the candidate declaration in this revision. Reordering the declarations
+  # keeps the keys and reuses both; renaming one leaves its product with no
+  # key to be found under, and the other product is still found under its own.
+  for (after, reused) in [
+    ("fn answer() -> Int = 42\nfn other(x: Int) -> Int = x\n", 2),
+    ("fn other(x: Int) -> Int = x\nfn answer() -> Int = 42\n", 2),
+    ("fn renamed() -> Int = 42\nfn other(x: Int) -> Int = x\n", 1)
+  ] {
+    let next_snapshot = source_snapshot.of(after).expect("candidate snapshot")
+    let next = checker.check_module_headers(base, source_snapshot.syntax(next_snapshot), map.empty())
+    assert next.cx.diags == []
+    let actual = replay(admit(scope, old, old_snapshot, saved), next, next_snapshot)
+    let expected = checker.check_module_body_products(next)
+    assert actual.reused == reused
+    assert actual.bodies.functions == expected.functions
+    assert actual.bodies.cx.syms == expected.cx.syms && actual.bodies.cx.next_id == expected.cx.next_id
+  }
 }
 
 test "scalar replay revalidates recorded reads in place and through the projection" {

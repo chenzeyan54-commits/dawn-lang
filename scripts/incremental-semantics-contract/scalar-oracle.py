@@ -40,14 +40,12 @@ def main():
          '  }',
          '  let moved = BodyProduct { ..p, allocation_start: cx.next_id }'),
         ('header-only-ids', 'let view = View { ids: ids,',
-         'let view = View { ids: allocation.reserver_ids(prepared.reserver),'),
+         'let view = View { ids: prepared.headers,'),
         ('missing-local-symbols', 'symbols: saved.symbols,', 'symbols: map.empty(),'),
         ('lost-local-journal', 'Some(_) -> moved.body_writes',
          'Some(_) -> Some([])'),
-        # The declaration's own bytes. `scalar_shape.same` above asks a
-        # question this subsumes -- identical text parses to the same body --
-        # so it has no case of its own left to fail, and this is the control
-        # that owns admission on the source side.
+        # The declaration's own bytes. This is the whole pairing of the two
+        # bodies now, and the control that owns admission on the source side.
         ('changed-declaration-text',
          'if not source_projection.same_text(prepared.old_tokens, prepared.tokens,\n'
          '    prior.lo, prior.hi, d.lo, d.hi) { return None }',

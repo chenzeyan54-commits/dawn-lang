@@ -26,7 +26,34 @@ def main():
     original = (ROOT / "selfhost/src/check/relocate.dawn").read_text()
     variants = [
         ("wrong-nominal-domain", "map.get(ids.nominals, id)", "map.get(ids.traits, id)"),
-        ("implicit-identity", "map.get(ids.type_vars, id)", "Some(id)"),
+        ("implicit-identity", "match map.get(ids.type_vars, id) { Some(moved) -> Some(moved), None -> shifted(ids, id) }",
+         "Some(id)"),
+        # A body's own allocations are an interval, not a table. These five
+        # own the arithmetic that replaced the table: that it covers the whole
+        # interval and not only the IDs with an explicit entry, that it
+        # carries the evidence permutation, that it stops at the interval's
+        # end, that two intervals cannot overlap, and that an override which
+        # is not a permutation of the interval is refused.
+        ("interval-entries-only",
+         "Some(map.get(interval.evidence, id).unwrap_or(interval.target + id - interval.start))",
+         "map.get(interval.evidence, id)"),
+        ("interval-forgets-permutation",
+         "Some(map.get(interval.evidence, id).unwrap_or(interval.target + id - interval.start))",
+         "Some(interval.target + id - interval.start)"),
+        ("interval-ghost",
+         "if id >= interval.start && id < interval.start + interval.count {\n"
+         "      return Some(map.get(interval.evidence, id).unwrap_or(interval.target + id - interval.start))",
+         "if id >= interval.start && id < interval.start + interval.count - 1 {\n"
+         "      return Some(map.get(interval.evidence, id).unwrap_or(interval.target + id - interval.start))"),
+        ("interval-overlap",
+         "if start < other.start + other.count && other.start < start + count { return None }",
+         "if false { return None }"),
+        ("interval-permutation",
+         "for moved in set.to_list(moved_to) { if not set.has(moved_from, moved) { return None } }",
+         "for moved in set.to_list(moved_to) { if false { return None } }"),
+        ("interval-extent",
+         "if interval.start == start && interval.count == count && interval.target == target { return true }",
+         "if interval.start == start && interval.target == target { return true }"),
         ("noninjective-map", "not injective(ids)", "false"),
         ("evidence-collision", "map.has(evidence, source_key) || set.has(target_keys, target_key)", "false"),
         ("wrong-evidence-key", "map.get(ids.evidence, key)", "map.get(ids.evidence, key + 1)"),
