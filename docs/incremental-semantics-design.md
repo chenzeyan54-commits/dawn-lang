@@ -19,12 +19,13 @@ Playground 使用非 file URI，属于 standalone；模块前缀复用不能加�
 ## 二、首个交付：保守模块前缀
 
 抽取单模块 transition：`(input, carry, world) -> (checked, diags, carry_after)`。
-carry 包含 exports、impls、next_id；world 固定 StdCtx、CtOpts、Jsig 及 captured plan。
+carry 包含 exports、impls、身份 intern 表、header 来源台账与声明位置视图；
+world 固定 StdCtx、CtOpts、Jsig 及 captured plan。
 input 是 loader 完成 package/alias 改写及 std identity 判定后的完整 AST、文本和身份，
 不能只比较原始文本。每次仍执行 loader/parser，从新旧最终模块序列的首差开始重算。
 
 只复用连续 clean、无 Java hook 查询的前缀；loader 错误或 comptime FFI enabled 时
-首版冷回退。错误模块仍照旧发布 recovered exports/impls/next_id，不改变诊断顺序。
+首版冷回退。错误模块仍照旧发布 recovered exports/impls 与身份表，不改变诊断顺序。
 std 的 impls_before 特例保留。禁止公开签名相同就重新接回旧后缀的隐式优化。
 
 Java 的八个 Jsig hook 都需要观测，包括失败查找及 import 间接带入的 Java 类型。
@@ -74,14 +75,14 @@ effect variable 和本地分配（symbol、handler安装）五个引用域。同
 须单射，缺少引用映射返回失败以供冷回退，不能默认为旧 ID。类型递归遍历覆盖所有
 Ty/Eff 构造器，效果集合在映射后按目标 ID 重新规范化。此层暂不启用复用，只为后续 TAST/Cx 迁移提供基础。
 
-**五个域都不需要映射了。** nominal 与 trait 的整数不再由计数器发放，而是
-`identity.derive(声明)`：模块的 emission owner、声明种类字母和名字拼成一个前缀无歧义的
+**五个域都不需要映射了**（2026-09 的 K4 到 K7 四刀的结果）。nominal 与 trait 的整数
+不再由计数器发放，而是 `identity.derive(声明)`：模块的 emission owner、声明种类字母和名字拼成一个前缀无歧义的
 串，FNV-1a 64 位后过一遍 murmur3 的终混，取低 47 位落进 `[2^32, 2^32 + 2^47)`。
 它与 prelude 的保留号不相交，`label_key` 乘三之后仍在 `Int` 内。于是：
 
 - 在一个声明前面插入无关声明**不再平移**它后面的任何 nominal/trait 号，
   消费者引用 provider 的类型或 trait 时两边算出同一个整数，
-  `allocation` 台账里这两个域的条目全部删除，`relocate` 里对应的两张表也删除。
+  `allocation` 台账里这两个域的条目全部删除，跨修订也不再需要任何映射表。
 - **摘要不是区分性的证明。** 每次取号都先查 `Cx.identities`（id → 声明）：
   同号不同声明是硬错误，诊断点名两个声明。不做确定性微扰，因为微扰会让一个 id
   取决于本程序恰好还有哪些声明，而这正是这次改动要去掉的性质。
@@ -108,8 +109,7 @@ Ty/Eff 构造器，效果集合在映射后按目标 ID 重新规范化。此层
 - **一个声明绑定的名字只取决于这个声明本身。** 在 `f` 的 body 里加一个 `let`，
   `g` 的每一个 `TyVar` id、每一个 `Sym` 键都不动（判词在 `check/checker`：
   *a declaration numbers its binders and locals inside itself*）。
-  跨修订恒等，所以 `relocate` 的 `type_var`/`effect_var`/`local_id`、
-  `Interval`/`body_interval`/`carries_interval` 全部删除，`allocation.between`
+  跨修订恒等，所以这三个域既没有映射表也没有取号区间，`allocation.between`
   只剩一条断言：两版都认领的绑定必须是同一个整数。
 - **产物不再有坐标。** `BodyProduct` 记的是「哪个声明、取到第几号」而不是
   「从哪号开始、取了几号」，`assemble` 因此不再问当前上下文的计数器停在哪里
@@ -148,16 +148,17 @@ Sig保留参数/binder的声明顺序，Sym的字典元数据按(trait,typevar)�
 native主图与新增模块闭包、Core及B==C通过，PR的51项检查全绿。
 这证明该批基础设施的回归门禁通过，不代表全语言冷暖等价或函数缓存上线。
 
-完整树投影原型位于 `check/relocate_tree`：显式位置边界表、旧符号表和旧callee
-签名视图共同驱动所有 TExpr/TStmt/TPat 分支及 TFun/default/TModule 投影。
-内部 prompt 参数单独映射，用户整数和构造器/字段槽不动；效果包先提取完整来源，
-按新规范顺序重建 ground 链和非ground环境连接。人工树 owning 及固定header下
-23个真实函数、22次前置函数编辑及body内空白变化的冷对照通过；测试视图使用私有
-稠密ID域表和本地callee查询，并非生产声明分配器。另一个真实header案例交换
-Ask/Tell声明，从新header绑定顺序推导local映射后，隐式参数及效果包与冷产物一致；
-跳过pack排序/保留旧origin均命中该对照断言。正例及7个编译负控整套36.10s。
-尚缺全形状及type/trait/generic header变化的真实checker冷对照、source view的语义有效性接线、
-依赖有效性以及完整Cx/声明调度装配，不将人工模块投影等同于生产模块缓存。
+跨修订的树这一层是准入遍历，位于 `check/body_admit`：同样覆盖全部 TExpr/TStmt/TPat
+分支，另有 TFun/TConst/TModule 三个入口，只回答「这棵记录下来的树本修订能不能原样
+装上」，返回 `Bool`，不重建节点也不构造 `Option[TExpr]`。它读候选修订的只有两样东西：
+记录的局部量要落进的符号表，以及把调用点的 callee 解析成签名的办法。
+拒绝条件是承重的：局部量必须在本修订符号表里、拼写与符号一致，编译器自有的名字还要
+与它携带的 key 对得上（`check/evidence_spelling`）；`XEvRead` 的 key 与 origin 必须是
+同一个槽的两份记录；调用的 evidence 实参必须一个 ABI 槽一个；evidence 包要能拆开再按
+角色铺平，一个角色一个值；`ctl_run`/`ctl_yield` 的 prompt 必须是字面量。今天准入接受
+的 body 类（`check/scalar_shape`）里没有具名调用，所以其中几条还守不到东西，它们是为
+下一次放宽这个类准备的。尚缺全形状及 type/trait/generic header 变化的真实 checker 冷
+对照、source view 的语义有效性接线、依赖有效性以及完整 Cx/声明调度装配。
 
 `check/source_projection` 只回答一个问题：两个修订里的同一个声明是不是同一段文本。
 它按声明范围取本修订的 token 事实（种类与原始拼写），配对时两次列表比较；准入点
@@ -185,9 +186,9 @@ Ask/Tell声明，从新header绑定顺序推导local映射后，隐式参数及�
 typed tree 的跨度、符号的声明位置与 frame 记下的效果见证位置，同样改为按所在声明
 相对记录：checker 构造节点时就减去声明起点，调度器在离开该声明时把它们解析回本修订
 的位置，`expr!` panic 文本里那半行来源也在同一处派生，而不再是检查期烘死的常量。
-体产物内部因此不含任何文件坐标，跨修订重放不投影任何位置，`relocate_tree` 只剩身份
-重定位。解析点选在声明出口而不是更下游：一个 typed function 会与别的模块的 typed
-function 一起被 comptime 解释器和下降读取，那时已没有单一的起点可言，而 comptime
+体产物内部因此不含任何文件坐标，跨修订重放不投影任何位置，树这一层剩下的只是准入
+判断（`check/body_admit`）。解析点选在声明出口而不是更下游：一个 typed function 会与
+别的模块的 typed function 一起被 comptime 解释器和下降读取，那时已没有单一的起点可言，而 comptime
 值表的键与 Core dump 打印的都仍是文件位置。解析时越出本声明范围的偏移，说明 checker
 漏减了一处起点，那是编译器自身的错，就地停住而不是把另一套坐标交给后端。
 
@@ -242,10 +243,10 @@ wiring before these facts can establish complete dependency validity.
 旧/新台账仅连接相同身份，不因整数相等就默认未变。一个域内重复身份对应不同ID、
 不同身份占同ID都必须拒绝；不同域允许数字重叠。缺少目标声明时不生成映射，
 实际读取该引用的产物随后失败回退。此台账不证明签名/函数体有效，仍需query依赖。
-header槽、body临时槽分别标记；标签evidence参数由函数拥有、效果声明标识其角色，
-body分配计划将旧产物记录的完整取号区间预留到当前next_id，保留未进入符号表的
-临时ID；顶层evidence局部参数按完整ABI角色置换，而非效果名字配对。计划必须在
-依赖有效性已验证后使用，不通过冷body反推目标ID。首版拒绝带默认参数的签名，
+header槽、body临时槽分别标记；标签evidence参数由函数拥有、效果声明标识其角色。
+body 没有取号区间可预留：它的键是 `identity.pack(声明, 槽位)`，未进入符号表的临时 ID
+同样由声明与槽位决定。顶层evidence局部参数的ABI序是效果 id 的函数，id 由声明派生，
+两个修订算出同一个序，因此也没有置换要记。首版拒绝带默认参数的签名，
 因为check_param_defaults先于enter_fn取号；默认参数独立产物与嵌套分配覆盖仍需补齐。
 默认参数检查已提取为check_param_default入口，原循环仍按参数顺序调用；
 显式签名函数的主body另由check_fn_body接收已经检查的defaults。原check_fn保持
@@ -258,13 +259,13 @@ check_fn_inferred_body，保持签名封定与fns写入原序；默认值重放�
 默认值重放的丢符号写入负控要求命中完整Cx断言。泛型默认闭包调用trait方法，
 携带字典引用的显式/推断两例也已与冷状态对照；丢默认字典负控要求命中具名字典断言。
 默认诊断和全部复杂表达式仍待扩展。
-默认参数与主body是同一声明的不同检查边界，各自有自己的分配区间；后继边界的
-重定位带着前面边界的区间，因为它要引用它们绑定的东西。主body专用
-body_segment_relocation只描述已拆分的检查区间，允许签名仍携带defaults标记；
-调用方须已处理defaults并提供其区间。body_relocation仍拒绝未拆分的带默认值整函数，
-不能通过取消守卫来假装一个连续区间足以表达所有独立入口。
+默认参数与主body是同一声明的不同检查边界，同一张槽位表跨越它们：后继边界接着前一个
+停住的槽号取号，不重发槽0。主body专用的`allocation.body_segment_relocation`只描述
+已拆分的检查边界，允许签名仍携带defaults标记；调用方须已处理defaults。
+`allocation.body_relocation`仍拒绝未拆分的带默认值整函数，不能通过取消守卫来假装
+一个边界足以表达所有独立入口。
 上述四类默认参数案例已同时重放主body，并与独立冷函数、模块及完整Cx比较；
-新版本主body的检查只作为对照，不提供目标分配ID。
+新版本主body的检查只作为对照。
 跨模块来源沿声明模块台账传递，consumer只新增自己的声明，不能从导入别名重造key。
 先通过真实exports_of/导入pass的两模块重排案例验证：合并provider与consumer台账时
 仍执行同域ID/owner冲突检查，provider内部顺序变化由provider的稳定key解释。
@@ -274,14 +275,14 @@ body_segment_relocation只描述已拆分的检查区间，允许签名仍携带
 读到该引用的产物回退冷算而不猜ID；本模块未具名的模块不算provider，即使其声明经由
 别的模块进入本作用域。同域内两条台账认领同一分配、或同一绑定带两个分配，都拒绝
 整次合并。**合并里剩下的是 binder 域**：nominal 与 trait 的整数由声明派生，消费者自己算得出，
-不需要向 provider 要；type/effect parameter 仍出自计数器，消费者拿到的 provider 泛型签名里
-带着 provider 的 TyVar/EffVar，这些仍必须 join。「provider 这一版发没发台账」本身也仍是
+不需要向 provider 要；type/effect parameter 是 provider 声明的打包键，消费者拿到的
+provider 泛型签名里带着 provider 的 TyVar/EffVar，这些仍必须 join。「provider 这一版发没发台账」本身也仍是
 复用授权信号，派生不回答这个问题。真实案例现为三个：选择性导入Ask/Tell、限定类型作签名加限定函数调用、
 限定类型作body注解加限定常量；provider在两版本间重排，consumer body重放与冷检查的
 完整Cx一致。当前效果语法不接受!dep.Ask，故没有限定效果案例。
 限定函数调用的callee查找必须读取旧header的owner+原函数名，而非只查consumer短名。
-relocate_tree.callee_signature将覆盖本地/std/模块导入签名表，重复相同记录允许，
-同身份不同签名拒绝；trait/builtin保持独立分支。该线性查找是正确性边界，
+callee查找覆盖本地/std/模块导入三张签名表，重复相同记录允许，
+同身份不同签名拒绝；trait/builtin保持独立分支。该查找是正确性边界，
 查询依赖跟踪与索引成本仍需P4/P7接线和实测，不能称为最终查询引擎。
 不能将同一效果在不同函数中的局部参数合并。真实Ask/Tell重排案例已用生产台账
 替代[-1024,next_id)稠密header映射，并扩大到完整Cx对照。对照发现symbol值虽然
@@ -301,25 +302,26 @@ ADT的效果参数原先只保留名字，字段解析时的真实binder ID随�
 反转ADT、opaque/透明alias、trait和效果，核对类型/效果binder及方法完整签名映射，
 然后比较body重放与冷检查的完整Cx。正例不代表生产缓存已接入，入口分支专属负控仍需补齐。
 
-The callee lookup that paragraph describes is now index-backed. `callee_index`
-makes one pass over the three tables a call site can name, `cx.fns`,
-`cx.std_fns` and `cx.module_fn_sigs`, and files every non-builtin, non-trait
-signature under the pair `(owner, name)` the call site spells, recording a
-conflict when two different signatures land on one key. `callee_signature`
-takes that index and answers with one hash lookup; the builtin and trait
-branches are unchanged, because their own tables are already keyed by the
-question. The linear scan is kept as `scanned_callee_signature` and is the
-oracle the index is checked against, not a production entry: the index answers
-exactly what the scan answers for the same `cx`, including the conflict
-refusal, which the inline tests assert over synthetic duplicate keys and the
-typed-projection fixtures assert on every query they make. The index is owned
-by `scalar_replay`'s prepared candidate and lives exactly as long as it: it is
-built once per candidate revision beside the header relocation, from the
-header revision's `cx`, so widening admission cannot put a module-sized pass on
+The callee lookup that paragraph describes is now index-backed, and it lives
+in `check/callee_index`, because finding a callee in one revision was never a
+translation between two. `callee_index.of` makes one pass over the three tables
+a call site can name, `cx.fns`, `cx.std_fns` and `cx.module_fn_sigs`, and files
+every non-builtin, non-trait signature under the pair `(owner, name)` the call
+site spells, recording a conflict when two different signatures land on one
+key. `callee_index.signature` takes that index and answers with one hash
+lookup; the builtin and trait branches are unchanged, because their own tables
+are already keyed by the question. The linear scan is kept as
+`scanned_signature` and is the oracle the index is checked against, not a
+production entry: the index answers exactly what the scan answers for the same
+`cx`, including the conflict refusal, which the inline tests assert over
+synthetic duplicate keys and the typed-projection fixtures assert on every
+query they make. The index is owned by `scalar_replay`'s prepared candidate and
+lives exactly as long as it: it is built once per candidate revision, from that
+revision's header `cx`, so widening admission cannot put a module-sized pass on
 the per-body path. Admission of named calls stays closed. `scalar_shape.binders`
 pairs no call node and `recorded` accepts no read but `AssignableType`, so the
-relocation each admitted body receives still refuses every call site; the index
-is the prerequisite for widening that class, not the widening.
+view each admitted body receives resolves no callee at all; the index is the
+prerequisite for widening that class, not the widening.
 
 body状态产物先从真实检查前后提取：符号、推断签名、alias解析结果、累积类型参数
 约束用逐键变化表示，诊断保存追加后缀，不保留两份完整Cx。
@@ -330,12 +332,12 @@ body状态产物先从真实检查前后提取：符号、推断签名、alias�
 累积表的假设被effectful的完整状态对照推翻：`bind_dicts`在函数入口清空重建，
 因此字典表属于body完成后的frame，必须替换而不是合并前序函数的字典。
 
-`body_product.project`复用树投影视图迁移产物中的签名、别名、类型约束、符号、
-诊断、frame作用域/字典/效果见证和handler cell。所有fresh分配（包括不在syms中的
-安装ID）必须完整映射到目标分配区间；缺ID或源码边界即失败。固定header的22次
-非均匀编辑对照已用该生产提取/投影/装配替换旧私有Cx replay，仍与完整冷Cx一致。
-夹具仍提供稠密引用域/目标分配映射和旧callee查询，生产分配器、依赖失效和全形状
-状态写集尚未验收；不能把这项对照当作生产缓存已接通。
+`body_product.project`带着准入视图过一遍产物里的签名、别名、类型约束、符号、
+诊断、frame作用域/字典/效果见证和handler cell：整数与位置原样带走，它做的是准入
+与拒绝。所有fresh分配（包括不在syms中的安装ID）都是打包键，本修订认不出的符号即
+失败。固定header的22次非均匀编辑对照已用该生产提取/投影/装配替换旧私有Cx replay，
+仍与完整冷Cx一致。夹具仍提供本地callee查询，生产分配器、依赖失效和全形状状态写集
+尚未验收；不能把这项对照当作生产缓存已接通。
 
 补充真实推断函数及调用者两条状态重放，封定签名必须写回fns并供后续caller读取；
 TFun另与原check_module推断调度的产物比较。一个真实test block同时检查in_test
@@ -355,7 +357,7 @@ Product仍记录alias_resolved变化作为显式写集，不声称正常body必�
 |---|---|---|
 | 1 | 冷路径对照、阶段基线、Java 观测 | 已验收；证据汇入第2期报告 |
 | 2 | workspace 前缀缓存、生命周期、基本逐出 | #107已合并；[验收报告](history/incremental-semantics-p2-report.md) |
-| 3 | 稳定身份、具名产物及重定位 | 声明/树/状态迁移已分批实现，完整生产接线未完成 |
+| 3 | 稳定身份、具名产物及准入 | 声明/树/状态迁移已分批实现，完整生产接线未完成 |
 | 4 | query runtime、依赖失效和 header 接线 | 人工查询图运行时实现中，真实 checker 读取未接线 |
 | 5 | 函数 body 增量、standalone/Playground | 未开始；验收后报告 |
 | 6 | comptime/Java/索引与工具消费者收口 | 未开始 |
@@ -368,13 +370,14 @@ Product别名携带TFun，常量通过ConstantProduct携带真实TConst，不构
 校验。test保留独立角色、当前语法及顺序。此段是P3正在实现的方案，不是生产缓存
 已经启用的声明。
 
-完整header元数据投影方案：独立relocate_header覆盖AdtI/CtorI、AliasE、TraitI/MethodSig、
-EffectI、ImplI及ModExports；复用分域ID映射，不将构造器槽/字段槽当ID平移。
-源码坐标必须按声明owner和可选source选择映射，尤其导出的AliasE仍带声明模块的
-target/nlo/nhi；透明alias的-1不是nominal引用（不透明alias的id是派生值，与ADT、
-trait、effect的id一样跨修订恒等，投影对它什么也不做）。投影保留owner、audience和词法顺序，
-不复制新冷结果作为旧产物内容；跨声明重排后的表顺序装配与依赖有效性另由调度负责。
-此段为实现前约束，尚未声称header cache可用。
+header元数据没有跨修订投影层：`check/header_product`在同一修订内捕获与装配
+AdtI/CtorI、AliasE、TraitI/MethodSig、EffectI、ImplI及ModExports的整表快照，表里
+的整数是派生id或打包键，说的都是哪个声明、哪个槽，所以一份header产物在任何还有那些
+声明的修订里都是同一份产物，装配不问安装它的上下文取号取到哪里（不透明alias的id也
+是派生值，透明alias的-1本来就不是nominal引用）。剩下要当心的不是整数而是源码坐标：
+导出的AliasE仍带声明模块的target/nlo/nhi，那半边归声明owner解析，生产入口今天一律
+拒绝带target的读取而不是留着旧span（见下文alias source边界）。跨声明重排后的表顺序
+装配与依赖有效性另由调度负责；此段不声称header cache可用。
 
 27个任务包的范围估算为174–281有效人日，不是agent墙钟承诺；原型和测量后滚动修订。
 阶段报告必须列准确提交、验收命令/结果、性能样本与环境、已知回退和未达项。
@@ -545,7 +548,7 @@ alias-first order and avoiding reads after rejected argument arity. Alias header
 contain only the fields this resolver consumes, not AliasE's unresolved AST or
 source spans; this avoids a dependency cycle through Cx. Type and effect binders
 project in distinct domains, and only opaque alias IDs are nominal references.
-Transparent aliases have no nominal ID to relocate. Builtin/compiler inputs,
+Transparent aliases have no nominal ID at all. Builtin/compiler inputs,
 local alias resolution, associated projections and Java reflection still require
 their own validity boundary before production cache admission.
 
@@ -561,18 +564,22 @@ and cycle checks; a missing declaration target also returns before consulting th
 in-flight set. Record the cache answer and the actual cycle-membership decision
 at those boundaries, without introducing reads on skipped paths. These facts do
 not replace the separate dependency on the alias declaration and its owner-scoped
-target syntax. Retaining and relocating that syntax remains necessary before
-admitting a product that expanded an uncached declaration.
+target syntax. Retaining that syntax, and resolving its positions against the
+revision that owns it, remains necessary before admitting a product that
+expanded an uncached declaration.
 
 The source fact retains the alias name, declaring owner, and optional complete
 `TypeRef`, recorded after a cache miss and before target absence/cycle handling.
 `semantic_reads.project_with_source` and the corresponding body/constant product
-entry points take an explicit owner-aware syntax projection callback. Existing
-source-free entry points reject a present declaration target rather than retain
-its old spans. The owner-aware implementation can use `relocate_header.type_source`
-with its declaration-scoped `HeaderView`; it must not use the body's local span
-map for a foreign declaration. Runtime wiring of these source views remains
-separate outstanding work.
+entry points take an explicit owner-aware syntax projection callback. This is
+the one thing a read log holds that its own declaration does not own: the
+target's spans are positions in the declaring module's file, and that module
+may not be this one. Every production entry point supplies a callback that
+rejects a present declaration target rather than retain its old spans, so no
+implementation of the callback exists outside the fixtures. Whatever supplies
+one must resolve those positions against the declaring revision's own
+declaration view, never against the body's. That wiring remains separate
+outstanding work.
 
 Local alias lookup now records its positive or negative header answer after the
 reserved-return builtin and current type-parameter short circuits, and before
@@ -590,10 +597,10 @@ optional ordered trait-bound list, and each queried trait's associated-member
 names with the type/effect axis identified. Missing subjects short-circuit bounds
 and members; repeated bounds still follow the existing owner deduplication rule.
 Subjects project as their actual types. Bound and member trait IDs are derived
-from the declaration and relocate to themselves, so the trait-domain callback
-that used to move them is the identity; what the boundary still owes is the
-subject's own type and the axis label, and fabricating a type to smuggle an
-integer into another reference domain remains invalid projection.
+from the declaration, so they are the same integer in either revision and the
+boundary has nothing to move; what it still owes is the subject's own type and
+the axis label, and fabricating a type to smuggle an integer into another
+reference domain remains invalid.
 
 ### Ordinary effect read boundary (implementation in progress)
 
@@ -626,7 +633,7 @@ Named Java types retain the local class-name answer, including misses after
 builtin and alias short circuits. Only an accepted zero-argument use queries
 class metadata. Record the actual plain-data JClass answer, not a host Class,
 classloader or oracle closure. These names and metadata contain no compiler ID
-or source span to relocate. Their validity still requires the target classpath
+or source span at all. Their validity still requires the target classpath
 and oracle lifetime; recording answers alone does not authorize cache reuse.
 Other Java query kinds and their checker consumers remain separate required work.
 The class-info consumers for reference return types, static/instance dispatch and
@@ -773,8 +780,9 @@ Implementation existence is a distinct query from selecting an implementation:
 `has_impl_at` consumes only presence, while witness construction and associated
 type/effect reduction consume the selected implementation's fields. Record
 presence queries with the complete trait and subject inputs, including misses;
-recompute them against the candidate implementation table before reuse. Relocate
-the trait through the trait domain and the subject through the type domain.
+recompute them against the candidate implementation table before reuse. The
+trait ID and the subject's type name the same things in either revision, so a
+recorded input is recomputed where it lies.
 Do not promote a presence fact into evidence that a selected implementation or
 its associated bindings are unchanged.
 The main witness branch consumes the selected implementation's type-parameter
@@ -785,27 +793,30 @@ bodies still need their own dependencies; neither query proves those unchanged.
 The general witness resolver also records the trait name at its original eager
 lookup, after error absorption and before projection or opaque fallback. This
 query observes only the name consumed by diagnostics, not all trait metadata.
-Its ID uses the trait relocation domain and its text remains unchanged; a
-candidate rename must be detected by recomputing the query, not by projection.
+Its ID derives from the trait's declaration and its text remains unchanged; a
+candidate rename must be detected by recomputing the query, nothing else.
 Dictionary lookup records the rigid type binder, required trait and optional
-local symbol. These are three independent identity domains. Projection without
-binder/local mappings refuses these facts; a missing dictionary remains a miss.
+local symbol. These are three independent identity domains: a binder and a
+local are packed keys of the declarations that bind them, and a trait ID
+derives from its own, so a recorded fact names the same three things in the
+candidate revision. A missing dictionary remains a miss.
 The resolver must retain the read before forwarding and capturing the symbol.
 Associated-type reduction may be observed at its pure result boundary: record
 the complete input type and resulting type, then recompute the canonical
 reducer in the candidate context before reuse. This preserves opaque fallback,
 binding selection and recursive unification without a duplicate reducer or an
 extra traversal that guesses which implementations were consumed. Both input
-and answer require type relocation. This aggregate query validates only the
-reduction result, not emitted implementation bodies. Index and iterable item
+and answer name the same types in either revision. This aggregate query
+validates only the reduction result, not emitted implementation bodies. Index and iterable item
 consumers retain the query before checking subsequent expressions. Inference
 and effect-reduction consumers remain required migration work.
 Effect reduction additionally records the complete ordered type-binding map as
 binder/type pairs, alongside its input and result rows. Binder keys, bound types
-and effect rows use their separate relocation domains. The canonical reducer
-is recomputed with those bindings in the candidate context; a projected answer
-alone does not validate it. Call effects and emitted associated-evidence
-arguments retain this observation before their subsequent consumers.
+and effect rows stay separate identity domains and none of them moves between
+revisions. The canonical reducer is recomputed with those bindings in the
+candidate context; a recorded answer alone does not validate it. Call effects
+and emitted associated-evidence arguments retain this observation before their
+subsequent consumers.
 Type-contained effect reduction uses the same complete binding input and a
 type-valued input/result query. Function-value instantiation, call argument
 expectations, mismatch rendering, return types and synthesized default calls
@@ -814,8 +825,8 @@ order. Internal unification remains a separate pure query boundary to cover.
 Unification observations contain declared/actual types, complete ordered input
 type/effect bindings, complete output bindings and the match verdict, including
 partial bindings on failure. Recompute canonical unification in the candidate
-context. Type-binder and effect-binder keys are distinct relocation domains;
-never project either through nominal or local symbol IDs. A failed first pass
+context. Type-binder and effect-binder keys are distinct identity domains;
+never read either as a nominal or a local symbol ID. A failed first pass
 followed by a retry retains both queries in order.
 The candidate revalidator distinguishes an unequal supported query from an
 unsupported query. Neither may admit reuse. It invokes canonical query helpers
@@ -831,22 +842,16 @@ reject such retained queries before calling helpers that assume a valid ID.
 Preserve failed lookups, candidate order and scope-sensitive constant visibility.
 The supplied context must represent the corresponding body point; this API
 does not reconstruct local scopes or authorize body reuse on its own.
-Both validators take the relocation onto the candidate revision explicitly, so
-a recorded fact is revalidated where it lies rather than rebuilt first. A query
-input is still moved, because the recomputation reads the candidate's own
-tables; the recorded answer is not, because the comparison walks it beside the
-observed answer and maps one reference at a time. The comparison is defined to
-answer exactly what projecting the fact and comparing for equality answers, one
-arm per projection arm, and a reference the relocation cannot move refuses the
-fact the same way projecting it would have. Normalized effect rows are the
-exception the definition needs: relocating the atoms of a union or a label
-carrier can reorder and collapse them, so those two shapes are compared through
-the canonical builder rather than in place. The same-revision entry points
-supply the identity relocation and are unchanged by this. This is a cost
-statement, not a strength statement: reuse admits and refuses exactly what it
-did. What it buys is that a caller which does not install the projected read
-log never builds one, so the log costs the size of the facts it validates
-instead of the size of the facts it validates plus a relocated copy of them.
+Neither validator takes anything beside the fact. A fact recorded in another
+revision is revalidated where it lies, because every domain a fact names is
+the same integer in both revisions: there is nothing to apply to the query
+input on the way in and nothing to undo on the recorded answer on the way out.
+The comparison is structural equality between the recorded fact and the single
+fact an isolated observation produced (`semantic_reads.observed_equal`), which
+is what a per-arm walk had degenerated to, one arm at a time. Reuse therefore
+admits and refuses exactly what it did, and a caller that does not install a
+rebuilt read log never builds one, so the log costs the size of the facts it
+validates rather than that plus a copy of them.
 
 The body scheduler must remain the single owner of inferred dependency order,
 constant visibility, method tagging, default synthesis and diagnostic order.
@@ -1004,10 +1009,10 @@ observed reads, the local symbols it installs, and the binder names its body
 declares. It runs once per recording, not once per replay and never once per
 candidate body. Replay then takes that value, and per body it asks only what
 the candidate revision can change: the header half of class membership, the
-declaration pairing, the recorded header relocated onto the candidate one, the
-alias question over the recorded binder names, and the reserved allocation
-interval. Class membership of the *recorded* body is settled where its binder
-names are collected, by a walk that fails closed on every node the class does
+declaration pairing, whether the recorded header is this one field for field,
+the alias question over the recorded binder names, and whether the
+declaration's own bytes are unchanged. Class membership of the *recorded* body
+is settled where its binder names are collected, by a walk that fails closed on every node the class does
 not support.
 
 The recorded binder list replaces a second walk of the candidate body. It is
@@ -1017,26 +1022,22 @@ establishes the same seed; the alias diagnostic `checker.declare` reports leaves
 no journal entry, so the question itself must still be asked of the candidate
 module's alias table, and it is.
 
-A body's own allocations are not a ledger. Reserving them used to mean
-registering one binding per allocated ID in both revisions' tables and asking
-what the join made of them, which is why reserving an interval was once a
-module-sized pass and then, once that was prepared per revision, still an
-entry per ID. An ID is an allocation: a body's interval begins at the `next_id`
-its declaration was entered with, so every ID any header owns was minted before
-it, no ID is ever minted twice, and the candidate revision mints an interval of
-the same length at its own entry. The correspondence is therefore arithmetic,
-`target + (id - start)`, and `relocate.body_interval` records the three numbers
-rather than the entries. The entry evidence pack is the one part of an interval
-that is not the plain shift, because its ABI order follows the relocated
-signature rather than allocation order; that permutation stays explicit, is
-checked to be a permutation of the interval onto itself, and is the only
-override the shift consults. Installing a product then asks whether the
-relocation carries exactly the interval that product recorded, landing where
-the caller is installing it, which is all the walk over every allocated ID ever
-established. The interval covers the IDs that never become symbols, handler
-installations among them, because they were minted inside it and not because
-anything wrote them down. A declaration checked as several boundaries, a
-function with parameter defaults, carries one interval per boundary.
+A body's own allocations are not a ledger, and they are not an interval
+either. Reserving them used to mean registering one binding per allocated ID in
+both revisions' tables and asking what the join made of them, and then, once
+that was prepared per revision, recording the three numbers of an arithmetic
+shift. Neither is left. A binding's key is `identity.pack` of the declaration
+that binds it and its slot inside that declaration, so a body that was not
+edited mints the same integers however many declarations were added in front of
+it, and a product carries no starting coordinate for an installation to land
+on. The IDs that never become symbols, handler installations among them, are
+packed keys too, so nothing has to cover them. The entry evidence pack is laid
+out by the ABI order of its row, which is a function of the effect IDs in the
+row and those derive from their declarations, so both revisions compute the
+same order and there is no permutation to record; what survives of that check
+is the width of the row. A declaration checked as several boundaries, a
+function with parameter defaults, continues its own slot counter across them
+rather than taking a second interval.
 
 A retained product is addressed by the declaration it came from. Replay asks
 this revision's own declaration enumeration which identity the candidate
@@ -1052,8 +1053,8 @@ re-lexed both declaration slices on every admitted body and then wrote one map
 entry per code point, twice over, and the executor paid that per reused body.
 A snapshot now lexes its revision once and keeps, for each function
 declaration, its token kinds, its token spellings and its token boundaries;
-pairing two declarations is two list comparisons, and the relocation it returns
-answers whether the two declarations are the same tokens and the same bytes.
+pairing two declarations is two list comparisons over kinds and spellings, and
+`same_text` beside it answers whether they are also the same bytes.
 The map `between` materialized is gone, and so is `between` itself: a product
 holds offsets into its own declaration, so there are no positions left to
 project.
@@ -1136,8 +1137,9 @@ revalidation are complete.
 Record type rendering as a pure query from the complete input type to its
 rendered diagnostic text. Reuse the existing renderer so nested ADT names,
 opaque-type spelling, function grouping and effects retain their exact rules.
-The query's type relocates through the type domain; its answer remains text.
-Validation must recompute that query against the candidate context before reuse.
+The query's type is the same type in the candidate revision; its answer stays
+text. Validation must recompute that query against the candidate context
+before reuse.
 This avoids a reverse dependency from types to checker observation machinery
 and does not enumerate unrelated ADTs. Record only at actual rendering calls,
 threading Cx before emitting the corresponding diagnostic and preserving string
@@ -1185,13 +1187,13 @@ trait default returns, parameter defaults and discarded test-body values.
 Successful paths do not acquire rendering reads. Owners compare complete
 typed modules, diagnostics and allocation against logging-disabled checks,
 then assert the exact ordered rendering facts. Compiling negative controls
-corrupt query inputs/results, relocation, and each returned consumer context.
+corrupt query inputs/results and each returned consumer context.
 Function-return grouping hints now have a separate query carrying the return
-type and outer effect in their respective relocation domains. The existing
+type and outer effect in their respective identity domains. The existing
 local-function io hint uses it without changing parentheses or effect suffixes;
 its owner requires the exact grouped answer and retained context. Constructor
-rendering now carries the complete constructor input, relocating its ADT owner
-and field types independently while preserving names and field order. All nine
+rendering now carries the complete constructor input, keeping its ADT owner and
+its field types independent while preserving names and field order. All nine
 constructor-rendering calls now retain this query, including suggestion
 fallbacks, constructor values, field mismatches and pattern arity errors.
 Suggestion hits do not acquire the fallback rendering read. Field mismatch
@@ -1241,8 +1243,8 @@ and associated-witness diagnostics retain both message and hint reads. Owners
 require repeated projection rendering and nested enclosing-type rendering in
 their original order, while fixed-text refusals acquire no rendering query.
 Signature hints use a complete Sig-to-text query, recomputed against both ADT
-and trait tables and relocated through the signature projector. All five call
-diagnostics retain it. Argument mismatches render the fallback signature before
+and trait tables of the candidate revision. All five call diagnostics retain
+it. Argument mismatches render the fallback signature before
 the expected and actual types, matching the original evaluation order.
 Other expression and pattern type diagnostics still need migration before this
 boundary is complete.

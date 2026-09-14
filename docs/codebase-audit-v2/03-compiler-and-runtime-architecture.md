@@ -7,7 +7,7 @@
 ## 本专题结论
 
 - Core IR、checker split 与两个独立后端都是真实进展；“没有 lowered IR”“大文件就继续拆”应撤回。
-- 当前主要风险已经从物理文件大小转为**阶段契约没有类型化**：裸名字构依赖图、平行 List 靠下标对齐、稳定 identity 与临时 ID 共用全局计数器、内部 panic 被用户错误通道吞掉。
+- 当前主要风险已经从物理文件大小转为**阶段契约没有类型化**：裸名字构依赖图、平行 List 靠下标对齐、内部 panic 被用户错误通道吞掉。
 - native failure runtime 的三项 P1 已由 #193 收口；`ARC-12` 也已由模块级 `LowerCache`
   收口，`ARC-13` 也已关闭 native RC 错删源码循环目标的问题。当前结构债转为
   `ARC-01/02/11` 的 partial 边界，以及 `ARC-07/08` 的 typed-product / stable-origin 前置。
@@ -48,18 +48,17 @@
 > 打到它），record 的 fn 类型字段本来就先报 ambiguous。
 >
 > **原建议的「以 symbol ID 构图」远超小刀，不要当小刀推：** 顶层函数今天根本没有 symbol ID
-> （`cx.next_id` 铸的是 type var / ADT / effect / trait / **local** symbol，顶层函数一律以
+> （checker 铸的整数是 type var / ADT / effect / trait / **local** symbol，顶层函数一律以
 > `String` 为键），要它就要新增一整个 name-resolution 阶段并在 AST 上回填，直接压在
-> `ARC-07/08/09` 那条被 HOLD 的线上。本项余下部分应随那批走。
+> `ARC-07/08` 那条被 HOLD 的线上。本项余下部分应随那批走。
 >
 > 顺带留一条实测：本次改动让 `check.checker` 之外另三个模块的 Core 也动了，但**全部是
 > `structeq$AdtNNNNN` 的编号后缀统一偏移 14，零指令变化**。在干净基线上给 `checker.dawn`
-> 追加一个五行空函数得到逐字节相同的漂移，故这不归因于本设计，是 `ARC-09` 共享计数器本身
-> 的性质。`selfhost.norm.sha` 的噪声滤镜正是为分辨这两件事而存在的。
->
-> **2026-09-14 更新：** 共享计数器本身已经没了（nominal/trait id 由声明派生，binder/local
-> 是打包键并在下降期按模块稠密化），于是滤镜连同 `selfhost.norm.sha` 一起退役；今天
-> `selfhost.sha` 逐字节即可，说明见 `selfhost/src/ir/core.dawn` 中 `ty_key` 旁的注释。
+> 追加一个五行空函数得到逐字节相同的漂移，故这不归因于本设计，是当时那个共享计数器本身
+> 的性质。今天没有共享计数器了（见 `ARC-09`：nominal/trait id 由声明派生，binder/local
+> 是打包键并在下降期按模块稠密化），归一化伴生 golden `selfhost.norm.sha` 连同它的噪声
+> 滤镜已经退役，判据整个落在逐字节的 `selfhost.sha` 上；说明见 `selfhost/src/ir/core.dawn`
+> 中 `ty_key` 旁的注释。
 
 ## ARC-02 — P1 — JVM classfile 硬边界变成无源码位置的内部异常
 
@@ -101,7 +100,7 @@
 > 加行号就是把 3 处扩散到每个节点，那条判据就不成立了。（**2026-09-14 更新：** 这条判据
 > 原本挂在归一化伴生 golden `selfhost.norm.sha` 上，它已退役，判据现在整个落在逐字节的
 > `selfhost.sha` 上，只会更严。那 3 处行号字面量从来不在归一化的覆盖范围里：
-> `core-normalize.py` 只 alpha-rename `$Adt<N>`，它的 self-test 明确要求行号位移必须可见。）
+> 退役前的 `core-normalize.py` 只 alpha-rename `$Adt<N>`，它的 self-test 明确要求行号位移必须可见。）
 > `native-backend-plan.md` 已有裁决：**保持 Core 无 span
 > 是有意的**，等真正做调试信息行号表时再一次性加。所以那件事属于「JVM LineNumberTable」的
 > 独立项，不该塞进本条。
@@ -273,7 +272,7 @@
 > 编译，收益是空的」。收益已经兑现：body product 不再带取号区间，装配不再要求
 > 计数器坐标对齐（`check/body_product.assemble` 原前置条件删除）。
 
-- **证据：S。** `Cx.next_id` 同时分配 type var、ADT、effect、trait、local symbol：`selfhost/src/check/cx.dawn:87`、`:313`，以及 `selfhost/src/check/passes.dawn:44`、`:633`、`:1003`、`:1112`、`selfhost/src/check/checker.dawn:109`。
+- **证据：S。** 以下两条的行号是审查基线 `86f6a0f63960` 的历史行号；`Cx.next_id` 与它的跨模块 carry 今天已经不在树上，按行号取不到。`Cx.next_id` 同时分配 type var、ADT、effect、trait、local symbol：`selfhost/src/check/cx.dawn:87`、`:313`，以及 `selfhost/src/check/passes.dawn:44`、`:633`、`:1003`、`:1112`、`selfhost/src/check/checker.dawn:109`。
 - 计数器跨模块传递：`selfhost/src/driver/analyze.dawn:1023`、`:1044`、`:1065`；ID 又进入 type key 与 generated symbol：`selfhost/src/ir/core.dawn:349`、`selfhost/src/ir/lower.dawn:735`、`selfhost/src/c/emitc.dawn:1160`。
 - **影响：** 前一模块多一个 local/type variable，会让后续 nominal ID 与 C symbol 大面积漂移，扩大 cache invalidation 与无语义 golden diff。
 - **建议：** 拆成 `NominalId/TraitId/EffectId/SymId/TyVarId/TempId`；nominal 按 module declaration 稳定分配，temporary 限在 function/module。
