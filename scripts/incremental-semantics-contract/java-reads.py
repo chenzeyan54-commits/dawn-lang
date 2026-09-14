@@ -35,11 +35,10 @@ def main():
         # (K7b). A Java class fact is carried whole now.
         ("body_product", "capture-reads", "semantic_reads.capture(before.function_reads, after.function_reads)?", "before.function_reads"),
     ]
-    for field in ("fqcn", "simple", "display", "is_interface", "is_primitive", "is_array"):
-        value = '"wrong"' if field in ("fqcn", "simple", "display") else "not answer." + field
-        variants.append(("semantic_reads", "project-info-" + field,
-                         "JavaClassInfo(fqcn, answer) -> JavaClassInfo(fqcn, answer)",
-                         "JavaClassInfo(fqcn, answer) -> JavaClassInfo(fqcn, JClass { ..answer, " + field + ": " + value + " })"))
+    # Six more stood here, one per `JClass` field (`project-info-fqcn`,
+    # `-simple`, `-display`, `-is_interface`, `-is_primitive`, `-is_array`).
+    # They edited the field the projection copied out of a class fact, and the
+    # projection no longer copies fields: the fact is carried whole (K7b).
     sources = {name: (ROOT / "selfhost/src/check" / (name + ".dawn")).read_text()
                for name in ("cx", "checker", "semantic_reads", "body_product")}
     subjects = [(module, "positive", source) for module, source in sources.items()]

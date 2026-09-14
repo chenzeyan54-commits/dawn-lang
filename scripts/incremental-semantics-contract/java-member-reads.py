@@ -17,27 +17,18 @@ from cold import ROOT, edit, run
 def main():
     started = time.monotonic()
     variants = []
-    fields = {
-        "JavaMethods": ("JMethod", {"name": '"wrong"', "param_cls": "list.reverse(m.param_cls)",
-            "ret_cls": '"wrong"', "is_static": "not m.is_static", "is_varargs": "not m.is_varargs",
-            "is_abstract": "not m.is_abstract", "desc": '"wrong"', "decl_cls": '"wrong"'}),
-        "JavaConstructors": ("JCtor", {"param_cls": "list.reverse(m.param_cls)",
-            "is_varargs": "not m.is_varargs", "desc": '"wrong"'}),
-        "JavaStaticFields": ("JField", {"name": '"wrong"', "type_cls": '"wrong"', "decl_cls": '"wrong"'}),
-    }
-    for fact, (record, members) in fields.items():
+    # Twenty three projection controls were generated here and are gone with
+    # the read-log projection they mutated (K7b): for each of the three facts a
+    # `-project-key`, `-project-answer` and `-project-order`, plus one
+    # `-field-<member>` per record member (`JavaMethods` eight, over `JMethod`;
+    # `JavaConstructors` three, over `JCtor`; `JavaStaticFields` three, over
+    # `JField`). Each edited a member the projection copied out of a member
+    # list. Nothing copies them now: the fact is carried whole, list and all.
+    # The recording controls below are what still decides a member fact.
+    for fact in ("JavaMethods", "JavaConstructors", "JavaStaticFields"):
         observed = f"semantic_reads.{fact}(fqcn, answer)"
         variants += [("cx", fact + "-key", observed, f'semantic_reads.{fact}("wrong", answer)'),
                      ("cx", fact + "-answer", observed, f"semantic_reads.{fact}(fqcn, [])")]
-        projected = f"{fact}(fqcn, answer) -> {fact}(fqcn, answer)"
-        for label, value in (("key", f'{fact}("wrong", answer)'),
-                             ("answer", f"{fact}(fqcn, [])"),
-                             ("order", f"{fact}(fqcn, list.reverse(answer))")):
-            variants.append(("semantic_reads", fact + "-project-" + label, projected,
-                             f"{fact}(fqcn, answer) -> " + value))
-        for field, value in members.items():
-            variants.append(("semantic_reads", fact + "-field-" + field, projected,
-                             f"{fact}(fqcn, answer) -> {fact}(fqcn, list.map(answer, m => {record} {{ ..m, {field}: {value} }}))"))
     variants += [
         ("checker", "constructors-consumer", "cx1 = constructors_cx", "cx1 = cx1"),
         ("checker", "methods-consumer", "cx1 = methods_cx", "cx1 = cx1"),

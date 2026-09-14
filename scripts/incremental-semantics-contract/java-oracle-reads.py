@@ -35,14 +35,11 @@ def main():
         anchor = f'let (score_cx, score) = fit_score(cx1, {candidate}.param_cls, {candidate}.is_varargs, ats, arities)\n{indent}cx1 = score_cx'
         variants.append(('checker', candidate + '-candidate-context', anchor,
                          anchor.replace('cx1 = score_cx', 'cx1 = cx1')))
-    for field, value in [('name', '"wrong"'), ('param_cls', '[]'), ('ret_cls', '"wrong"'),
-                         ('is_static', 'not method.is_static'), ('is_varargs', 'not method.is_varargs'),
-                         ('is_abstract', 'not method.is_abstract'), ('desc', '"wrong"'), ('decl_cls', '"wrong"')]:
-        variants.append(('semantic_reads', 'sam-field-' + field,
-                         'JavaSam(name, answer) -> JavaSam(name, answer)',
-                         'JavaSam(name, answer) -> JavaSam(name, match answer {\n'
-                         '            Some(method) -> Some(JMethod { ..method, ' + field + ': ' + value + ' })\n'
-                         '            None -> None\n          })'))
+    # Eight more stood here, one per `JMethod` field (`sam-field-name`,
+    # `-param_cls`, `-ret_cls`, `-is_static`, `-is_varargs`, `-is_abstract`,
+    # `-desc`, `-decl_cls`). They edited the field the projection copied out of
+    # a SAM fact, and the projection no longer copies fields: the fact is
+    # carried whole (K7b).
     modules = ('cx', 'checker', 'semantic_reads', 'body_product')
     sources = {m: (ROOT / 'selfhost/src/check' / (m + '.dawn')).read_text() for m in modules}
     subjects = [(m, 'positive', s) for m, s in sources.items()]

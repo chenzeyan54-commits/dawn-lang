@@ -192,25 +192,33 @@ provenance has to reject rather than keep a stale span. That arm is all that is
 left: `semantic_reads.project(reads, source_value)` carries every other fact
 whole. The dispositions below are K4's three.
 
-- **Eighty eight controls are deleted** across twelve harnesses. Each one
-  replaced one projection callback with another domain's callback, or dropped a
-  rebuilt field, and each is K4's third disposition: the judgment goes with the
-  production code that made it. There is no per-arm rebuild left to confuse a
-  trait id with a nominal id, or to drop a constructor's fields, because
-  nothing rebuilds a fact. The counts, with the retired names listed at the
-  place each stood in its harness:
-  `witness-revalidation.py` 20 (its whole `project-*` family, and with it the
-  `semantic_reads` subject and its positive control, 31 controls to 11),
-  `type-reads.py` 14, `diagnostic-reads.py` 10, `local-value-reads.py` 8,
-  `environment-reads.py` 7, `java-oracle-reads.py` 6, `function-reads.py` 5,
-  `java-namespace-reads.py` 5, `effect-reads.py` 4, `associated-reads.py` 3,
-  `export-reads.py` 3, `java-reads.py` 3.
-- **No harness is deleted and none is left empty.** Every one of the twelve
+- **A hundred and twenty five controls are deleted** across thirteen
+  harnesses. Each one replaced one projection callback with another domain's
+  callback, or edited a field the projection copied out of a fact, and each is
+  K4's third disposition: the judgment goes with the production code that made
+  it. There is no per-arm rebuild left to confuse a trait id with a nominal id,
+  or to drop a constructor's fields, because nothing rebuilds a fact. The
+  counts, with the retired names listed at the place each stood in its harness:
+  `java-member-reads.py` 23, `witness-revalidation.py` 20 (its whole
+  `project-*` family, and with it the `semantic_reads` subject and its positive
+  control, 31 controls to 11), `type-reads.py` 14, `java-oracle-reads.py` 14,
+  `diagnostic-reads.py` 10, `java-reads.py` 9, `local-value-reads.py` 8,
+  `environment-reads.py` 7, `function-reads.py` 5, `java-namespace-reads.py` 5,
+  `effect-reads.py` 4, `associated-reads.py` 3, `export-reads.py` 3.
+
+  Fifty one of them were generated rather than written out, in per-field loops
+  over a record the projection rebuilt (`JMethod`, `JCtor`, `JField`, `JClass`)
+  or per constructor arm. A loop that generates controls hides how many there
+  are, and it hid these from a first reading of the harnesses: three of the
+  thirteen were found by running them, not by reading them.
+
+- **No harness is deleted and none is left empty.** Every one of the thirteen
   keeps its recording side, which is the half that still decides something:
   which fact the checker observes, what the fact says, and whether a consumer
   reads the context the observation returned. `witness-revalidation.py` keeps
   its eleven checker controls, `type-reads.py` its twenty six `cx` controls,
-  and so on down.
+  `java-member-reads.py` its six `cx` controls and three consumer controls, and
+  so on down.
 - `state-product.py`'s `function-read-domain` and `type-reads.py`'s
   `alias-source-callback` are **re-anchored, not retired** (K4's first
   disposition): both mutate `body_product.projected_reads`, whose call is now
