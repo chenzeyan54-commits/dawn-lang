@@ -308,15 +308,13 @@ pub fn project(v: View, p: Product) -> Option[Product] = {
 ## not need it: it compares the recorded log in place. A caller that installs
 ## the log asks for it here.
 ##
-## Eight of the nine domains are the identity, because a fact names the
-## declaration that owns it and a declaration that was not edited binds the
-## same integers. The ninth is the one a fact can carry that belongs to
-## another declaration's file, and it is the caller's to supply.
+## A fact is carried whole, because every domain it names is the same integer
+## in both revisions. The one thing that moves is the source node an alias
+## read carries, which belongs to another declaration's file and is the
+## caller's to supply.
 pub fn projected_reads[T](v: View, p: BodyProduct[T],
   source_value: fn(String, TypeRef) -> Option[TypeRef]) -> Option[Option[List[FunctionRead]]] =
-  semantic_reads.project_with_inference(p.function_reads, s => Some(s),
-    t => Some(t), id => Some(id), e => Some(e), source_value,
-    id => Some(id), id => Some(id), id => Some(id), id => Some(id))
+  semantic_reads.project(p.function_reads, source_value)
 
 ## `project` for a caller that revalidates the recorded log in place and does
 ## not install the projected one. The product comes back with no log rather
@@ -718,10 +716,10 @@ fn owned_diagnostic() -> Diag =
   Diag { msg: "body", lo: 0, hi: 1, hint: "",
     owner: Some(DiagOwner { module: "pkg/m", decl: "Nf4:body" }) }
 
-## One recorded fact per projection arm, spelled in the recording revision's
-## coordinates. Every arm that names a reference is here, so an arm that
-## dropped one would be caught by the comparison rather than by the
-## projection agreeing with itself about a corpus that did not exercise it.
+## One recorded fact per `FunctionRead` constructor, spelled in the recording
+## revision's coordinates. The whole read vocabulary is here, so a rebuild
+## that dropped a reference would be caught rather than left to a corpus that
+## did not exercise it.
 fn fixture_read_corpus() -> List[FunctionRead] = {
   let element = TyVar("T", 4)
   let subject = TyAdt(1, [element])
@@ -733,6 +731,14 @@ fn fixture_read_corpus() -> List[FunctionRead] = {
     ret: element, eff: row, is_builtin: false, tparams: [element], constraints: [[3]],
     eparams: [row], owner: Some("provider"), trait_id: Some(3), op_of: Some((2, 0)), inferring: false }
   let bindings = InferenceBindings { types: [(4, subject)], effects: [(5, row)] }
+  let diagnostic = ExportDiagnostic { message: "not exported", hint: Some("export it") }
+  let jclass = JClass { fqcn: "java.lang.String", simple: "String", display: "String",
+    is_interface: false, is_primitive: false, is_array: false }
+  let jmethod = JMethod { name: "length", param_cls: [], ret_cls: "int", is_static: false,
+    is_varargs: false, is_abstract: false, desc: "()I", decl_cls: "java.lang.String" }
+  let jctor = JCtor { param_cls: [], is_varargs: false, desc: "()V" }
+  let jfield = JField { name: "CASE_INSENSITIVE_ORDER", type_cls: "java.util.Comparator",
+    decl_cls: "java.lang.String" }
   [FunctionAnswer(NamedFunctionRead { name: "f", answer: Some(signature) }),
     FunctionAnswer(NamedFunctionRead { name: "gone", answer: None }),
     semantic_reads.QualifiedFunction("h", NamedFunctionRead { name: "f", answer: Some(signature) }),
@@ -788,14 +794,32 @@ fn fixture_read_corpus() -> List[FunctionRead] = {
     semantic_reads.DictionarySymbol(4, 3, Some(6)),
     semantic_reads.BuiltinTypeAnswer("Int", Some(BuiltinTypeI { name: "Int", params: [],
         access: BtStdOnly, build: BtLeaf(subject) })),
-    semantic_reads.StdModuleMode(true)]
+    semantic_reads.StdModuleMode(true),
+    semantic_reads.ExportDiagnosticAnswer(semantic_reads.ValueDiagnostic, "h", "v", Some(diagnostic)),
+    LocalTypeDiagnostic("A", diagnostic),
+    semantic_reads.DeclaredConstantName("VALUE", true),
+    semantic_reads.LocalValueCandidates(true, ["a", "b"]),
+    semantic_reads.EffectCandidates(["Ask"]),
+    semantic_reads.JavaClassName("String", Some("java.lang.String")),
+    semantic_reads.JavaClassInfo("java.lang.String", jclass),
+    semantic_reads.JavaMethods("java.lang.String", [jmethod]),
+    semantic_reads.JavaConstructors("java.lang.String", [jctor]),
+    semantic_reads.JavaStaticFields("java.lang.String", [jfield]),
+    semantic_reads.JavaEnabled(true),
+    semantic_reads.JavaFindClass("String", Some(jclass)),
+    semantic_reads.JavaClassNames(["java.lang.String"]),
+    semantic_reads.JavaAssignable("java.lang.Object", "java.lang.String", true),
+    semantic_reads.JavaSam("java.lang.Runnable", Some(jmethod)),
+    semantic_reads.JavaComponent("java.lang.String[]", Some("java.lang.String"))]
 }
 
 test "body product read comparison answers for the projection it replaces" {
   # A source node is the one reference a recorded fact can carry that is
-  # spelled in another declaration's file, so it is the only thing the rebuild
-  # has to move. Everything else names its own declaration and is the same
-  # integer in both revisions.
+  # spelled in another declaration's file, so it is the only thing the
+  # candidate's log has to move. Everything else names its own declaration and
+  # is the same integer in both revisions, so it is carried whole. Over the
+  # whole read vocabulary, that is what this says: exactly the alias source
+  # arm moves and the other sixty-three constructors come back untouched.
   let source: fn(String, TypeRef) -> Option[TypeRef] =
     (owner, node) => match node {
       TNamed(n, args, effs, lo, hi) -> Some(TNamed(n, args, effs, lo + 1000, hi + 1000))
@@ -803,18 +827,18 @@ test "body product read comparison answers for the projection it replaces" {
     }
   let corpus = fixture_read_corpus()
   var answers: List[FunctionRead] = []
-  for fact in corpus {
-    let moved = semantic_reads.project_with_inference(Some([fact]), s => Some(s), t => Some(t),
-      id => Some(id), e => Some(e), source, id => Some(id), id => Some(id), id => Some(id),
-      id => Some(id)).expect("projected fact").expect("enabled log")
-    assert len(moved) == 1
-    answers = answers ++ moved
-  }
   var moved_facts = 0
-  var i = 0
   for fact in corpus {
-    if answers[i] != fact { moved_facts = moved_facts + 1 }
-    i = i + 1
+    let moved = semantic_reads.project(Some([fact]), source).expect("projected fact").expect("enabled log")
+    assert len(moved) == 1
+    let is_source = match fact { LocalAliasSource(name, owner, target) -> true, _ -> false }
+    if is_source {
+      assert moved[0] != fact
+      moved_facts = moved_facts + 1
+    } else {
+      assert moved == [fact]
+    }
+    answers = answers ++ moved
   }
   assert moved_facts == 1
   # The comparison side, over every ordered pair the corpus and its rebuilt
