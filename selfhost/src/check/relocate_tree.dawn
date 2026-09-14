@@ -145,19 +145,19 @@ pub type View = {
 fn local_name(v: View, id: Int, old: String) -> Option[String] = {
   let saved = map.get(v.symbols, id)?
   if saved.name != old { return None }
-  Some(relocate.sym(v.ids, saved)?.name)
+  Some(relocate.checked_symbol(v.ids, saved)?.name)
 }
 
 fn local_ids(v: View, xs: List[Int]) -> Option[List[Int]] = {
   var out: List[Int] = []
-  for x in xs { out = out ++ [relocate.local_id(v.ids, x)?] }
+  for x in xs { out = out ++ [x] }
   Some(out)
 }
 
 fn opt_local(v: View, x: Option[Int]) -> Option[Option[Int]] =
   match x {
     None -> Some(None)
-    Some(id) -> Some(Some(relocate.local_id(v.ids, id)?))
+    Some(id) -> Some(Some(id))
   }
 
 fn witnesses(v: View, xs: List[WitRef]) -> Option[List[WitRef]] = {
@@ -197,7 +197,7 @@ pub fn pattern(v: View, p: TPat) -> Option[TPat] =
   match p {
     TPWild -> Some(p)
     TPLit(_) -> Some(p)
-    TPBind(id, name) -> Some(TPBind(relocate.local_id(v.ids, id)?, local_name(v, id, name)?))
+    TPBind(id, name) -> Some(TPBind(id, local_name(v, id, name)?))
     TPOr(xs) -> Some(TPOr(patterns(v, xs)?))
     TPTuple(xs) -> Some(TPTuple(patterns(v, xs)?))
     TPList(pre, rest, id, post) ->
@@ -347,7 +347,7 @@ pub fn expression(v: View, x: TExpr) -> Option[TExpr] =
       }
       Some(XStr(moved, lo, hi))
     }
-    XLocal(id, name, lo, hi, ty) -> Some(XLocal(relocate.local_id(v.ids, id)?,
+    XLocal(id, name, lo, hi, ty) -> Some(XLocal(id,
       local_name(v, id, name)?, lo, hi, relocate.ty(v.ids, ty)?))
     XEvRead(key, origin, lo, hi, ty) -> {
       if key != evidence_role_key(origin) { return None }
@@ -358,7 +358,7 @@ pub fn expression(v: View, x: TExpr) -> Option[TExpr] =
     XFnValue(owner, name, builtin, ty, lo, hi) ->
       Some(XFnValue(owner, name, builtin, relocate.ty(v.ids, ty)?, lo, hi))
     XCallDyn(id, name, args, evs, lo, hi, ty) ->
-      Some(XCallDyn(relocate.local_id(v.ids, id)?, local_name(v, id, name)?, expressions(v, args)?,
+      Some(XCallDyn(id, local_name(v, id, name)?, expressions(v, args)?,
         expressions(v, evs)?, lo, hi, relocate.ty(v.ids, ty)?))
     XCallFn(owner, name, args, ws, evs, tr, lo, hi, ty) -> {
       let sig = v.callee(owner, name, false, tr)?
@@ -372,7 +372,7 @@ pub fn expression(v: View, x: TExpr) -> Option[TExpr] =
       if name == "ctl_run" || name == "ctl_yield" {
         if len(args) == 0 { return None }
         let prompt = match args[0] {
-          XInt(id, alo, ahi) -> XInt(relocate.local_id(v.ids, id)?, alo, ahi)
+          XInt(id, alo, ahi) -> XInt(id, alo, ahi)
           _ -> { return None }
         }
         var replaced: List[TExpr] = [prompt]
@@ -453,9 +453,9 @@ pub fn statement(v: View, s: TStmt) -> Option[TStmt] =
     }
     TSLetPat(p, init, lo, hi) -> Some(TSLetPat(pattern(v, p)?, expression(v, init)?, lo, hi))
     TSLocalFn(id, name, params, names, body, captures, lo, hi) ->
-      Some(TSLocalFn(relocate.local_id(v.ids, id)?, local_name(v, id, name)?, local_ids(v, params)?, names,
+      Some(TSLocalFn(id, local_name(v, id, name)?, local_ids(v, params)?, names,
         expression(v, body)?, local_ids(v, captures)?, lo, hi))
-    TSAssign(id, name, value, lo, hi) -> Some(TSAssign(relocate.local_id(v.ids, id)?, local_name(v, id, name)?,
+    TSAssign(id, name, value, lo, hi) -> Some(TSAssign(id, local_name(v, id, name)?,
       expression(v, value)?, lo, hi))
     TSExpr(e, lo, hi) -> Some(TSExpr(expression(v, e)?, lo, hi))
     TSAssert(e, src, lo, hi) -> Some(TSAssert(expression(v, e)?, src, lo, hi))
@@ -476,12 +476,12 @@ pub fn function(v: View, f: TFun) -> Option[TFun] = {
   let order = relocate.evidence_permutation(v.ids, f.sig)?
   if len(order) != len(f.ev_syms) { return None }
   var evs: List[Int] = []
-  for i in order { evs = evs ++ [relocate.local_id(v.ids, f.ev_syms[i])?] }
+  for i in order { evs = evs ++ [f.ev_syms[i]] }
   let impl_ref = match f.impl_of {
     None -> None
     Some((tr, ty)) -> Some((tr, relocate.ty(v.ids, ty)?))
   }
-  Some(TFun { ..f, sig: relocate.signature(v.ids, f.sig)?, param_syms: local_ids(v, f.param_syms)?,
+  Some(TFun { ..f, sig: f.sig, param_syms: local_ids(v, f.param_syms)?,
     dict_syms: local_ids(v, f.dict_syms)?, defaults: defaults, ev_syms: evs, body: expression(v, f.body)?,
     impl_of: impl_ref, default_of: f.default_of })
 }
@@ -504,8 +504,8 @@ pub fn module(v: View, m: TModule) -> Option[TModule] = {
   }
   var syms: Map[Int, Sym] = map.empty()
   for (id, s) in map.entries(m.syms) {
-    let moved = relocate.sym(v.ids, s)?
-    syms = map.insert(syms, relocate.local_id(v.ids, id)?,
+    let moved = relocate.checked_symbol(v.ids, s)?
+    syms = map.insert(syms, id,
       Sym { ..moved, dlo: s.dlo, dhi: s.dhi })
   }
   Some(TModule { fns: fns, tests: tests, consts: consts, syms: syms })
@@ -601,13 +601,7 @@ test "the callee index answers exactly what the linear scan answers" {
 }
 
 fn fixture_view() -> View = {
-  let empty: Map[Int, Int] = map.empty()
-  let swap = map.insert(map.insert(empty, 1, 20), 2, 10)
-  let headers = relocate.new(map.insert(swap, 0, 0), swap).expect("valid fixture IDs")
-  # The body allocated symbols 1 and 2 and the candidate revision mints 91 and
-  # 92 for them, with the entry evidence pair swapped by the ABI order.
-  let ids = relocate.body_interval(headers, 1, 2, 91, map.insert(map.insert(empty, 1, 91), 2, 92))
-    .expect("valid fixture interval")
+  let ids = relocate.new()
   let symbol = Sym { name: "x", ty: TyInt, mutable: false, dlo: 10, dhi: 11,
     dict_of: None, ev_of: None, cell_of: None }
   View { ids: ids,
@@ -618,14 +612,17 @@ test "tree relocation separates literals from prompts and preserves field slots"
   let v = fixture_view()
   assert expression(v, XInt(1, 10, 11)) == Some(XInt(1, 10, 11))
   let ctl = XCallBuiltin("ctl_run", [XInt(1, 10, 11)], [], [], 10, 11, TyUnit)
-  assert expression(v, ctl) == Some(XCallBuiltin("ctl_run", [XInt(91, 10, 11)], [], [], 10, 11, TyUnit))
+  # A prompt operand is a handler installation, which is a slot of the
+  # declaration that opened it and the same integer here. It is still told
+  # apart from an ordinary literal, which is what this arm is for: the
+  # literal above is carried because it is a literal, and the operand is
+  # carried because the relocation recognises it as an identifier.
+  assert expression(v, ctl) == Some(ctl)
   let p = TPCtor(1, 1, [Some(TPBind(1, "x")), None])
-  # the constructor's ADT is a derived id and is the same integer here
-  assert pattern(v, p) == Some(TPCtor(1, 1, [Some(TPBind(91, "x")), None]))
+  assert pattern(v, p) == Some(p)
   let local = XLocal(1, "x", 10, 11, TyInt)
   let binary = XBinary(BAdd, local, XInt(1, 10, 11), None, 10, 11, 10, 11, TyInt)
-  assert expression(v, binary) == Some(XBinary(BAdd, XLocal(91, "x", 10, 11, TyInt),
-    XInt(1, 10, 11), None, 10, 11, 10, 11, TyInt))
+  assert expression(v, binary) == Some(binary)
   assert expression(v, XLocal(1, "wrong", 10, 11, TyInt)) == None
   assert expression(v, XLocal(2, "absent", 10, 11, TyInt)) == None
 }
@@ -639,17 +636,11 @@ test "tree relocation reconstructs ground packs and associated environment order
     [Some(0), Some(1), Some(2)], None, 10, 11, ev_pack_ty())
   let old = XCtor(EV_PACK_ID, 0, [XInt(6, 10, 11), XInt(102, 10, 11), inner],
     [Some(0), Some(1), Some(2)], None, 10, 11, ev_pack_ty())
-  # The two ground labels and the trait behind the associated key are derived
-  # ids, so the chain keeps its keys and its order; the two type variables
-  # swap, and the associated environment reorders around them.
-  let next_env = XCallBuiltin("ev_append", [
-    XEvRead(11, AssociatedSlot(10, 3, "E"), 10, 11, erased_ev_ty()),
-    XEvRead(11, AssociatedSlot(20, 3, "E"), 10, 11, erased_ev_ty())], [], [], 10, 11, erased_ev_ty())
-  let next_inner = XCtor(EV_PACK_ID, 0, [XInt(3, 10, 11), XInt(101, 10, 11), next_env],
-    [Some(0), Some(1), Some(2)], None, 10, 11, ev_pack_ty())
-  let expected = XCtor(EV_PACK_ID, 0, [XInt(6, 10, 11), XInt(102, 10, 11), next_inner],
-    [Some(0), Some(1), Some(2)], None, 10, 11, ev_pack_ty())
-  assert expression(v, old) == Some(expected)
+  # Nothing in the chain moves: the two ground labels and the trait behind
+  # the associated key derive from their declarations, and the two type
+  # variables are slots of theirs. The pack is still taken apart and put back
+  # together, which is what refuses the two malformed chains below.
+  assert expression(v, old) == Some(old)
   assert expression(v, XCallBuiltin("ev_append", [a, a], [], [], 10, 11, erased_ev_ty())) == None
   assert expression(v, XEvRead(12, AssociatedSlot(1, 3, "E"), 10, 11, erased_ev_ty())) == None
 }
@@ -665,20 +656,15 @@ test "tree relocation assembles defaults symbols and permuted call evidence" {
   let m = TModule { fns: [f], tests: [TFun { ..f, is_test: true }],
     consts: [TConst { name: "C", ty: TyVar("T", 1), init: XInt(6, 10, 11), lo: 10, hi: 11 }], syms: v.symbols }
   let moved = module(v, m).expect("complete typed module")
-  assert moved.fns[0].ev_syms == [92, 91]
-  assert moved.fns[0].dict_syms == [91]
-  assert moved.fns[0].impl_of == Some((3, TyInt))
-  assert moved.fns[0].default_of == Some(3)
-  assert moved.fns[0].defaults == [Some(TDefault { body: XInt(5, 10, 11), dict_syms: [91] })]
-  assert moved.fns[0].body == XCallFn(None, "f", [], [], [XInt(102, 10, 11), XInt(101, 10, 11)], None, 10, 11, TyUnit)
+  # The entry pack keeps the order the ABI gives it, which is now the order
+  # it was recorded in: nothing renumbers the effect variables it is ordered
+  # by. The permutation is still computed and still refuses a signature whose
+  # ABI row does not correspond, which is the `unknown` view below.
+  assert moved.fns[0] == f
   assert moved.tests[0].is_test
-  assert moved.consts[0].init == XInt(6, 10, 11)
-  # a constant's declared type is the one reference its product carries that
-  # is not in the tree, so it has to be relocated with the rest
-  assert moved.consts[0].ty == TyVar("T", 20)
-  let s = map.get(moved.syms, 91).expect("relocated symbol")
+  assert moved.consts[0] == m.consts[0]
+  let s = map.get(moved.syms, 1).expect("carried symbol")
   assert s.dlo == 10 && s.dhi == 11
-  assert not map.has(moved.syms, 1)
   let unknown = View { ..v, callee: (owner, name, builtin, tr) => None }
   assert function(unknown, f) == None
 }

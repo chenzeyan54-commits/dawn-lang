@@ -12,8 +12,15 @@ use check/types.{Adts, Traits, Impls, Effects, ImplI, Sig, Ty, Eff, TyInt}
 use front/token.{Diag}
 
 pub type HeaderProduct = {
-  allocation_start: Int,
-  allocation_count: Int,
+  # How many bindings each declaration of this module has minted. A table
+  # snapshot like every other field here, and for the same reason: a binder
+  # key names its declaration and its slot, so what a header boundary
+  # produced means the same thing in any revision that still has those
+  # declarations. It was a pair of integers -- where this boundary's
+  # allocations started and how many it made -- back when a key was a
+  # position in one counter and installing a product meant landing it on the
+  # coordinate it was recorded at.
+  decl_slots: Map[Int, Int],
   diagnostics: List[Diag],
   # The header passes are where nominal and trait ids are minted, so the
   # intern table behind them is something a header boundary writes. It is
@@ -64,11 +71,21 @@ fn environment_unchanged(a: Cx, b: Cx) -> Bool =
   a.moved == b.moved && a.loop_jumps == b.loop_jumps && a.take_cell == b.take_cell &&
   a.function_reads == b.function_reads && a.body_writes == b.body_writes
 
+## Whether every declaration the first context had minted into still stands
+## where it did in the second, or further on. A row that went backwards is a
+## declaration whose slots were reissued, which is two bindings on one key.
+fn slots_advanced(a: Map[Int, Int], b: Map[Int, Int]) -> Bool = {
+  for (declaration, slot) in map.entries(a) {
+    if map.get(b, declaration).unwrap_or(-1) < slot { return false }
+  }
+  true
+}
+
 pub fn capture(before: Cx, after: Cx) -> Option[HeaderProduct] = {
-  if not environment_unchanged(before, after) || after.next_id < before.next_id { return None }
+  if not environment_unchanged(before, after) || not slots_advanced(before.decl_slots, after.decl_slots) { return None }
   if len(after.diags) < len(before.diags) || list.take(after.diags, len(before.diags)) != before.diags { return None }
   Some(HeaderProduct {
-    allocation_start: before.next_id, allocation_count: after.next_id - before.next_id,
+    decl_slots: after.decl_slots,
     diagnostics: list.drop(after.diags, len(before.diags)),
     identities: after.identities,
     adts: after.adts, traits: after.traits, fns: after.fns, fn_origin: after.fn_origin,
@@ -88,12 +105,21 @@ pub fn capture(before: Cx, after: Cx) -> Option[HeaderProduct] = {
 
 ## Install only in the admitted input environment. Table snapshots preserve
 ## the producing order; they cannot merge independent declaration edits.
+##
+## Nothing here asks where the installing context's allocations had reached.
+## It used to, and had to: a recorded key was a position in one counter, so a
+## product was only meaningful at the coordinate it was recorded at. A packed
+## key says which declaration it belongs to, so the rows below are the same
+## rows wherever they are installed, and what makes a product admissible is
+## its own read log and nothing about arithmetic.
 pub fn assemble(current: Cx, product: HeaderProduct) -> Option[Cx] = {
-  if current.next_id != product.allocation_start || product.allocation_count < 0 { return None }
-  let limit = current.next_id + product.allocation_count
-  if limit < current.next_id { return None }
+  if not slots_advanced(current.decl_slots, product.decl_slots) { return None }
+  var slots = current.decl_slots
+  for (declaration, count) in map.entries(product.decl_slots) {
+    slots = map.insert(slots, declaration, count)
+  }
   Some(Cx { ..current,
-    next_id: limit, diags: current.diags ++ product.diagnostics,
+    decl_slots: slots, diags: current.diags ++ product.diagnostics,
     identities: product.identities,
     adts: product.adts, traits: product.traits, fns: product.fns, fn_origin: product.fn_origin,
     adts_by_name: product.adts_by_name, aliases: product.aliases, alias_resolved: product.alias_resolved,
@@ -116,13 +142,13 @@ test "header product captures scope resets and appends diagnostics" {
   let before = Cx { ..cx_new(Some("decl"), Some("decl.dawn")), diags: [first],
     ty_spans: map.from([((1, 2), TySpan { lo: 1, hi: 2, kids: [] })]), record_ty_spans: true }
   let cell = minted("decl", identity.TypeDecl, "Cell")
-  let after = Cx { ..before, next_id: before.next_id + 3, diags: [first, next],
+  let after = Cx { ..before, decl_slots: map.insert(before.decl_slots, 7, 3), diags: [first, next],
     identities: map.from([(identity.derive(cell), cell)]),
     consts: map.from([("SECOND", TyInt), ("FIRST", TyInt)]), const_order: ["SECOND", "FIRST"],
     current_tparams: map.from([("T", TyInt)]), ty_spans: map.empty(), record_ty_spans: false }
   let product = capture(before, after).expect("header product")
   let restored = assemble(before, product).expect("header assembly")
-  assert restored.next_id == after.next_id && restored.diags == [first, next]
+  assert restored.decl_slots == after.decl_slots && restored.diags == [first, next]
   # the header passes are where nominal and trait ids are minted, so the
   # intern table is something this boundary captures and installs
   assert restored.identities == after.identities && map.len(restored.identities) == 1
@@ -141,12 +167,16 @@ test "header product refuses incompatible transition and allocation boundaries" 
   let before = cx_new(Some("decl"), Some("decl.dawn"))
   assert missing(capture(before, Cx { ..before, owner_class: Some("foreign") }))
   assert missing(capture(before, Cx { ..before, function_reads: Some([]) }))
-  assert missing(capture(before, Cx { ..before, next_id: before.next_id - 1 }))
+  let advanced = Cx { ..before, decl_slots: map.insert(before.decl_slots, 7, 3) }
+  assert missing(capture(advanced, Cx { ..advanced, decl_slots: map.insert(before.decl_slots, 7, 2) }))
   let diagnostic = Diag { msg: "old", lo: 1, hi: 2, hint: "", owner: None }
   assert missing(capture(Cx { ..before, diags: [diagnostic] }, before))
-  let product = capture(before, before).expect("empty header transition")
-  assert missing(assemble(Cx { ..before, next_id: before.next_id + 1 }, product))
-  assert missing(assemble(before, HeaderProduct { ..product, allocation_count: -1 }))
+  let product = capture(before, Cx { ..before, decl_slots: map.insert(before.decl_slots, 7, 3) })
+    .expect("one declaration's bindings")
+  # a context that has already taken the declaration past where the product
+  # leaves it would have the product reissue slots it has handed out
+  assert missing(assemble(Cx { ..before, decl_slots: map.insert(before.decl_slots, 7, 4) }, product))
+  assert not missing(assemble(before, product))
 }
 
 test "header product preserves unchanged journals and refuses body journal writes" {

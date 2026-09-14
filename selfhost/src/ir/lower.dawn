@@ -35,6 +35,7 @@ use check/types.{
   is_eq_scalar, is_ord_scalar, is_hash_scalar, builtins, Impls, impl_at, has_impl_at,
   is_ground, expandable, type_args_of, sub_goals
 }
+use check/identity
 use check/tast.{
   TExpr, TStmt, TPat, TArm, TStrPart, TFun, TModule, TBinOp, TUnOp, TJavaCall,
   tex_ty,
@@ -56,7 +57,7 @@ use ir/core.{
   CInt, CFloat, CBool, CStr, CUnit, CLocal, CFnRef, CCall, CIntrinsic,
   CCtor, CField, CIsCtor, CClosure, CTuple, CTupleGet, CBox, CUnbox,
   CBinary, CUnary, CIf, CBlock, CListLit, CReturn, CBreak, CContinue,
-  CForeign, CJava,
+  CForeign, CJava, CTagOf, CDup, CComptime, CConstRef,
   CSLet, CSAssign, CSDiscard, CSLoop, CSIf, CSDrop,
   CDirect, CDynamic, CMethod, CImpl, CDefault, CDictRef, CDictApply, CDictArg,
   CDictDef, CDictSlot, CSlotFn, CSlotDefault,
@@ -4615,6 +4616,10 @@ pub type LMod = {
   fns: List[(CFun, List[CFun])],
   tests: List[(CFun, List[CFun])],
   dicts: List[CDictDef],
+  # The checker's symbol table, renumbered with everything else. The JVM
+  # emitter reads local types out of it and inserts lowering's own bindings
+  # beside them, so it has to be keyed the way the Core it is emitting is.
+  syms: Map[Int, Sym],
   # The unabridged counter, after tests and their hoisted bodies. `m` carries
   # the production-only counter matching its production-only function list;
   # `emitted_core` needs this one when it appends the test half.
@@ -4637,13 +4642,13 @@ pub fn lower_module_full(
   prog_fns: Map[(String, String), Sig],
   include_tests: Bool
 ) -> LMod = {
-  # temporaries continue above every checker-minted id in this module
-  var top = 0
-  for k in map.keys(tm.syms) {
-    if k > top { top = k }
-  }
+  # Temporaries continue above every checker-minted id in this module. That
+  # used to be found by scanning the module's symbol table for its largest
+  # key; a packed key states its own ceiling, so the floor is the same
+  # integer for every module and `densify` below brings both domains back
+  # down to one run from zero.
   var st = LSt {
-    next_sym: top + 1,
+    next_sym: identity.temporary_floor(),
     next_loop: 0,
     owner: owner,
     cur_loop: -1,
@@ -4699,7 +4704,270 @@ pub fn lower_module_full(
     dicts: prod_dicts,
     next_sym: prod_next_sym
   }
-  LMod { m: m, fns: fns, tests: tests, dicts: st.dicts, next_sym: st.next_sym }
+  densify(LMod { m: m, fns: fns, tests: tests, dicts: st.dicts, syms: tm.syms,
+    next_sym: st.next_sym }, tm.syms)
+}
+
+# ---- densifying the module's identifiers ----
+#
+# A checker-minted identifier is `identity.pack` of the declaration that bound
+# it and its slot inside that declaration, which is a fifteen-digit number
+# that means something above Core and nothing inside it. Lowering's own
+# temporaries sit above every one of them. This pass renumbers both into one
+# run of small integers per module, in the order `ir/coredump.names_of` uses:
+# captures, parameters, dictionaries, evidence, then first appearance in the
+# body, function by function in emission order.
+#
+# Two consumers need it and neither is Core's own meaning. `c/emitc` prints a
+# local as `v<id>`, so without this every generated C file would name its
+# locals `v40908472833011`. And the JVM emitter looks types up by these
+# integers in one module-wide table, which is why the numbering is module-wide
+# rather than per function: two functions whose locals both started at zero
+# would share rows there.
+#
+# Nothing about this is a projection between revisions. It runs once, on one
+# module, after that module is lowered, and the map it builds is thrown away.
+
+type Dense = { moved: Map[Int, Int], next: Int }
+
+fn dense_sym(d: Dense, sym: Int) -> Dense =
+  match map.get(d.moved, sym) {
+    Some(_) -> d
+    None -> Dense { moved: map.insert(d.moved, sym, d.next), next: d.next + 1 }
+  }
+
+fn dense_all(d: Dense, es: List[CExpr]) -> Dense = {
+  var acc = d
+  for e in es { acc = dense_expr(acc, e) }
+  acc
+}
+
+fn dense_opt(d: Dense, e: Option[CExpr]) -> Dense =
+  match e {
+    Some(x) -> dense_expr(d, x)
+    None -> d
+  }
+
+fn dense_callee(d: Dense, c: CCallee) -> Dense =
+  match c {
+    CDynamic(t) -> dense_expr(d, t)
+    CMethod(dict, _, _, _, _) -> dense_expr(d, dict)
+    CDirect(_, _) -> d
+    CImpl(_, _, _, _) -> d
+    CDefault(_, _, _) -> d
+  }
+
+fn dense_java(d: Dense, j: CJava) -> Dense = {
+  var acc = dense_all(dense_opt(d, j.target), j.args)
+  for pair in j.sam_evs {
+    let (_, e) = pair
+    acc = dense_expr(acc, e)
+  }
+  acc
+}
+
+fn dense_expr(d: Dense, e: CExpr) -> Dense =
+  match e {
+    CLocal(s, _) -> dense_sym(d, s)
+    CCall(callee, args, _) -> dense_all(dense_callee(d, callee), args)
+    CIntrinsic(_, args, _) -> dense_all(d, args)
+    CCtor(_, _, args, _) -> dense_all(d, args)
+    CField(t, _, _, _, _) -> dense_expr(d, t)
+    CIsCtor(t, _, _) -> dense_expr(d, t)
+    CTagOf(t, _) -> dense_expr(d, t)
+    CClosure(_, _, caps, _) -> dense_all(d, caps)
+    CTuple(elems, _) -> dense_all(d, elems)
+    CTupleGet(t, _, _) -> dense_expr(d, t)
+    CBox(inner, _) -> dense_expr(d, inner)
+    CUnbox(inner, _) -> dense_expr(d, inner)
+    CDup(inner, _) -> dense_expr(d, inner)
+    CBinary(_, l, r, _) -> dense_expr(dense_expr(d, l), r)
+    CUnary(_, o, _) -> dense_expr(d, o)
+    CIf(c, t, e2, _) -> dense_opt(dense_expr(dense_expr(d, c), t), e2)
+    CBlock(stmts, tail, _) -> {
+      var acc = d
+      for s in stmts { acc = dense_stmt(acc, s) }
+      dense_opt(acc, tail)
+    }
+    CListLit(elems, _) -> dense_all(d, elems)
+    CReturn(v) -> dense_opt(d, v)
+    CBreak(_) -> d
+    CContinue(_) -> d
+    CForeign(j, _) -> dense_java(d, j)
+    CInt(_) -> d
+    CFloat(_) -> d
+    CBool(_) -> d
+    CStr(_) -> d
+    CUnit -> d
+    CFnRef(_, _, _) -> d
+    CDictRef(_, _, _, _) -> d
+    CDictApply(_, args, _) -> dense_all(d, args)
+    CDictArg(dict, _, _, _, _) -> dense_expr(d, dict)
+    CConstRef(_, _, _) -> d
+    CComptime(_, _, _) -> d
+  }
+
+fn dense_stmt(d: Dense, s: CStmt) -> Dense =
+  match s {
+    CSLet(sym, _, init) -> dense_expr(dense_sym(d, sym), init)
+    CSAssign(sym, v) -> dense_expr(dense_sym(d, sym), v)
+    CSDiscard(e) -> dense_expr(d, e)
+    CSLoop(_, body, step) -> dense_opt(dense_expr(d, body), step)
+    CSIf(c, t, e) -> dense_opt(dense_expr(dense_expr(d, c), t), e)
+    CSDrop(sym) -> dense_sym(d, sym)
+  }
+
+fn dense_params(d: Dense, ps: List[CParam]) -> Dense = {
+  var acc = d
+  for p in ps { acc = dense_sym(acc, p.sym) }
+  acc
+}
+
+fn dense_fun(d: Dense, f: CFun) -> Dense =
+  dense_expr(dense_params(dense_params(dense_params(dense_params(d, f.captures),
+    f.params), f.dicts), f.evs), f.body)
+
+fn moved_sym(d: Dense, sym: Int) -> Int =
+  match map.get(d.moved, sym) {
+    Some(next) -> next
+    None -> panic("lower: symbol ${to_string(sym)} was renumbered without being seen")
+  }
+
+fn moved_all(d: Dense, es: List[CExpr]) -> List[CExpr] = {
+  var out: List[CExpr] = []
+  for e in es { out = out ++ [moved_expr(d, e)] }
+  out
+}
+
+fn moved_opt(d: Dense, e: Option[CExpr]) -> Option[CExpr] =
+  match e {
+    Some(x) -> Some(moved_expr(d, x))
+    None -> None
+  }
+
+fn moved_callee(d: Dense, c: CCallee) -> CCallee =
+  match c {
+    CDynamic(t) -> CDynamic(moved_expr(d, t))
+    CMethod(dict, tid, method, idx, nev) -> CMethod(moved_expr(d, dict), tid, method, idx, nev)
+    CDirect(owner, name) -> CDirect(owner, name)
+    CImpl(owner, tid, subject, method) -> CImpl(owner, tid, subject, method)
+    CDefault(owner, tid, method) -> CDefault(owner, tid, method)
+  }
+
+fn moved_java(d: Dense, j: CJava) -> CJava = {
+  var evs: List[(Int, CExpr)] = []
+  for pair in j.sam_evs {
+    let (slot, e) = pair
+    evs = evs ++ [(slot, moved_expr(d, e))]
+  }
+  CJava { ..j, target: moved_opt(d, j.target), args: moved_all(d, j.args), sam_evs: evs }
+}
+
+fn moved_expr(d: Dense, e: CExpr) -> CExpr =
+  match e {
+    CLocal(s, ty) -> CLocal(moved_sym(d, s), ty)
+    CCall(callee, args, ty) -> CCall(moved_callee(d, callee), moved_all(d, args), ty)
+    CIntrinsic(name, args, ty) -> CIntrinsic(name, moved_all(d, args), ty)
+    CCtor(adt, ci, args, ty) -> CCtor(adt, ci, moved_all(d, args), ty)
+    CField(t, adt, ci, idx, ty) -> CField(moved_expr(d, t), adt, ci, idx, ty)
+    CIsCtor(t, adt, ci) -> CIsCtor(moved_expr(d, t), adt, ci)
+    CTagOf(t, adt) -> CTagOf(moved_expr(d, t), adt)
+    CClosure(name, owner, caps, ty) -> CClosure(name, owner, moved_all(d, caps), ty)
+    CTuple(elems, ty) -> CTuple(moved_all(d, elems), ty)
+    CTupleGet(t, idx, ty) -> CTupleGet(moved_expr(d, t), idx, ty)
+    CBox(inner, from) -> CBox(moved_expr(d, inner), from)
+    CUnbox(inner, to) -> CUnbox(moved_expr(d, inner), to)
+    CDup(inner, ty) -> CDup(moved_expr(d, inner), ty)
+    CBinary(op, l, r, ty) -> CBinary(op, moved_expr(d, l), moved_expr(d, r), ty)
+    CUnary(op, o, ty) -> CUnary(op, moved_expr(d, o), ty)
+    CIf(c, t, e2, ty) -> CIf(moved_expr(d, c), moved_expr(d, t), moved_opt(d, e2), ty)
+    CBlock(stmts, tail, ty) -> {
+      var out: List[CStmt] = []
+      for s in stmts { out = out ++ [moved_stmt(d, s)] }
+      CBlock(out, moved_opt(d, tail), ty)
+    }
+    CListLit(elems, ty) -> CListLit(moved_all(d, elems), ty)
+    CReturn(v) -> CReturn(moved_opt(d, v))
+    CBreak(l) -> CBreak(l)
+    CContinue(l) -> CContinue(l)
+    CForeign(j, ty) -> CForeign(moved_java(d, j), ty)
+    CInt(v) -> CInt(v)
+    CFloat(v) -> CFloat(v)
+    CBool(v) -> CBool(v)
+    CStr(v) -> CStr(v)
+    CUnit -> CUnit
+    CFnRef(owner, name, ty) -> CFnRef(owner, name, ty)
+    CDictRef(key, tid, subject, ty) -> CDictRef(key, tid, subject, ty)
+    CDictApply(key, args, ty) -> CDictApply(key, moved_all(d, args), ty)
+    CDictArg(dict, owner, key, idx, ty) -> CDictArg(moved_expr(d, dict), owner, key, idx, ty)
+    CConstRef(owner, name, ty) -> CConstRef(owner, name, ty)
+    CComptime(lo, hi, ty) -> CComptime(lo, hi, ty)
+  }
+
+fn moved_stmt(d: Dense, s: CStmt) -> CStmt =
+  match s {
+    CSLet(sym, ty, init) -> CSLet(moved_sym(d, sym), ty, moved_expr(d, init))
+    CSAssign(sym, v) -> CSAssign(moved_sym(d, sym), moved_expr(d, v))
+    CSDiscard(e) -> CSDiscard(moved_expr(d, e))
+    CSLoop(lid, body, step) -> CSLoop(lid, moved_expr(d, body), moved_opt(d, step))
+    CSIf(c, t, e) -> CSIf(moved_expr(d, c), moved_expr(d, t), moved_opt(d, e))
+    CSDrop(sym) -> CSDrop(moved_sym(d, sym))
+  }
+
+fn moved_params(d: Dense, ps: List[CParam]) -> List[CParam] = {
+  var out: List[CParam] = []
+  for p in ps { out = out ++ [CParam { ..p, sym: moved_sym(d, p.sym) }] }
+  out
+}
+
+fn moved_fun(d: Dense, f: CFun) -> CFun =
+  CFun { ..f, captures: moved_params(d, f.captures), params: moved_params(d, f.params),
+    dicts: moved_params(d, f.dicts), evs: moved_params(d, f.evs), body: moved_expr(d, f.body) }
+
+fn moved_group(d: Dense, group: List[(CFun, List[CFun])]) -> List[(CFun, List[CFun])] = {
+  var out: List[(CFun, List[CFun])] = []
+  for pair in group {
+    let (cf, lifts) = pair
+    var moved_lifts: List[CFun] = []
+    for lift in lifts { moved_lifts = moved_lifts ++ [moved_fun(d, lift)] }
+    out = out ++ [(moved_fun(d, cf), moved_lifts)]
+  }
+  out
+}
+
+## The one entry point: the module as lowering left it, with every identifier
+## renumbered from zero.
+##
+## The symbol table is rebuilt under the new keys and holds exactly what the
+## module names. A checker symbol the module never mentions is dropped: the
+## table is a lookup for the backends, every id they can hold came out of the
+## Core below, and carrying the rest would put the module's dead bindings in
+## the way of the numbering `emitc` prints.
+fn densify(l: LMod, syms: Map[Int, Sym]) -> LMod = {
+  var d = Dense { moved: map.empty(), next: 0 }
+  for f in l.m.fns { d = dense_fun(d, f) }
+  for pair in l.tests {
+    let (cf, lifts) = pair
+    d = dense_fun(d, cf)
+    for lift in lifts { d = dense_fun(d, lift) }
+  }
+  var fns: List[CFun] = []
+  for f in l.m.fns { fns = fns ++ [moved_fun(d, f)] }
+  var moved_syms: Map[Int, Sym] = map.empty()
+  for (id, s) in map.entries(syms) {
+    match map.get(d.moved, id) {
+      Some(next) -> { moved_syms = map.insert(moved_syms, next, s) }
+      None -> ()
+    }
+  }
+  LMod {
+    m: CModule { ..l.m, fns: fns, next_sym: d.next },
+    fns: moved_group(d, l.fns),
+    tests: moved_group(d, l.tests),
+    dicts: l.dicts,
+    syms: moved_syms,
+    next_sym: d.next
+  }
 }
 
 test "the flat module and the grouped functions are one lowering" {

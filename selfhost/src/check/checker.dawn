@@ -83,7 +83,8 @@ use check/cx.{
   write_symbol, write_signature, write_bounds,
   AliasE, Cx, Frame, LambdaCx, ModExports,
   cx_new, test_cx, check_value_arity,
-  cerr, cerr_h, cerr_o, owned_by, unowned, measured_from, owner_off, owner_at, eff_witness_at, fresh, alias_shadow, effect_of, resolve_eff_at,
+  cerr, cerr_h, cerr_o, owned_by, unowned, measured_from, owner_off, owner_at, eff_witness_at, fresh,
+  enter_decl_owner, leave_decl_owner, mint_cursor, module_pool, alias_shadow, effect_of, resolve_eff_at,
   resolve_type, resolve_return_type, resolve_alias_target, java_class_info_read, java_class_name_read, java_class_names_read,
   java_methods_read, java_constructors_read, java_static_fields_read, java_component_read,
   java_sam_read, java_assignable_read, is_const_serializable, const_refusal_hint, no_sig,
@@ -96,6 +97,7 @@ use check/cx.{
   TySpan
 }
 use check/identity
+use check/identity.{minted}
 use check/tast_positions
 use check/passes.{
   seed_prelude, pass_java_uses, pass_imports, pass_type_shells, pass_ctor_fields,
@@ -803,7 +805,7 @@ test "associated reduction reads retain changed bindings and unresolved answers"
     assert observed.function_reads == Some([semantic_reads.ReducedAssociatedType(input, answer)])
     let (cold, cold_answer) = reduce_assoc_read(Cx { ..candidate, function_reads: None }, input)
     assert cold_answer == answer && cold.function_reads == None
-    assert observed.frame == cold.frame && observed.diags == cold.diags && observed.next_id == cold.next_id
+    assert observed.frame == cold.frame && observed.diags == cold.diags && observed.decl_slots == cold.decl_slots
   }
   let (unresolved, answer) = reduce_assoc_read(initial, input)
   assert answer == input && unresolved.function_reads == Some([semantic_reads.ReducedAssociatedType(input, input)])
@@ -889,7 +891,7 @@ test "effect reduction reads retain bindings and candidate associated rows" {
     let (cold_typed, cold_result) = reduce_ty_effs_read(Cx { ..candidate, function_reads: None }, nested, bindings)
     assert result == expected && result == cold_result
     assert typed.function_reads == Some([semantic_reads.ReducedTypeEffects(nested, [(701, TyInt)], expected)])
-    assert typed.frame == cold_typed.frame && typed.diags == cold_typed.diags && typed.next_id == cold_typed.next_id
+    assert typed.frame == cold_typed.frame && typed.diags == cold_typed.diags && typed.decl_slots == cold_typed.decl_slots
   }
   let (unresolved, answer) = reduce_eff_read(initial, input, bindings)
   assert answer == input && unresolved.function_reads == Some([semantic_reads.ReducedEffect(input, [(701, TyInt)], input)])
@@ -1160,7 +1162,7 @@ test "unification reads survive function values constructors and record updates"
     let (observed, tree) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, map.empty())
     if cold.diags != [] { panic(body ++ ": " ++ cold.diags[0].msg) }
     assert cold.diags == [] && observed.diags == cold.diags && tree == cold_tree
-    assert observed.next_id == cold.next_id && observed.syms == cold.syms && observed.frame == cold.frame
+    assert observed.decl_slots == cold.decl_slots && observed.syms == cold.syms && observed.frame == cold.frame
     var inferences = 0
     for read in observed.function_reads.expect("inference observations") {
       match read {
@@ -1191,7 +1193,7 @@ test "unification reads retain complete bindings on success and partial failure"
       before: InferenceBindings { types: [(701, TyString)], effects: [(702, EIo)] },
       after: InferenceBindings { types: [(701, TyString), (700, TyInt)], effects: [(702, EIo)] }, matched: matches }
     assert observed.function_reads == Some([semantic_reads.UnifiedTypes(query)]) && cold.function_reads == None
-    assert observed.frame == cold.frame && observed.diags == cold.diags && observed.next_id == cold.next_id
+    assert observed.frame == cold.frame && observed.diags == cold.diags && observed.decl_slots == cold.decl_slots
   }
 }
 
@@ -1728,7 +1730,7 @@ test "diagnostic reads retain eager row subtraction repair rendering" {
       semantic_reads.ReducedEffect(row, [], row), semantic_reads.RenderedType(bare, ty_show(initial.adts, bare))])
     assert em == cold_em && added == cold_added && why == cold_why
     assert added == not refused && (why != None) == refused
-    assert observed.diags == cold.diags && observed.next_id == cold.next_id
+    assert observed.diags == cold.diags && observed.decl_slots == cold.decl_slots
     let (early, _, early_added, early_why) = earg_row_subtract(initial, sig, TyInt, at, map.empty(), map.empty())
     assert early.function_reads == Some([]) && not early_added && early_why == None
   }
@@ -1746,7 +1748,7 @@ test "diagnostic reads thread row repair through real calls" {
     let (cold, cold_module) = check_module(initial, syntax, map.empty())
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, map.empty())
     assert observed.diags == cold.diags && observed_module == cold_module
-    assert observed.next_id == cold.next_id
+    assert observed.decl_slots == cold.decl_slots
     assert len(cold.diags) == (if refused { 1 } else { 0 })
     var repairs = 0
     for read in observed.function_reads.expect("row repair reads") {
@@ -1954,7 +1956,7 @@ test "witness reads preserve nominal recursion guards and substituted first gaps
     semantic_reads.ConstructorFields(900, 0, ctor)] ++ prefix ++
       [semantic_reads.ImplementationPresence(HASH_ID, TyFloat, false)])
   let (cold, cold_gap) = structural_gap_read(Cx { ..initial, function_reads: None }, HASH_ID, subject, set.empty())
-  assert gap == cold_gap && observed.diags == cold.diags && observed.next_id == cold.next_id
+  assert gap == cold_gap && observed.diags == cold.diags && observed.decl_slots == cold.decl_slots
   let (visited, no_gap) = structural_gap_read(initial, HASH_ID, subject, set.insert(set.empty(), "Node"))
   assert no_gap == None && visited.function_reads == Some(prefix)
   let imp = ImplI { trait_id: HASH_ID, subject: recursive, tparams: [binder], constraints: [[]],
@@ -1978,7 +1980,7 @@ test "witness reads preserve structural recursion and first-gap short circuits" 
     var expected: List[semantic_reads.FunctionRead] = []
     for t in visited { expected = expected ++ [semantic_reads.ImplementationPresence(HASH_ID, t, false)] }
     assert observed.function_reads == Some(expected)
-    assert observed.diags == cold.diags && observed.next_id == cold.next_id
+    assert observed.diags == cold.diags && observed.decl_slots == cold.decl_slots
   }
 }
 
@@ -2137,6 +2139,60 @@ test "a `use java` declaration is refused when no oracle is wired" {
   assert str.contains(cx1.diags[0].hint, "java.lang.Math")
 }
 
+test "a declaration numbers its binders and locals inside itself" {
+  # The property this file's identifiers exist to have: what `g` binds is
+  # numbered from `g` and from nothing else, so an edit inside another
+  # declaration's body leaves every one of `g`'s integers alone. Adding a
+  # `let` to `f` is the smallest edit that mints an identifier, and under a
+  # counter shared by the whole module it moved every identifier `g` mints
+  # after it.
+  #
+  # Positions are not part of the claim and do move: `g` sits further down
+  # the file, and the typed tree is resolved back to file coordinates on the
+  # way out of the declaration. So this compares what `g` binds, not where.
+  let tail = "pub fn g[T](x: T, n: Int) -> T = {\n  let k = n + 1\n  let m = k + n\n  x\n}\n"
+  let before = "pub fn f(n: Int) -> Int = {\n  let a = n + 1\n  a\n}\n" ++ tail
+  let after = "pub fn f(n: Int) -> Int = {\n  let a = n + 1\n  let b = a + 1\n  b\n}\n" ++ tail
+  let (first_syntax, first_diags) = parser.parse_module(before)
+  let (next_syntax, next_diags) = parser.parse_module(after)
+  assert first_diags == [] && next_diags == []
+  let (first_cx, first) = check_module(test_cx(), first_syntax, map.empty())
+  let (next_cx, next) = check_module(test_cx(), next_syntax, map.empty())
+  assert first_cx.diags == [] && next_cx.diags == []
+  let left = named_fn(first, "g").expect("g in the first revision")
+  let right = named_fn(next, "g").expect("g in the second revision")
+  # the signature carries `g`'s type parameter, and the entry lists carry
+  # every symbol the header bound
+  assert left.sig == right.sig
+  assert left.param_syms == right.param_syms && left.dict_syms == right.dict_syms
+  assert left.ev_syms == right.ev_syms
+  # and every symbol `g` bound, body included, is the same key holding the
+  # same row. The keys are found by asking which declaration they belong to,
+  # which is the whole of what a packed key says.
+  let owner = identity.derive(minted("", identity.FunctionDecl, "g"))
+  var keys: List[Int] = []
+  for key in map.keys(first_cx.syms) {
+    if identity.packed_declaration(key) == owner { keys = keys ++ [key] }
+  }
+  assert len(keys) == 4
+  for key in keys {
+    let one = map.get(first_cx.syms, key).expect("g's symbol in the first revision")
+    let two = map.get(next_cx.syms, key).expect("g's symbol in the second revision")
+    # the declaring span is a position in the file and `g` did move
+    assert Sym { ..one, dlo: 0, dhi: 0 } == Sym { ..two, dlo: 0, dhi: 0 }
+  }
+  # and `f`'s edit did land somewhere: the two revisions are not the same
+  # module, and nothing was minted outside a declaration
+  assert named_fn(first, "f") != named_fn(next, "f")
+  assert not map.has(first_cx.decl_slots, module_pool(first_cx))
+  assert not map.has(next_cx.decl_slots, module_pool(next_cx))
+}
+
+fn named_fn(m: TModule, name: String) -> Option[TFun] = {
+  for f in m.fns { if f.name == name { return Some(f) } }
+  None
+}
+
 test "main cannot owe a declared effect" {
   let src = "effect Ask {\n  fn ask() -> Int\n}\n" ++
     "pub fn main() -> Unit !Ask !io = ()\n"
@@ -2273,7 +2329,7 @@ test "witness reads retain opaque ordering fallback before the scalar fast path"
     XError(0, 1), XError(2, 3), 0, 1, 2, 3, 1, 2, 0, 3)
   assert checked.function_reads == Some(expected)
   assert ty == TyBool && ty == cold_ty && tree == cold_tree
-  assert checked.diags == [] && cold.diags == [] && checked.next_id == cold.next_id
+  assert checked.diags == [] && cold.diags == [] && checked.decl_slots == cold.decl_slots
   let (general, witness) = resolve_witness(initial, EQ_ID, outer, 0, 1, "caller")
   assert general.function_reads == Some([
     semantic_reads.TraitName(EQ_ID, trait_of(initial.traits, EQ_ID).name),
@@ -2525,7 +2581,7 @@ test "diagnostic reads retain nominal ordering template decisions" {
     let (cold, cold_module) = check_module(initial, syntax, map.empty())
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, map.empty())
     assert cold.diags == observed.diags && len(cold.diags) == 1
-    assert cold_module == observed_module && cold.next_id == observed.next_id
+    assert cold_module == observed_module && cold.decl_slots == observed.decl_slots
     var headers = 0
     var renders = 0
     for read in observed.function_reads.expect("ordering template reads") {
@@ -2568,7 +2624,7 @@ test "witness reads retain ordering implementation hits and opaque misses" {
     }
     assert observed.function_reads == Some(expected)
     assert witness == Some(WConcrete(ORD_ID, subject)) && witness == cold_witness
-    assert observed.diags == [] && cold.diags == [] && observed.next_id == cold.next_id
+    assert observed.diags == [] && cold.diags == [] && observed.decl_slots == cold.decl_slots
   }
   let (silent, witness) = resolve_ord_witness(initial, TyError, 0, 1)
   assert silent.function_reads == Some([]) && witness == None && silent.diags == []
@@ -2589,7 +2645,7 @@ test "witness reads retain forwarded dictionary symbols in both resolvers" {
     } else { [] }
     assert observed.function_reads == Some(prefix ++ [semantic_reads.DictionarySymbol(100, ORD_ID, Some(77))])
     assert witness == Some(WForward(77)) && witness == cold_witness
-    assert observed.frame == cold.frame && observed.diags == cold.diags && observed.next_id == cold.next_id
+    assert observed.frame == cold.frame && observed.diags == cold.diags && observed.decl_slots == cold.decl_slots
   }
 }
 
@@ -2604,7 +2660,7 @@ test "diagnostic reads retain ordering messages and repeated bound hints" {
     } else { [semantic_reads.DictionarySymbol(100, ORD_ID, None), read, read] }
     assert observed.function_reads == Some(expected)
     assert observed.diags == cold.diags && len(cold.diags) == 1
-    assert witness == cold_witness && observed.next_id == cold.next_id
+    assert witness == cold_witness && observed.decl_slots == cold.decl_slots
   }
 }
 
@@ -2622,7 +2678,7 @@ test "diagnostic reads preserve binary refusal order and absorbed errors" {
     var expected: List[semantic_reads.FunctionRead] = []
     for t in rendered { expected = expected ++ [semantic_reads.RenderedType(t, ty_show(initial.adts, t))] }
     assert observed.function_reads == Some(expected)
-    assert observed.diags == cold.diags && len(cold.diags) == 1 && observed.next_id == cold.next_id
+    assert observed.diags == cold.diags && len(cold.diags) == 1 && observed.decl_slots == cold.decl_slots
     assert ty == cold_ty && expr == cold_expr
   }
   for op in [OpAdd, OpBand, OpConcat, OpEq, OpLt, OpAnd] {
@@ -2779,7 +2835,7 @@ test "function reads observe values calls and negative answers without changing 
   let initial = test_cx()
   let (cold, cold_module) = check_module(initial, syntax, map.empty())
   let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, map.empty())
-  assert observed.diags == cold.diags && observed.next_id == cold.next_id
+  assert observed.diags == cold.diags && observed.decl_slots == cold.decl_slots
   assert observed_module == cold_module && cold.function_reads == None
   let reads = fixture_function_answers(observed)
   var names: List[String] = []
@@ -2857,7 +2913,7 @@ test "function reads capture candidate pools on every diagnostic path" {
   let disabled = Cx { ..initial, function_reads: None }
   let (unchanged, disabled_names) = fn_pool_read(disabled)
   assert disabled_names == [] && unchanged.function_reads == None
-  assert unchanged.diags == disabled.diags && unchanged.next_id == disabled.next_id
+  assert unchanged.diags == disabled.diags && unchanged.decl_slots == disabled.decl_slots
 }
 
 test "function reads include failed value alternatives before a qualifier" {
@@ -3215,7 +3271,7 @@ test "diagnostic reads retain unwrap and non-record field refusals" {
     let (observed, ty, expr) = check_unwrap_typed(initial, t, XError(0, 1), "panic", 0, 1)
     let (cold, cold_ty, cold_expr) = check_unwrap_typed(Cx { ..initial, function_reads: None }, t, XError(0, 1), "panic", 0, 1)
     assert observed.function_reads == Some([semantic_reads.RenderedType(t, ty_show(initial.adts, t))])
-    assert observed.diags == cold.diags && len(cold.diags) == 1 && observed.next_id == cold.next_id
+    assert observed.diags == cold.diags && len(cold.diags) == 1 && observed.decl_slots == cold.decl_slots
     assert ty == cold_ty && expr == cold_expr
   }
   for t in [opt_ty(TyInt), TyError] {
@@ -3230,7 +3286,7 @@ test "diagnostic reads retain unwrap and non-record field refusals" {
       match read { semantic_reads.RenderedType(_, _) -> { renders = renders ++ [read] }, _ -> () }
     }
     assert renders == [semantic_reads.RenderedType(t, ty_show(initial.adts, t))]
-    assert observed.diags == cold.diags && len(cold.diags) == 1 && observed.next_id == cold.next_id
+    assert observed.diags == cold.diags && len(cold.diags) == 1 && observed.decl_slots == cold.decl_slots
     assert ty == cold_ty && expr == cold_expr
   }
 }
@@ -3254,7 +3310,7 @@ test "diagnostic reads preserve propagation refusal order and successful shapes"
     var expected: List[semantic_reads.FunctionRead] = []
     for t in rendered { expected = expected ++ [semantic_reads.RenderedType(t, ty_show(adts, t))] }
     assert observed.function_reads == Some(expected)
-    assert observed.diags == cold.diags && len(cold.diags) == 1 && observed.next_id == cold.next_id
+    assert observed.diags == cold.diags && len(cold.diags) == 1 && observed.decl_slots == cold.decl_slots
     assert ty == cold_ty && expr == cold_expr
   }
   for t in [opt_ty(TyInt), result_ty(TyInt, TyString)] {
@@ -3385,7 +3441,7 @@ test "record field reads preserve generic substitution and refusal shortcuts" {
     assert result == (if index == 0 { TyInt } else { TyError })
     assert next_result == result && next_tree == tree && cold.diags == observed.diags
     assert len(cold.diags) == (if index == 0 || index == 4 { 0 } else { 1 })
-    assert cold.next_id == observed.next_id
+    assert cold.decl_slots == observed.decl_slots
   }
 }
 
@@ -3960,7 +4016,7 @@ test "exhaustive reads reach let for and match consumers" {
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, parsed, map.empty())
     if len(cold.diags) > 0 { panic(source ++ ": " ++ cold.diags[0].msg) }
     assert cold.diags == [] && observed.diags == cold.diags
-    assert observed_module == cold_module && observed.next_id == cold.next_id
+    assert observed_module == cold_module && observed.decl_slots == cold.decl_slots
     var counts: List[Int] = []
     for read in observed.function_reads.expect("exhaustiveness consumer reads") {
       match read {
@@ -3984,7 +4040,7 @@ test "exhaustive reads retain missing constructor and list diagnostics" {
     let (cold, cold_module) = check_module(initial, parsed, map.empty())
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, parsed, map.empty())
     assert len(cold.diags) == 1 && observed.diags == cold.diags
-    assert observed_module == cold_module && observed.next_id == cold.next_id
+    assert observed_module == cold_module && observed.decl_slots == cold.decl_slots
     let missing = if is_list { "[], [_, ..]" } else { "Some, None" }
     assert cold.diags[0].msg == "non-exhaustive match, missing: " ++ missing
     var queries: List[semantic_reads.FunctionRead] = []
@@ -4246,12 +4302,16 @@ test "effect reads preserve precedence scope updates and allocation" {
   let id = map.get(headers.cx.effects, "Ask").expect("Ask")
   let info = map.get(headers.cx.effect_infos, id).expect("effect metadata")
   let variable = EffVar("v", 8000)
-  let fresh_row = EffVar("fresh", 9000)
   let declared = ELabeled(EPure, [(id, "Renamed")])
-  let initial = Cx { ..headers.cx, next_id: 9000,
+  # `resolve_eff_at` mints inside whatever declaration the context has
+  # entered, so the fixture enters one and reads the key it is about to hand
+  # out rather than naming an integer.
+  let initial = enter_decl_owner(Cx { ..headers.cx,
     effects: map.from([("Ask", id), ("io", id), ("e", id)]),
     effect_infos: map.insert(headers.cx.effect_infos, id, EffectI { ..info, name: "Renamed" }),
-    current_eff_vars: map.from([("v", variable), ("e", variable), ("Missing", variable), ("io", variable)]) }
+    current_eff_vars: map.from([("v", variable), ("e", variable), ("Missing", variable), ("io", variable)]) },
+    [identity.Named(identity.FunctionDecl, "host")], 0, 1)
+  let fresh_row = EffVar("fresh", mint_cursor(initial))
   for index in 0..9 {
     let atoms = match index { 0 -> ["io"], 1 -> ["Ask"], 2 -> ["Missing"], 3 -> ["e"],
       4 -> ["v"], 5 -> ["fresh"], 6 -> ["fresh", "fresh"], 7 -> ["Ask", "v", "fresh"], _ -> ["T.E"] }
@@ -4277,8 +4337,8 @@ test "effect reads preserve precedence scope updates and allocation" {
     let allocated = index >= 5 && index <= 7
     let expected_scope = if allocated { map.insert(initial.current_eff_vars, "fresh", fresh_row) } else { initial.current_eff_vars }
     assert cold.current_eff_vars == expected_scope && observed.current_eff_vars == expected_scope
-    assert cold.next_id == 9000 + if allocated { 1 } else { 0 }
-    assert observed.next_id == cold.next_id
+    assert mint_cursor(cold) == mint_cursor(initial) + if allocated { 1 } else { 0 }
+    assert observed.decl_slots == cold.decl_slots
     assert cold.diags == observed.diags && len(cold.diags) == if index == 2 || index == 8 { 1 } else { 0 }
     assert cold.effects == initial.effects && observed.effects == initial.effects
     assert cold.effect_infos == initial.effect_infos && observed.effect_infos == initial.effect_infos
@@ -4317,7 +4377,7 @@ test "associated reads retain subject bounds members and owner deduplication" {
         assert ty == next_ty && ty == if errors == 0 { TyAssoc(parameter, left, "Item") } else { TyError }
         (cold, observed)
       }
-      assert cold.diags == observed.diags && len(cold.diags) == errors && cold.next_id == observed.next_id
+      assert cold.diags == observed.diags && len(cold.diags) == errors && cold.decl_slots == observed.decl_slots
       assert cold.current_tparams == observed.current_tparams
       assert map.len(cold.current_tparam_bounds) == map.len(observed.current_tparam_bounds)
       for entry in map.entries(cold.current_tparam_bounds) {
@@ -4372,7 +4432,7 @@ test "java reads retain class names metadata and arity short circuits" {
     let expected_ty = match index { 0 -> TyJava("pkg.Box", "ReadableBox"), 3 -> TyInt, 4 -> parameter, 5 -> TyInt, _ -> TyError }
     assert ty == expected_ty && next_ty == ty
     assert cold.diags == observed.diags && len(cold.diags) == if index == 1 || index == 2 || index == 6 { 1 } else { 0 }
-    assert cold.next_id == initial.next_id && observed.next_id == initial.next_id
+    assert cold.decl_slots == initial.decl_slots && observed.decl_slots == initial.decl_slots
     assert cold.java_classes == initial.java_classes && observed.java_classes == initial.java_classes
     var expected = test_named_environment(initial, name)
     if index == 3 { expected = test_plain_builtin(initial, name) }
@@ -4414,7 +4474,7 @@ test "java reads retain return dispatch and diagnostic class metadata" {
     let (cold, ty, tree) = check_method_call(scope, receiver, "missing", [], None, 8, 15, 0, 17)
     let (observed, next_ty, next_tree) = check_method_call(Cx { ..scope, function_reads: Some([]) }, receiver, "missing", [], None, 8, 15, 0, 17)
     assert ty == TyError && next_ty == ty && next_tree == tree
-    assert cold.diags == observed.diags && len(cold.diags) == 1 && cold.next_id == observed.next_id
+    assert cold.diags == observed.diags && len(cold.diags) == 1 && cold.decl_slots == observed.decl_slots
     let name_reads: List[semantic_reads.FunctionRead] = if static_call { [semantic_reads.LocalConstructor("Foreign", None),
       semantic_reads.LocalConstant("Foreign", None), semantic_reads.JavaClassName("Foreign", Some("pkg.Box"))] } else { [] }
     assert observed.function_reads == Some(name_reads ++ [semantic_reads.JavaClassInfo("pkg.Box", metadata), semantic_reads.JavaMethods("pkg.Box", [])])
@@ -4430,7 +4490,7 @@ test "java reads retain return dispatch and diagnostic class metadata" {
     let sam_reads: List[semantic_reads.FunctionRead] = if list_argument { [] } else {
       [semantic_reads.JavaSam("pkg.Box", Some(tj_static("run", [], "long", "pkg.Box")))]
     }
-    assert cold.next_id == observed.next_id
+    assert cold.decl_slots == observed.decl_slots
     let rendered = if list_argument {
       [semantic_reads.RenderedType(TyList(TyTuple([TyInt, TyInt])), "List[(Int, Int)]"),
         semantic_reads.RenderedType(TyTuple([TyInt, TyInt]), "(Int, Int)")]
@@ -4457,7 +4517,7 @@ test "java import reads preserve gate misses and sequential namespace writes" {
     assert cold.diags == observed.diags && len(cold.diags) == if index == 2 { 0 } else { 1 }
     let classes = if index == 2 || index == 4 { map.from([("Box", "pkg.Actual")]) } else { initial.java_classes }
     assert cold.java_classes == classes && observed.java_classes == classes
-    assert cold.next_id == initial.next_id && observed.next_id == initial.next_id
+    assert cold.decl_slots == initial.decl_slots && observed.decl_slots == initial.decl_slots
     var expected = [semantic_reads.JavaEnabled(index != 0)]
     if index != 0 { expected = expected ++ [semantic_reads.JavaFindClass("pkg.Box", answer)] }
     if index >= 2 { expected = expected ++ [semantic_reads.JavaClassName("Box", map.get(initial.java_classes, "Box"))] }
@@ -4478,7 +4538,7 @@ test "local namespace shadow reads ignore body cutoffs and stop at constructors"
       [semantic_reads.LocalConstructor("VALUE", Some((7, 2)))]
     } else { [semantic_reads.LocalConstructor("VALUE", None), semantic_reads.LocalConstant("VALUE", Some(TyInt))] }
     assert answer && next_answer == answer && observed.function_reads == Some(reads)
-    assert cold.diags == observed.diags && cold.next_id == observed.next_id
+    assert cold.diags == observed.diags && cold.decl_slots == observed.decl_slots
   }
 }
 
@@ -4505,13 +4565,13 @@ test "java namespace reads retain static target guards and diagnostic context" {
       if index <= 1 { reads = reads ++ [semantic_reads.JavaClassName(name, expected)] }
     }
     assert answer == expected && next_answer == answer && observed.function_reads == Some(reads)
-    assert cold.diags == observed.diags && cold.next_id == observed.next_id
+    assert cold.diags == observed.diags && cold.decl_slots == observed.decl_slots
     let target = EFieldAcc(receiver, "VALUE", 8, 13, 0, 13)
     let (cold_message_cx, message) = named_arg_msg(initial, target)
     let (message_cx, next_message) = named_arg_msg(enabled, target)
     assert message == next_message && str.contains(message, "Java member") == (index == 0)
     assert message_cx.function_reads == Some(reads)
-    assert cold_message_cx.diags == message_cx.diags && cold_message_cx.next_id == message_cx.next_id
+    assert cold_message_cx.diags == message_cx.diags && cold_message_cx.decl_slots == message_cx.decl_slots
     let args = [Arg { name: Some("value"), e: EInt(1, 20, 21), trailing: false, lo: 14, hi: 21 }]
     let (cold_rejected, cold_ty, cold_tree) = reject_named_args(initial, target, args, 0, 22).expect("cold refusal")
     let (rejected, ty, tree) = reject_named_args(enabled, target, args, 0, 22).expect("observed refusal")
@@ -4545,7 +4605,7 @@ test "java namespace reads retain value resolution and earlier shadow guards" {
     }
     assert answer == (index != 1) && next_answer == answer
     assert observed.function_reads == expected
-    assert observed.diags == cold.diags && observed.next_id == cold.next_id
+    assert observed.diags == cold.diags && observed.decl_slots == cold.decl_slots
   }
 }
 
@@ -4582,7 +4642,7 @@ test "java namespace reads preserve declaration collision short circuits" {
     let expected: List[semantic_reads.FunctionRead] = if index >= 3 { [] }
     else { [semantic_reads.JavaClassName("Widget", Some("pkg.Widget"))] }
     assert cold.diags == observed.diags && len(cold.diags) == 1
-    assert cold.next_id == initial.next_id && observed.next_id == initial.next_id
+    assert cold.decl_slots == initial.decl_slots && observed.decl_slots == initial.decl_slots
     assert observed.function_reads == Some(expected)
   }
 }
@@ -4594,7 +4654,7 @@ test "java namespace reads enumerate names only for pending inferred functions" 
     let initial = Cx { ..test_cx(), java_classes: map.from([("Z", "pkg.Z"), ("A", "pkg.A")]) }
     let (cold, _) = check_module(initial, syntax, map.empty())
     let (observed, _) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, map.empty())
-    assert cold.diags == [] && observed.diags == [] && cold.next_id == observed.next_id
+    assert cold.diags == [] && observed.diags == [] && cold.decl_slots == observed.decl_slots
     var count = 0
     for fact in observed.function_reads.expect("observed module") {
       match fact {
@@ -4641,7 +4701,7 @@ test "java member reads preserve candidate lists on success and missing results"
     let expected_ty = if empty { TyError } else if kind == 1 { TyJava("pkg.Box", "ReadableBox") } else { TyInt }
     assert ty == expected_ty && next_ty == ty && next_tree == tree
     assert cold.diags == observed.diags && len(cold.diags) == if empty { 1 } else { 0 }
-    assert cold.next_id == observed.next_id
+    assert cold.decl_slots == observed.decl_slots
     let fact = if kind == 0 { semantic_reads.JavaMethods("pkg.Box", methods) }
     else if kind == 1 { semantic_reads.JavaConstructors("pkg.Box", constructors) }
     else { semantic_reads.JavaStaticFields("pkg.Box", fields) }
@@ -4660,7 +4720,7 @@ test "java member reads preserve argument and instance constructor short circuit
     let (observed, next_ty, next_tree) = check_java_call(Cx { ..initial, function_reads: Some([]) }, info, None, index != 0, name, args, 1, 4, 0, 13)
     assert ty == TyError && next_ty == ty && next_tree == tree
     assert cold.diags == observed.diags && len(cold.diags) == 1
-    assert cold.next_id == observed.next_id
+    assert cold.decl_slots == observed.decl_slots
   }
 }
 
@@ -4679,7 +4739,7 @@ test "environment reads preserve reserved names shadowing and std visibility" {
     assert ty == expected_ty && next_ty == ty
     let errors = if index == 2 || index == 4 || index == 6 || index == 7 { 1 } else { 0 }
     assert cold.diags == observed.diags && len(cold.diags) == errors
-    assert cold.next_id == initial.next_id && observed.next_id == initial.next_id
+    assert cold.decl_slots == initial.decl_slots && observed.decl_slots == initial.decl_slots
     assert cold.current_tparams == initial.current_tparams && observed.current_tparams == initial.current_tparams
     assert cold.btypes == initial.btypes && observed.btypes == initial.btypes
     var expected: List[semantic_reads.FunctionRead] = [semantic_reads.BuiltinTypeAnswer(name, map.get(initial.btypes, name))]
@@ -4724,7 +4784,7 @@ test "type reads retain local alias cache and cycle short circuits" {
     assert cold.alias_resolved == observed.alias_resolved && cold.alias_resolving == observed.alias_resolving
     assert cold.current_tparams == observed.current_tparams && cold.current_tparams == initial.current_tparams
     assert cold.current_eff_vars == observed.current_eff_vars && cold.current_eff_vars == initial.current_eff_vars
-    assert cold.next_id == observed.next_id
+    assert cold.decl_slots == observed.decl_slots
     let reads = observed.function_reads.expect("alias reads")
     if cached == None && target_present {
       let prefix = [semantic_reads.LocalAliasTarget("Alias", None),
@@ -4749,7 +4809,7 @@ test "type reads retain uncached alias binder inputs" {
   let (cold, cold_ty) = resolve_alias_target(initial, al, 0, 6)
   let (observed, observed_ty) = resolve_alias_target(Cx { ..initial, function_reads: Some([]) }, al, 0, 6)
   assert cold_ty == observed_ty && Some(cold_ty) == map.get(headers.cx.alias_resolved, "Mapper")
-  assert cold.diags == [] && observed.diags == [] && cold.next_id == observed.next_id
+  assert cold.diags == [] && observed.diags == [] && cold.decl_slots == observed.decl_slots
   assert cold.current_tparams == initial.current_tparams && observed.current_tparams == initial.current_tparams
   assert cold.current_eff_vars == initial.current_eff_vars && observed.current_eff_vars == initial.current_eff_vars
   assert observed.function_reads == Some([semantic_reads.LocalAliasTarget("Mapper", None),
@@ -4775,7 +4835,7 @@ test "type reads retain local nominal answers without bypassing shadowing" {
     let (cold, cold_ty) = resolve_type(initial, ref)
     let (observed, observed_ty) = resolve_type(Cx { ..initial, function_reads: Some([]) }, ref)
     assert cold_ty == observed_ty && cold.diags == observed.diags && len(cold.diags) == errors
-    assert cold.next_id == observed.next_id
+    assert cold.decl_slots == observed.decl_slots
     let reads = observed.function_reads.expect("local type reads")
     assert len(reads) == count
     if name == "Alias" {
@@ -4818,11 +4878,11 @@ test "type reads retain qualified alias and nominal decision boundaries" {
     let (written, count, errors) = sample
     let (syntax, parsed) = parser.parse_module("use helper as h\nfn go(x: " ++ written ++ ") -> Unit = ()\n")
     assert parsed == []
-    let initial = Cx { ..cx_new(Some("main"), None), next_id: provider.next_id }
+    let initial = cx_new(Some("main"), None)
     let (cold, cold_module) = check_module(initial, syntax, env)
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, env)
     assert len(cold.diags) == errors && cold.diags == observed.diags && cold_module == observed_module
-    assert cold.next_id == observed.next_id
+    assert cold.decl_slots == observed.decl_slots
     let reads = observed.function_reads.expect("type reads")
     let local_count = if written == "h.Mapper[Int, !io]" || written == "h.Box[Int]" { 2 } else { 1 }
     assert len(reads) == count + 5 * local_count + 1
@@ -4881,7 +4941,7 @@ test "export reads retain qualified pattern answers and recovery" {
     let pat = PQual("h", name, [], false, false, 2, 7, 0, 7)
     let (cold, cold_pat) = check_pattern(initial, pat, scrut, false)
     let (observed, observed_pat) = check_pattern(Cx { ..initial, function_reads: Some([]) }, pat, scrut, false)
-    assert cold.diags == observed.diags && cold_pat == observed_pat && cold.next_id == observed.next_id
+    assert cold.diags == observed.diags && cold_pat == observed_pat && cold.decl_slots == observed.decl_slots
     let key = map.get(exp.ctors, name)
     var expected = [semantic_reads.ExportPresence("h", true), semantic_reads.QualifiedConstructor("h", name, key)]
     if key == None {
@@ -4956,12 +5016,13 @@ test "export reads reach let and for refutability diagnostics" {
       " fn iter_get(xs: Bag, c: Int) -> h.Choice = xs.item\n}\n"
     let (syntax, pd) = parser.parse_module("use helper as h\n" ++ iter ++ "fn go() -> Int = " ++ body ++ "\n")
     assert pd == []
-    # Match the driver's global allocation order; Bag must not reuse Choice's ID.
-    let initial = Cx { ..cx_new(Some("main"), None), next_id: provider.next_id }
+    # Bag cannot reuse Choice's id whatever order the modules are checked in:
+    # a nominal id derives from the declaration that owns it.
+    let initial = cx_new(Some("main"), None)
     let (cold, cold_module) = check_module(initial, syntax, env)
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, env)
     assert len(cold.diags) == 1 && cold.diags == observed.diags && cold_module == observed_module
-    assert cold.next_id == observed.next_id
+    assert cold.decl_slots == observed.decl_slots
     let fact = semantic_reads.QualifiedConstructor("h", "Item", map.get(exp.ctors, "Item"))
     var hits = 0
     for read in observed.function_reads.expect("refutability reads") { if read == fact { hits = hits + 1 } }
@@ -5040,7 +5101,7 @@ test "diagnostic reads retain pattern mismatch types in evaluation order" {
     var expected: List[semantic_reads.FunctionRead] = []
     for ty in rendered { expected = expected ++ [semantic_reads.RenderedType(ty, ty_show(initial.adts, ty))] }
     assert reads == expected
-    assert observed.diags == cold.diags && len(cold.diags) == 1 && observed.next_id == cold.next_id
+    assert observed.diags == cold.diags && len(cold.diags) == 1 && observed.decl_slots == cold.decl_slots
     assert tree == cold_tree
   }
   let canonical = [PatBind { name: "x", sym: 1, ty: TyInt, lo: 1, hi: 2 }]
@@ -5048,7 +5109,7 @@ test "diagnostic reads retain pattern mismatch types in evaluation order" {
   let observed = check_or_bindings(initial, canonical, actual, PWild(5, 6))
   let cold = check_or_bindings(Cx { ..initial, function_reads: None }, canonical, actual, PWild(5, 6))
   assert observed.function_reads == Some([semantic_reads.RenderedType(TyString, "String"), semantic_reads.RenderedType(TyInt, "Int")])
-  assert observed.diags == cold.diags && observed.next_id == cold.next_id
+  assert observed.diags == cold.diags && observed.decl_slots == cold.decl_slots
 }
 
 test "or-patterns reject binding type mismatches" {
@@ -6467,7 +6528,7 @@ test "diagnostic reads retain witness rendering before nominal hint queries" {
     assert observed.function_reads == Some(expected)
     assert observed.diags == cold.diags && len(cold.diags) == 1
     assert witness == cold_witness && witness == None
-    assert observed.next_id == cold.next_id && observed.frame == cold.frame
+    assert observed.decl_slots == cold.decl_slots && observed.frame == cold.frame
   }
   for t in [TyError, TyInt] {
     let (observed, _) = resolve_witness(initial, ORD_ID, t, 0, 1, "caller")
@@ -7920,7 +7981,7 @@ test "handler reads preserve declared metadata and selected evidence fields" {
       semantic_reads.DeclaredEffectInfo(eid, info), semantic_reads.ConstructorFields(eid, 0, rec)] ++ eligibility)
     assert ty == next_ty && tree == next_tree && cold.diags == observed.diags
     assert len(cold.diags) == (if answered { 0 } else { 1 })
-    assert cold.next_id == observed.next_id
+    assert cold.decl_slots == observed.decl_slots
   }
 }
 
@@ -7931,7 +7992,7 @@ test "handler reads preserve missing-effect recovery and candidate order" {
   let (observed, next_ty, next_tree) = check_handle(Cx { ..base, function_reads: Some([]) },
     "Missing", [], [], rest, 0, 7, 0, 21, None)
   assert cold.diags == observed.diags && len(cold.diags) == 1
-  assert ty == next_ty && tree == next_tree && cold.next_id == observed.next_id
+  assert ty == next_ty && tree == next_tree && cold.decl_slots == observed.decl_slots
   assert observed.function_reads == Some([semantic_reads.LocalEffectName("Missing", None),
     semantic_reads.EffectCandidates(map.keys(base.effects))])
 }
@@ -10583,7 +10644,7 @@ test "local value reads preserve constructor SAM prepass guards and arity" {
     let arity_reads: List[semantic_reads.FunctionRead] = if index == 6 { [] } else { lookup_reads }
     assert arity == (if index == 1 || index == 2 || index == 6 { 0 } else { 1 }) && next_arity == arity
     assert observed_arity.function_reads == Some(reads ++ arity_reads)
-    assert cold_arity.diags == observed_arity.diags && cold_arity.next_id == observed_arity.next_id
+    assert cold_arity.diags == observed_arity.diags && cold_arity.decl_slots == observed_arity.decl_slots
   }
 }
 
@@ -10611,7 +10672,7 @@ test "constructor expected-type reads retain identity arity and nominal shape" {
       let (observed, next_answer) = needs_expected_read(Cx { ..initial, function_reads: Some([]) }, expr)
       assert answer == (if applied { index == 1 } else { index != 2 })
       assert next_answer == answer && observed.function_reads == Some(reads)
-      assert cold.diags == observed.diags && cold.next_id == observed.next_id
+      assert cold.diags == observed.diags && cold.decl_slots == observed.decl_slots
     }
   }
 }
@@ -11552,7 +11613,7 @@ test "java oracle reads retain missing SAM and component answers as values" {
     assert cold_method == sam && next_method == sam && cold_component == component && next_component == component
     assert observed.function_reads == Some([semantic_reads.JavaSam("pkg.Callback", sam),
       semantic_reads.JavaComponent("array-query", component)])
-    assert observed.diags == cold.diags && observed.next_id == cold.next_id
+    assert observed.diags == cold.diags && observed.decl_slots == cold.decl_slots
   }
 }
 
@@ -11609,7 +11670,7 @@ test "java oracle reads preserve assignability direction and primitive shortcuts
     let reads: List[semantic_reads.FunctionRead] = if queried { [semantic_reads.JavaAssignable(target, source, accepted)] } else { [] }
     assert score == expected && next_score == score
     assert observed.function_reads == Some(reads)
-    assert observed.diags == cold.diags && observed.next_id == cold.next_id
+    assert observed.diags == cold.diags && observed.decl_slots == cold.decl_slots
   }
   for (arg, source) in [(TyString, "java.lang.String"), (TyBytes, "[B"), (TyInt, "java.lang.Long"),
     (TyFloat, "java.lang.Double"), (TyBool, "java.lang.Boolean"), (TyJava("pkg.Child", "Child"), "pkg.Child")] {
@@ -11623,7 +11684,7 @@ test "java oracle reads preserve assignability direction and primitive shortcuts
       let (observed, next_answer) = sam_ret_compatible(Cx { ..initial, function_reads: Some([]) }, arg, "pkg.Parent")
       assert answer == accepted && next_answer == answer
       assert observed.function_reads == Some([semantic_reads.JavaAssignable("pkg.Parent", source, accepted)])
-      assert observed.diags == cold.diags && observed.next_id == cold.next_id
+      assert observed.diags == cold.diags && observed.decl_slots == cold.decl_slots
     }
   }
 }
@@ -11661,7 +11722,7 @@ test "java oracle reads retain SAM shape and return queries across refusals" {
     }
     assert answer == expected && next_answer == answer
     assert observed.function_reads == Some(reads)
-    assert observed.diags == cold.diags && observed.next_id == cold.next_id
+    assert observed.diags == cold.diags && observed.decl_slots == cold.decl_slots
   }
 }
 
@@ -11687,7 +11748,7 @@ test "java oracle reads retain packed component queries on success and refusal" 
     let reads: List[semantic_reads.FunctionRead] = if index == 1 { [read, read] } else if index == 2 { [read] } else { [] }
     assert answer == expected && next_answer == answer
     assert observed.function_reads == Some(reads)
-    assert observed.diags == cold.diags && observed.next_id == cold.next_id
+    assert observed.diags == cold.diags && observed.decl_slots == cold.decl_slots
   }
 }
 
@@ -11837,7 +11898,7 @@ test "diagnostic reads retain Java bridge and deferred SAM refusals" {
     let (observed, next_trees, next_convs, next_evs, next_bridges) = finalize_sams(Cx { ..initial, function_reads: Some([]) }, ["pkg.Callback"], false, [arg], ats, atx)
     assert observed.diags == cold.diags && len(cold.diags) == (if index == 2 { 0 } else { 1 })
     assert trees == next_trees && convs == next_convs && evs == next_evs && bridges == next_bridges
-    assert observed.next_id == cold.next_id
+    assert observed.decl_slots == cold.decl_slots
     var renders: List[semantic_reads.FunctionRead] = []
     for read in observed.function_reads.expect("Java diagnostic reads") {
       match read { semantic_reads.RenderedType(_, _) -> { renders = renders ++ [read] }, _ -> () }
@@ -13273,7 +13334,7 @@ test "diagnostic reads retain primitive cast refusals and reference success" {
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, map.empty())
     let rejected = target != TyString
     assert cold.diags == observed.diags && len(cold.diags) == (if rejected { 1 } else { 0 })
-    assert cold_module == observed_module && cold.next_id == observed.next_id
+    assert cold_module == observed_module && cold.decl_slots == observed.decl_slots
     var renders: List[semantic_reads.FunctionRead] = []
     for read in observed.function_reads.expect("cast diagnostic reads") {
       match read { semantic_reads.RenderedType(_, _) -> { renders = renders ++ [read] }, _ -> () }
@@ -14120,7 +14181,7 @@ test "diagnostic reads retain lambda arity and match diagnostic paths" {
     let (cold, cold_ty, cold_tree) = check_lambda(Cx { ..initial, function_reads: None }, [], EInt(1, 0, 1), sugar, false, false, None, None, Some(expected_type), 0, 1)
     assert observed.function_reads == Some([semantic_reads.RenderedType(expected_type, "fn(Int) -> Int"),
       semantic_reads.ConcreteType(TyInt, true)])
-    assert observed.diags == cold.diags && len(cold.diags) == 1 && observed.next_id == cold.next_id
+    assert observed.diags == cold.diags && len(cold.diags) == 1 && observed.decl_slots == cold.decl_slots
     assert ty == cold_ty && tree == cold_tree
   }
   for sample in [("match () { _ -> 1 }", TyUnit, true),
@@ -14132,7 +14193,7 @@ test "diagnostic reads retain lambda arity and match diagnostic paths" {
     let (cold, cold_module) = check_module(Cx { ..initial, function_reads: None }, syntax, map.empty())
     let (observed, observed_module) = check_module(initial, syntax, map.empty())
     assert cold.diags == observed.diags && len(cold.diags) == (if rejected { 1 } else { 0 })
-    assert cold_module == observed_module && cold.next_id == observed.next_id
+    assert cold_module == observed_module && cold.decl_slots == observed.decl_slots
     var renders: List[semantic_reads.FunctionRead] = []
     for read in observed.function_reads.expect("match diagnostic reads") {
       match read { semantic_reads.RenderedType(_, _) -> { renders = renders ++ [read] }, _ -> () }
@@ -14158,7 +14219,7 @@ test "diagnostic reads retain handler results cell initializers and assignments"
     let (cold, cold_module) = check_module(initial, syntax, map.empty())
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, map.empty())
     assert cold.diags == observed.diags && len(cold.diags) == 1
-    assert cold_module == observed_module && cold.next_id == observed.next_id && cold.take_cell == observed.take_cell
+    assert cold_module == observed_module && cold.decl_slots == observed.decl_slots && cold.take_cell == observed.take_cell
     var renders: List[semantic_reads.FunctionRead] = []
     for read in observed.function_reads.expect("handler diagnostic reads") {
       match read { semantic_reads.RenderedType(_, _) -> { renders = renders ++ [read] }, _ -> () }
@@ -14192,7 +14253,7 @@ test "diagnostic reads retain local callable refusals and successful calls" {
     let (cold, cold_module) = check_module(initial, syntax, map.empty())
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, map.empty())
     assert cold.diags == observed.diags && len(cold.diags) == (if rejected { 1 } else { 0 })
-    assert cold_module == observed_module && cold.next_id == observed.next_id
+    assert cold_module == observed_module && cold.decl_slots == observed.decl_slots
     var renders: List[semantic_reads.FunctionRead] = []
     for read in observed.function_reads.expect("local callable diagnostic reads") {
       match read { semantic_reads.RenderedType(_, _) -> { renders = renders ++ [read] }, _ -> () }
@@ -14219,7 +14280,7 @@ test "diagnostic reads retain discarded values conditions and range bounds" {
     let (cold, cold_module) = check_module(initial, syntax, map.empty())
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, map.empty())
     assert cold.diags == observed.diags && len(cold.diags) == 1
-    assert cold_module == observed_module && cold.next_id == observed.next_id
+    assert cold_module == observed_module && cold.decl_slots == observed.decl_slots
     var renders: List[semantic_reads.FunctionRead] = []
     for read in observed.function_reads.expect("statement diagnostic reads") {
       match read { semantic_reads.RenderedType(_, _) -> { renders = renders ++ [read] }, _ -> () }
@@ -14243,7 +14304,7 @@ test "diagnostic reads retain eager indexing descriptions and return refusals" {
     let (cold, cold_module) = check_module(initial, syntax, map.empty())
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, map.empty())
     assert cold.diags == observed.diags && len(cold.diags) == (if rejected { 1 } else { 0 })
-    assert cold_module == observed_module && cold.next_id == observed.next_id
+    assert cold_module == observed_module && cold.decl_slots == observed.decl_slots
     var renders: List[semantic_reads.FunctionRead] = []
     for read in observed.function_reads.expect("index/return diagnostic reads") {
       match read { semantic_reads.RenderedType(_, _) -> { renders = renders ++ [read] }, _ -> () }
@@ -14265,7 +14326,7 @@ test "diagnostic reads retain conditional and list-element refusals" {
     let (cold, cold_module) = check_module(initial, syntax, map.empty())
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, map.empty())
     assert cold.diags == observed.diags && len(cold.diags) == (if rejected { 1 } else { 0 })
-    assert cold_module == observed_module && cold.next_id == observed.next_id
+    assert cold_module == observed_module && cold.decl_slots == observed.decl_slots
     var renders: List[semantic_reads.FunctionRead] = []
     for read in observed.function_reads.expect("conditional diagnostic reads") {
       match read { semantic_reads.RenderedType(_, _) -> { renders = renders ++ [read] }, _ -> () }
@@ -14289,7 +14350,7 @@ test "diagnostic reads retain named-call fallbacks and skip spelling suggestions
     let (cold, cold_module) = check_module(initial, syntax, map.empty())
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, map.empty())
     assert cold.diags == observed.diags && len(cold.diags) == (if valid { 0 } else { 1 })
-    assert cold_module == observed_module && cold.next_id == observed.next_id
+    assert cold_module == observed_module && cold.decl_slots == observed.decl_slots
     let sig = map.get(observed.fns, "move2").expect("named signature")
     var renders: List[semantic_reads.FunctionRead] = []
     for read in observed.function_reads.expect("named diagnostic reads") {
@@ -14317,7 +14378,7 @@ test "diagnostic reads recompute signature trait names with complete inputs" {
   assert next.function_reads == Some([semantic_reads.RenderedSignature(sig, next_text)])
   let (cold, cold_text) = signature_display_read(Cx { ..renamed, function_reads: None }, sig)
   assert cold_text == next_text && cold.function_reads == None
-  assert next.diags == cold.diags && next.next_id == cold.next_id
+  assert next.diags == cold.diags && next.decl_slots == cold.decl_slots
 }
 
 test "diagnostic reads retain signature hints and argument rendering order" {
@@ -14329,7 +14390,7 @@ test "diagnostic reads retain signature hints and argument rendering order" {
     let (cold, cold_module) = check_module(initial, syntax, map.empty())
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, map.empty())
     assert cold.diags == observed.diags && len(cold.diags) == 1
-    assert cold_module == observed_module && cold.next_id == observed.next_id
+    assert cold_module == observed_module && cold.decl_slots == observed.decl_slots
     let sig = map.get(observed.fns, "value").expect("value signature")
     var renders: List[semantic_reads.FunctionRead] = []
     for read in observed.function_reads.expect("signature diagnostic reads") {
@@ -14362,14 +14423,14 @@ test "diagnostic reads retain structural and associated witness hints" {
       }
       if nested { expected = expected ++ [semantic_reads.RenderedType(whole, ty_show(initial.adts, whole))] }
       assert observed.function_reads == Some(expected)
-      assert observed.diags == cold.diags && len(cold.diags) == 1 && observed.next_id == cold.next_id
+      assert observed.diags == cold.diags && len(cold.diags) == 1 && observed.decl_slots == cold.decl_slots
     }
   }
   let observed = assoc_witness_err(initial, "Hash", projection, 0, 1)
   let cold = assoc_witness_err(Cx { ..initial, function_reads: None }, "Hash", projection, 0, 1)
   assert observed.function_reads == Some([semantic_reads.RenderedType(projection, "Int.Item"),
     semantic_reads.RenderedType(projection, "Int.Item")])
-  assert observed.diags == cold.diags && len(cold.diags) == 1 && observed.next_id == cold.next_id
+  assert observed.diags == cold.diags && len(cold.diags) == 1 && observed.decl_slots == cold.decl_slots
 }
 
 test "diagnostic reads retain unary refusals and branch mismatch order" {
@@ -14379,7 +14440,7 @@ test "diagnostic reads retain unary refusals and branch mismatch order" {
     let (cold, cold_ty, cold_expr) = check_unary(Cx { ..initial, function_reads: None }, op, TyString, XError(0, 1), 0, 1, 0, 1)
     assert observed.function_reads == Some([semantic_reads.RenderedType(TyString, "String")])
     assert observed.diags == cold.diags && len(cold.diags) == 1
-    assert observed.next_id == cold.next_id && ty == cold_ty && expr == cold_expr
+    assert observed.decl_slots == cold.decl_slots && ty == cold_ty && expr == cold_expr
   }
   let (mismatch, result) = unify_branches(initial, TyInt, TyBool, 0, 1, "branches")
   assert result == TyError && mismatch.function_reads == Some([
@@ -14413,7 +14474,7 @@ test "diagnostic reads retain constructor value pattern and fallback consumers" 
     let (cold, cold_module) = check_module(initial, syntax, map.empty())
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, map.empty())
     assert cold.diags == observed.diags && len(cold.diags) == 1
-    assert cold_module == observed_module && cold.next_id == observed.next_id
+    assert cold_module == observed_module && cold.decl_slots == observed.decl_slots
     var count = 0
     for read in observed.function_reads.expect("constructor consumer reads") {
       match read {
@@ -14440,7 +14501,7 @@ test "diagnostic reads retain constructor refusal contexts and skip valid constr
     let (cold, cold_module) = check_module(initial, syntax, map.empty())
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, map.empty())
     assert len(cold.diags) == (if rejected { 1 } else { 0 })
-    assert cold.diags == observed.diags && cold_module == observed_module && cold.next_id == observed.next_id
+    assert cold.diags == observed.diags && cold_module == observed_module && cold.decl_slots == observed.decl_slots
     var count = 0
     for read in observed.function_reads.expect("constructor diagnostic reads") {
       match read {
@@ -14468,7 +14529,7 @@ test "diagnostic reads recompute constructor shape and nested field names" {
   assert next.function_reads == Some([semantic_reads.RenderedConstructor(ctor, next_text)])
   let (cold, cold_text) = constructor_display_read(Cx { ..renamed, function_reads: None }, ctor)
   assert cold_text == next_text && cold.function_reads == None
-  assert next.next_id == cold.next_id && next.diags == cold.diags
+  assert next.decl_slots == cold.decl_slots && next.diags == cold.diags
 }
 
 test "diagnostic reads recompute nested nominal names without changing the query type" {
@@ -14497,7 +14558,7 @@ test "diagnostic reads retain function and trait default return mismatches" {
     let (cold, cold_module) = check_module(initial, syntax, map.empty())
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, map.empty())
     assert len(cold.diags) == 1 && cold.diags == observed.diags
-    assert cold_module == observed_module && cold.next_id == observed.next_id
+    assert cold_module == observed_module && cold.decl_slots == observed.decl_slots
     var renders: List[semantic_reads.FunctionRead] = []
     for read in observed.function_reads.expect("return diagnostic reads") {
       match read { semantic_reads.RenderedType(_, _) -> { renders = renders ++ [read] }, _ -> () }
@@ -14517,7 +14578,7 @@ test "diagnostic reads retain default and test refusals without observing succes
     let (cold, cold_module) = check_module(initial, syntax, map.empty())
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, map.empty())
     assert len(cold.diags) == (if valid { 0 } else { 1 })
-    assert cold.diags == observed.diags && cold_module == observed_module && cold.next_id == observed.next_id
+    assert cold.diags == observed.diags && cold_module == observed_module && cold.decl_slots == observed.decl_slots
     var renders: List[semantic_reads.FunctionRead] = []
     for read in observed.function_reads.expect("default/test diagnostic reads") {
       match read { semantic_reads.RenderedType(_, _) -> { renders = renders ++ [read] }, _ -> () }
@@ -14536,7 +14597,7 @@ test "diagnostic reads retain constant mismatch rendering in evaluation order" {
     let initial = cx_new(Some("main"), None)
     let (cold, cold_module) = check_module(initial, syntax, map.empty())
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, map.empty())
-    assert observed_module == cold_module && observed.diags == cold.diags && observed.next_id == cold.next_id
+    assert observed_module == cold_module && observed.diags == cold.diags && observed.decl_slots == cold.decl_slots
     assert len(cold.diags) == (if valid { 0 } else { 1 })
     var renders: List[semantic_reads.FunctionRead] = []
     for read in observed.function_reads.expect("diagnostic reads") {
@@ -14585,9 +14646,8 @@ pub fn check_module_headers(cx: Cx, m: Module, env: Map[String, ModExports]) -> 
   # independent in the other direction: `pass_effects` resolves its operations'
   # parameter and return types, which need type *shells* and never a field.
   #
-  # It costs an id shift in one shape and nothing anywhere else: both mint from
-  # `Cx.next_id`, so a module that declares an effect *and* a type declaration
-  # binding `[!e]` numbers the two the other way round than it used to.
+  # It costs nothing at all now that an identifier is numbered inside the
+  # declaration that binds it: neither pass can move what the other mints.
   cx1 = pass_effects(cx1, m)
   cx1 = pass_ctor_fields(cx1, m, shells)
   cx1 = pass_resolve_aliases(cx1)
@@ -14706,19 +14766,23 @@ fn enter_decl(cx: Cx, view: identity.DeclSpans, path: List[identity.Part]) -> En
         None -> measured_from(cx, sp.lo)
         Some(module) -> owned_by(cx, module, decl, sp.lo)
       }
-      Entered { cx: entered,
+      # The same declaration the header passes entered, so what its body binds
+      # continues its slots instead of reissuing them. A body whose header was
+      # never entered starts at zero, which is still its own numbering.
+      Entered { cx: enter_decl_owner(entered, path, sp.lo, sp.hi),
         resolver: tast_positions.owned(sp.lo, sp.hi, cx.src_path, cx.line_starts) }
     }
   }
 }
 
 ## Leave it again. The symbols the declaration minted sit in the identifier
-## interval it consumed, so they are resolved beside the tree that reads them;
-## anything the body wrote to a symbol minted before it keeps the positions
-## that symbol already had.
-fn left(entered: Entered, before: Cx, after: Cx) -> Cx =
+## interval it consumed -- consecutive because a declaration's slots are
+## consecutive, not because nothing else minted meanwhile -- so they are
+## resolved beside the tree that reads them; anything the body wrote to a
+## symbol minted before it keeps the positions that symbol already had.
+fn left(entered: Entered, after: Cx) -> Cx =
   unowned(Cx { ..after,
-    syms: tast_positions.symbols(entered.resolver, after.syms, before.next_id, after.next_id) })
+    syms: tast_positions.symbols(entered.resolver, after.syms, mint_cursor(entered.cx), mint_cursor(after)) })
 
 pub fn execute_module_bodies[S](headers: ModuleHeaders, initial: S, executor: BodyExecutor[S]) -> (S, ModuleBodies) !io = {
   var state = initial
@@ -14796,7 +14860,7 @@ pub fn execute_module_bodies[S](headers: ModuleHeaders, initial: S, executor: Bo
           let owner = enter_decl(cx1, view, [identity.Named(identity.FunctionDecl, d.name)])
           let (next_state, cxe, tf) = executor.inferred_body(state, owner.cx, d, sigs[idx])
           state = next_state
-          cx1 = left(owner, cx1, cxe)
+          cx1 = left(owner, cxe)
           inferred = map.insert(inferred, idx, tast_positions.function(owner.resolver, tf))
           done = set.insert(done, d.name)
           progress = true
@@ -14825,7 +14889,7 @@ pub fn execute_module_bodies[S](headers: ModuleHeaders, initial: S, executor: Bo
         let owner = enter_decl(cx1, view, [identity.Named(identity.ConstDecl, d.name)])
         let (next_state, cxe, tc) = executor.constant(state, owner.cx, d, declared, visible)
         state = next_state
-        cx1 = left(owner, cx1, cxe)
+        cx1 = left(owner, cxe)
         tconsts = tconsts ++ [tast_positions.constant(owner.resolver, tc)]
       }
       None -> ()
@@ -14844,7 +14908,7 @@ pub fn execute_module_bodies[S](headers: ModuleHeaders, initial: S, executor: Bo
       let owner = enter_decl(cx1, view, [identity.Named(identity.FunctionDecl, d.name)])
       let (next_state, cxe, tf) = executor.function(state, owner.cx, d, sigs[i])
       state = next_state
-      cx1 = left(owner, cx1, cxe)
+      cx1 = left(owner, cxe)
       tfuns = tfuns ++ [Some(tast_positions.function(owner.resolver, tf))]
     } else {
       match map.get(inferred, i) {
@@ -14874,7 +14938,7 @@ pub fn execute_module_bodies[S](headers: ModuleHeaders, initial: S, executor: Bo
           let owner = enter_decl(cx1, view, impl_head ++ [identity.Named(identity.MethodDecl, me.name)])
           let (next_state, cxe, tf) = executor.method(state, owner.cx, imd.trait_name, imd.subject, strip_param_defaults(me), ms)
           state = next_state
-          cx1 = left(owner, cx1, cxe)
+          cx1 = left(owner, cxe)
           impl_tfuns = impl_tfuns ++
             [TFun { ..tast_positions.function(owner.resolver, tf), impl_of: imp_key }]
         }
@@ -14904,7 +14968,7 @@ pub fn execute_module_bodies[S](headers: ModuleHeaders, initial: S, executor: Bo
                     [identity.Named(identity.TraitDecl, td.name), identity.Named(identity.MethodDecl, me.name)])
                   let (next_state, cxe, tf) = executor.default_body(state, owner.cx, t, me, s2, b)
                   state = next_state
-                  cx1 = left(owner, cx1, cxe)
+                  cx1 = left(owner, cxe)
                   default_tfuns = default_tfuns ++
                     [TFun { ..tast_positions.function(owner.resolver, tf), default_of: Some(t) }]
                 }
@@ -14923,7 +14987,7 @@ pub fn execute_module_bodies[S](headers: ModuleHeaders, initial: S, executor: Bo
     let owner = enter_decl(cx1, view, [identity.Named(identity.TestDecl, t.name)])
     let (next_state, cxe, tf) = executor.test_body(state, owner.cx, t.name, t.body)
     state = next_state
-    cx1 = left(owner, cx1, cxe)
+    cx1 = left(owner, cxe)
     ttests = ttests ++ [tast_positions.function(owner.resolver, tf)]
   }
   var fns_out: List[TFun] = []
@@ -15169,10 +15233,11 @@ test "check_module: a whole module checks end to end" {
   let (staged, staged_tm) = check_module_bodies(headers)
   let (cx1, tm) = check_module(test_cx(), m, env)
   assert staged_tm == tm
-  assert staged.next_id == cx1.next_id
+  assert staged.decl_slots == cx1.decl_slots
   assert staged.fns == cx1.fns
   assert staged.diags == cx1.diags
-  assert headers.cx.next_id < staged.next_id
+  # the bodies bound names of their own, which the headers had not
+  assert staged.decl_slots != headers.cx.decl_slots
   assert len(cx1.diags) == 0
   # the inferred signature sealed to Int, pure
   let tw = map.get(cx1.fns, "twice").expect("twice")
@@ -15254,7 +15319,7 @@ test "body executor threads current state through every scheduled role" {
   assert trace == ["infer leaf", "infer caller", "const A", "const B", "fn add", "method wax", "default buff", "test result"]
   assert actual.functions == cold.functions && actual.constants == cold.constants
   assert actual.impl_methods == cold.impl_methods && actual.trait_defaults == cold.trait_defaults && actual.tests == cold.tests
-  assert actual.cx.diags == cold.cx.diags && actual.cx.next_id == cold.cx.next_id
+  assert actual.cx.diags == cold.cx.diags && actual.cx.decl_slots == cold.cx.decl_slots
   assert actual.cx.syms == cold.cx.syms && actual.cx.fns == cold.cx.fns
   assert actual.cx.frame == cold.cx.frame && actual.cx.alias_resolved == cold.cx.alias_resolved
   assert len(map.keys(actual.cx.current_tparam_bounds)) == len(map.keys(cold.cx.current_tparam_bounds))
@@ -15288,7 +15353,7 @@ test "body executor preserves cycle refusal and diagnostic recovery" {
   assert trace == ["bad", "good"]
   assert len(actual.cx.diags) == 2 && actual.cx.diags == cold.cx.diags
   assert actual.functions == cold.functions && actual.cx.syms == cold.cx.syms
-  assert actual.cx.next_id == cold.cx.next_id
+  assert actual.cx.decl_slots == cold.cx.decl_slots
 }
 
 test "module body assembly preserves roles and synthesized default registration" {
@@ -15316,7 +15381,7 @@ test "module body assembly preserves roles and synthesized default registration"
   assert not map.has(products.cx.fns, ds.name)
   assert not map.has(products.cx.fns, gs.name)
   let (assembled, tm) = assemble_module_bodies(products)
-  assert assembled.next_id == products.cx.next_id
+  assert assembled.decl_slots == products.cx.decl_slots
   assert assembled.diags == products.cx.diags
   assert assembled.syms == products.cx.syms
   assert assembled.fns == map.insert(map.insert(products.cx.fns, ds.name, ds), gs.name, gs)
@@ -15339,7 +15404,7 @@ test "module body assembly preserves roles and synthesized default registration"
   let (cold, cold_tm) = check_module(test_cx(), m, env)
   assert cold_tm == tm
   assert cold.fns == assembled.fns
-  assert cold.next_id == assembled.next_id
+  assert cold.decl_slots == assembled.decl_slots
   assert cold.diags == assembled.diags
 }
 
@@ -15495,7 +15560,7 @@ test "a local function io hint groups its returned function type" {
   assert cx1.diags[0].hint ==
     "declare it: fn local(...) -> (fn() -> Int) !io = ..."
   let (observed, _) = check_module(Cx { ..test_cx(), function_reads: Some([]) }, m, env)
-  assert observed.diags == cx1.diags && observed.next_id == cx1.next_id
+  assert observed.diags == cx1.diags && observed.decl_slots == cx1.decl_slots
   var returns: List[semantic_reads.FunctionRead] = []
   for read in observed.function_reads.expect("grouped return reads") {
     match read { semantic_reads.RenderedFunctionReturn(_, _, _) -> { returns = returns ++ [read] }, _ -> () }
@@ -15612,7 +15677,14 @@ test "ADT headers retain allocated effect binders including unused parameters" {
   let first_id = match first.bound_eparams[0] { EffVar("e", id) -> id, _ -> -1 }
   let second_id = match second.bound_eparams[0] { EffVar("e", id) -> id, _ -> -1 }
   let unused_id = match unused.bound_eparams[0] { EffVar("e", id) -> id, _ -> -1 }
-  assert first_id >= 0 && second_id > first_id && unused_id > second_id
+  # Three declarations, three effect variables, and no two of them the same:
+  # each is slot zero of the declaration that bound it. They used to be
+  # consecutive off one counter, which is what said "no two"; what says it
+  # now is that they belong to three different declarations.
+  assert first_id != second_id && second_id != unused_id && first_id != unused_id
+  assert identity.packed_slot(first_id) == 0 && identity.packed_slot(second_id) == 0
+  assert identity.packed_declaration(first_id) == identity.derive(minted("", identity.TypeDecl, "First"))
+  assert identity.packed_declaration(unused_id) == identity.derive(minted("", identity.TypeDecl, "Unused"))
   assert first.ctors[0].fields[0].ty == TyFn([TyInt], TyInt, first.bound_eparams[0])
   assert second.ctors[0].fields[0].ty == TyFn([TyInt], TyInt, second.bound_eparams[0])
   assert unused.ctors[0].fields[0].ty == TyInt
@@ -16666,7 +16738,7 @@ test "export reads retain constant constructor and missing answers" {
     let initial = cx_new(Some("main"), None)
     let (cold, cold_module) = check_module(initial, user, env)
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, user, env)
-    assert cold.diags == observed.diags && cold_module == observed_module && cold.next_id == observed.next_id
+    assert cold.diags == observed.diags && cold_module == observed_module && cold.decl_slots == observed.decl_slots
     var hits = 0
     for read in observed.function_reads.expect("export reads") { if read == expected_read { hits = hits + 1 } }
     assert hits == 1
@@ -16757,7 +16829,7 @@ test "function reads record qualified values calls and negative answers" {
     let initial = cx_new(Some("main"), None)
     let (cold, cold_module) = check_module(initial, user, env)
     let (observed, observed_module) = check_module(Cx { ..initial, function_reads: Some([]) }, user, env)
-    assert observed.diags == cold.diags && observed_module == cold_module && observed.next_id == cold.next_id
+    assert observed.diags == cold.diags && observed_module == cold_module && observed.decl_slots == cold.decl_slots
     var answers: List[semantic_reads.NamedFunctionRead] = []
     var aliases: List[Option[String]] = []
     for read in observed.function_reads.expect("qualified reads") {
@@ -16993,9 +17065,10 @@ fn two_ask_effects() -> Map[String, ModExports] !io = {
   let (mb, pdb) = parser.parse_module("pub effect B { fn ask() -> Int }\n")
   let env0: Map[String, ModExports] = map.empty()
   let (cxa, _) = check_module(cx_new(Some("a"), None), ma, env0)
-  # the id counter runs across modules the way the driver runs it (analyze.dawn),
-  # or the two effects mint the same id and the grafted tables collide
-  let (cxb, _) = check_module(Cx { ..cx_new(Some("b"), None), next_id: cxa.next_id }, mb, env0)
+  # the two effects cannot mint the same id whatever order the modules are
+  # checked in: an effect's id derives from its own declaration, and these two
+  # differ in both the module that owns them and the name
+  let (cxb, _) = check_module(cx_new(Some("b"), None), mb, env0)
   if len(pda) + len(pdb) + len(cxa.diags) + len(cxb.diags) > 0 {
     panic("two_ask_effects: the fixture modules should check clean")
   }

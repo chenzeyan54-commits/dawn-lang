@@ -184,30 +184,51 @@ fn shape_text(t: TypeShape) -> String =
     FunctionType(params, ret, es) -> "F" ++ shapes_text(params) ++ shape_text(ret) ++ effect_row_text(es)
   }
 
-## A nominal or trait declaration, as the four minting sites in
-## `check/passes.dawn` see it: the module that emits it and the one path part
-## that names it. This is the whole of what a derived id is a function of.
+## A declaration, as a minting site sees it: the module that emits it and the
+## path that names it inside that module. This is the whole of what a derived
+## id is a function of.
+##
+## The path is a list rather than one `Named` part because the declarations
+## that own an id are no longer only the nominal ones. A method body, a trait
+## default and a parameter default each bind names of their own, and each is
+## named by the declaration it sits in followed by its own part -- the same
+## path `DeclKey` carries and `enter_decl` already hands the scheduler.
 ##
 ## `world` and `source` are deliberately absent. `world` is `"cold"` on the
 ## cold path and the session's name in a session, and `source` is the file
 ## path the caller happened to pass in, uncanonicalised; either one inside a
 ## derived id would make the emitted bytes depend on which run produced them
 ## or on where the checkout lives.
-pub type Minted = { owner: String, kind: Kind, name: String }
+pub type Minted = { owner: String, path: List[Part] }
 
 pub fn minted(owner: String, kind: Kind, name: String) -> Minted =
-  Minted { owner: owner, kind: kind, name: name }
+  Minted { owner: owner, path: [Named(kind, name)] }
+
+## The same declaration named by a whole path: an impl method, a trait
+## default body, anything below the top level of a module.
+pub fn minted_path(owner: String, path: List[Part]) -> Minted =
+  Minted { owner: owner, path: path }
 
 ## The spelling a derived id hashes. Injective for the same reason
 ## `path_text` is: the owner carries its own length, and the part that
 ## follows it is already a prefix-free encoding.
-pub fn minted_text(m: Minted) -> String = atom(m.owner) ++ path_text([Named(m.kind, m.name)])
+pub fn minted_text(m: Minted) -> String = atom(m.owner) ++ path_text(m.path)
 
-## How a collision diagnostic names one of the two declarations.
+## How a collision diagnostic names one of the two declarations. A path of
+## more than one part reads outside in, the way the source does.
 pub fn minted_show(m: Minted) -> String = {
-  let what = kind_word(m.kind) ++ " `" ++ m.name ++ "`"
+  var what = ""
+  for part in m.path {
+    what = if what == "" { part_word(part) } else { what ++ ", " ++ part_word(part) }
+  }
   if m.owner == "" { what } else { what ++ " in module `" ++ m.owner ++ "`" }
 }
+
+fn part_word(part: Part) -> String =
+  match part {
+    Named(kind, name) -> kind_word(kind) ++ " `" ++ name ++ "`"
+    ImplHead(trait_name, _) -> "impl of `" ++ trait_name ++ "`"
+  }
 
 fn kind_word(k: Kind) -> String =
   match k {
@@ -280,6 +301,70 @@ pub fn derive_text(spelling: String) -> Int =
   derived_floor() + (fmix64(fnv1a64(spelling)) & derived_width())
 
 pub fn derive(m: Minted) -> Int = derive_text(minted_text(m))
+
+# ---- packed binder keys ----
+
+## How many bindings one declaration may mint, and the factor a packed key
+## multiplies its declaration by.
+##
+## Fourteen bits, not sixteen. The ceiling is not the key itself but
+## `types.var_key`, which triples an effect variable's id: a key has to
+## survive `3 * key + 1` inside `Int`, and with a 47-bit declaration band that
+## leaves `2^63 / (3 * 2^47)` for the slot, whose largest power of two is
+## `2^14`. Sixteen bits would have meant truncating the declaration to 45
+## bits instead, which trades a stated limit a program can be told it crossed
+## for a silent collision between two declarations nothing would report.
+pub fn slot_span() -> Int = 16384
+
+## The key of one binding: which declaration binds it, and which of that
+## declaration's bindings it is.
+##
+## `None` rather than a truncation when the slot leaves the span. A truncated
+## slot is a key another binding of the same declaration already holds, which
+## is two names sharing one row of `Cx.syms` -- the same silent merge the
+## intern table exists to refuse for declarations.
+pub fn pack(declaration: Int, slot: Int) -> Option[Int] = {
+  if slot < 0 || slot >= slot_span() { return None }
+  if declaration < 0 || declaration > derived_floor() + derived_width() { return None }
+  Some(declaration * slot_span() + slot)
+}
+
+## The two halves back out. Nothing in the compiler needs them -- a key is
+## opaque to every consumer -- but a test that means to say "these two keys
+## belong to one declaration" should not say it by dividing by a literal.
+pub fn packed_declaration(key: Int) -> Int = key / slot_span()
+
+pub fn packed_slot(key: Int) -> Int = key % slot_span()
+
+## The declaration a context that is inside none of them mints into, one per
+## module.
+##
+## Two contexts are in that position and both are legitimate. A `Cx` built by
+## hand for a test has no declaration behind it at all; and a declaration this
+## revision's span view cannot name -- a duplicate, or one under a duplicated
+## parent -- is deliberately entered unowned, because there is no identity to
+## measure it from. Both mint here, and because they share one pool their
+## bindings are still distinct, which is all a symbol table asks. What they
+## do not get is the property this pool exists to contrast with: a binding
+## minted here moves when anything else in the module that mints here changes.
+##
+## Per module and not one pool for the program, because a binder minted in one
+## module can be read in another: an importer holds the provider's `TyVar` ids
+## inside the signature it was handed. One pool for the program would need the
+## cross-module counter this change exists to remove; a pool derived from the
+## module needs nothing carried and still cannot collide with another
+## module's. `P` is where a path would start, and a path starts with `N` or
+## `I`, so a pool is not the spelling of any declaration.
+pub fn free_pool(owner: String) -> Int = derive_text(atom(owner) ++ "P")
+
+## Where a pass below the checker may start numbering identifiers of its own.
+##
+## Above every key `pack` can produce, so lowering's temporaries cannot
+## collide with a checker binding without anyone having to scan a module to
+## find out where its keys stopped. Both domains come back down to one run
+## from zero in `ir/lower.densify`, so nothing outside that window ever sees
+## a number this size.
+pub fn temporary_floor() -> Int = (derived_floor() + derived_width() + 1) * slot_span()
 
 fn entry(scope: ModuleKey, path: List[Part], declaration: Int, member: Option[Int]) -> Entry =
   Entry { key: DeclKey { scope: scope, path: path }, declaration: declaration, member: member }
@@ -715,13 +800,59 @@ test "identity keeps its derived band clear of allocations and reserved ids" {
     }
   }
   # The two ends of the band are stated as numbers rather than sampled,
-  # because what they have to clear is not a digest. The floor clears every
-  # integer `Cx.next_id` can reach in one program (`first_minted_id` is a
-  # single digit and the counter walks up by ones), and the ceiling leaves
-  # room for `label_key` to multiply an effect id by three.
+  # because what they have to clear is not a digest. The floor clears the
+  # reserved prelude ids and the free pool, whose keys are single digits, and
+  # the ceiling leaves room for `label_key` to multiply an effect id by three.
+  #
+  # A *packed* key is not in this band and is not meant to be: it is the
+  # declaration multiplied by `slot_span()`, so it climbs past the top of the
+  # band as soon as the declaration does. The two never meet in one table --
+  # `adts`, `traits` and `effect_infos` are keyed by derived ids, `syms` and
+  # every type variable by packed ones -- and the assertion below is what
+  # keeps the *product* inside `Int` instead.
   assert derived_floor() == 4294967296
   assert derived_width() == 140737488355327
   assert 3 * (derived_floor() + derived_width()) > 0
+}
+
+test "identity packs a binding into its declaration and its slot" {
+  let owner = derive(minted("pkg/m", TypeDecl, "Cell"))
+  let other = derive(minted("pkg/m", TypeDecl, "Cells"))
+  let first = pack(owner, 0).expect("slot 0")
+  let last = pack(owner, slot_span() - 1).expect("the last slot")
+  # the halves come back out, and two declarations never share a key
+  assert packed_declaration(first) == owner && packed_slot(first) == 0
+  assert packed_declaration(last) == owner && packed_slot(last) == slot_span() - 1
+  assert pack(other, 0) != Some(first)
+  # one declaration's keys are consecutive, which is what lets the scheduler
+  # name the interval a body minted by its two ends
+  assert pack(owner, 1) == Some(first + 1)
+  # a slot outside the span is refused rather than folded back onto a key the
+  # same declaration already holds
+  assert pack(owner, slot_span()) == None
+  assert pack(owner, -1) == None
+  # and the widest key there is survives `var_key`, which is the reason the
+  # span is what it is
+  let widest = pack(derived_floor() + derived_width(), slot_span() - 1).expect("the widest key")
+  assert widest > 0 && 3 * widest + 1 > 0
+  # a module's free pool is a declaration no declaration can spell, and one
+  # module's is not another's
+  assert pack(free_pool("pkg/m"), 0) != None
+  assert free_pool("pkg/m") != free_pool("pkg/n")
+  assert free_pool("pkg/m") != derive(minted("pkg/m", TypeDecl, "Cell"))
+}
+
+test "identity derives one id for a path however it is spelled" {
+  # `minted` is `minted_path` with a one-part path, and the spelling a
+  # derived id hashes is the same either way. Nominal ids were derived before
+  # paths were, and they have to stay the integers they were.
+  assert minted("pkg/m", TypeDecl, "Cell") == minted_path("pkg/m", [Named(TypeDecl, "Cell")])
+  assert minted_text(minted("pkg/m", TypeDecl, "Cell")) == "5:pkg/mNt4:Cell"
+  # a longer path is a different declaration, and reads as one
+  let method = minted_path("pkg/m", [Named(TraitDecl, "T"), Named(MethodDecl, "go")])
+  assert derive(method) != derive(minted("pkg/m", TraitDecl, "T"))
+  assert minted_show(method) == "trait `T`, method `go` in module `pkg/m`"
+  assert minted_show(minted("", TypeDecl, "Cell")) == "type `Cell`"
 }
 
 test "identity hashes with FNV-1a and murmur3's finalizer so both backends agree" {

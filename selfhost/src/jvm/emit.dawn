@@ -1928,7 +1928,9 @@ pub fn emit_module(
   var g = Gen {
     mv: scratch_mv(),
     lift_descs: map.empty(),
-    syms: tm.syms,
+    # the table lowering renumbered, not the checker's: the Core below names
+    # its bindings with the integers `densify` gave them
+    syms: lm.syms,
     slots: no_slots,
     next_slot: 0,
     method_ret: TyUnit,

@@ -2488,7 +2488,7 @@ test "interpreter identity tables keep direct, impl, and default spellings separ
   assert len(pdiags) == 0
   let env = map.from([("defs", defs_exp)])
   let cx0 = cx_new(Some("same_impl"), Some("same_impl.dawn"))
-  let (cx1, tm) = check_module(Cx { ..cx0, next_id: defs_cx.next_id }, m, env)
+  let (cx1, tm) = check_module(cx0, m, env)
   assert len(cx1.diags) == 0
   let impl_exp = exports_of(cx1, m, "same_impl", "same_impl")
   let tid = map.get(cx1.traits_by_name, "Same").expect("Same trait")
@@ -2543,11 +2543,7 @@ test "interpreter identity tables keep direct, impl, and default spellings separ
   assert len(caller_pdiags) == 0
   let caller_env = map.from([("defs", defs_exp), ("same_impl", impl_exp)])
   let caller0 = cx_new(Some("caller"), Some("caller.dawn"))
-  let caller_seed = Cx {
-    ..caller0,
-    next_id: cx1.next_id,
-    impl_table: cx1.impl_table
-  }
+  let caller_seed = Cx { ..caller0, impl_table: cx1.impl_table }
   let (caller_cx, caller_tm) = check_module(caller_seed, caller_m, caller_env)
   assert len(caller_cx.diags) == 0
   let owners = map.from([("defs", defs_direct), ("same_impl", local_direct)])
@@ -2617,8 +2613,7 @@ test "a standard helper keeps the fuel hint beside its inner and outer frames" {
   assert len(caller_pdiags) == 0
   let caller_env = map.from([("std/helper", helper_exp)])
   let caller0 = cx_new(Some("caller"), Some("caller.dawn"))
-  let (caller_cx, caller_tm) = check_module(
-    Cx { ..caller0, next_id: helper_cx.next_id }, caller_m, caller_env)
+  let (caller_cx, caller_tm) = check_module(caller0, caller_m, caller_env)
   assert len(caller_cx.diags) == 0
 
   var helper_direct: Map[String, TFun] = map.empty()
@@ -2650,7 +2645,7 @@ test "same-named direct failures retain their resolved owners" {
   assert len(right_pdiags) == 0
   let right0 = cx_new(Some("right"), Some("right.dawn"))
   let (right_cx, right_tm) =
-    check_module(Cx { ..right0, next_id: left_cx.next_id }, right_m, empty_env)
+    check_module(right0, right_m, empty_env)
   assert len(right_cx.diags) == 0
   let right_exp = exports_of(right_cx, right_m, "right", "right")
 
@@ -2661,8 +2656,7 @@ test "same-named direct failures retain their resolved owners" {
   assert len(caller_pdiags) == 0
   let caller_env = map.from([("left", left_exp), ("right", right_exp)])
   let caller0 = cx_new(Some("caller"), Some("caller.dawn"))
-  let (caller_cx, caller_tm) = check_module(
-    Cx { ..caller0, next_id: right_cx.next_id }, caller_m, caller_env)
+  let (caller_cx, caller_tm) = check_module(caller0, caller_m, caller_env)
   assert len(caller_cx.diags) == 0
 
   var left_direct: Map[String, TFun] = map.empty()

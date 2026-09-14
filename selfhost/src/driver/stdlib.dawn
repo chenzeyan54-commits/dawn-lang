@@ -76,9 +76,6 @@ pub type StdCtx = {
   # to mean the same thing in a module that imports std/list and one that does
   # not. That makes std's impls part of the baseline, next to the prelude's.
   impls: Impls,
-  # the id counter after all of std: user modules continue from here, so
-  # grafted ADT/trait ids never collide across modules
-  next_id: Int,
   # every nominal and trait id std derived, with the declaration behind each.
   # A user module goes on interning into this table, so a user declaration
   # whose digest lands on one of std's is reported rather than overwriting it
@@ -403,7 +400,6 @@ pub fn load_std(dir: String) -> Result[StdCtx, StdLoadError] !Fs !Env !io = {
   # production path actually reads, so the first id-claiming declaration in the
   # first std module would have been handed `ForeignError`'s slot and silently
   # replaced it.
-  var nid = first_minted_id()
   var interned: Map[Int, Minted] = map.empty()
   var mods: List[(String, Cx, TModule, CtOut)] = []
   var srcs: List[(String, String, Module)] = []
@@ -441,7 +437,6 @@ pub fn load_std(dir: String) -> Result[StdCtx, StdLoadError] !Fs !Env !io = {
       ..cx,
       is_std_module: true,
       line_starts: lexer.line_starts_of(text),
-      next_id: nid,
       identities: interned,
       impl_table: impls
     }
@@ -511,7 +506,6 @@ pub fn load_std(dir: String) -> Result[StdCtx, StdLoadError] !Fs !Env !io = {
       let (k, v) = pr
       impls = map.insert(impls, k, v)
     }
-    nid = cx1.next_id
     interned = cx1.identities
     mods = mods ++ [(mod_path, cx1, tm, ct)]
     srcs = srcs ++ [(mod_path, text, m)]
@@ -529,7 +523,6 @@ pub fn load_std(dir: String) -> Result[StdCtx, StdLoadError] !Fs !Env !io = {
     std_names: std_names,
     adts: adts,
     impls: impls,
-    next_id: nid,
     identities: interned,
     mods: mods,
     srcs: srcs,
@@ -791,7 +784,7 @@ test "float rendering and parsing fold through std/fmt, not the host" {
     let (m, pdiags) = parser.parse_module(src)
     assert len(pdiags) == 0
     var cx = cx_new(None, None)
-    cx = Cx { ..cx, next_id: std.next_id, identities: std.identities, impl_table: std.impls }
+    cx = Cx { ..cx, identities: std.identities, impl_table: std.impls }
     let (cx1, tm) = check_module(cx, m, std.exports)
     assert len(cx1.diags) == 0
     let ct = eval_comptime(tm, std.fn_decls, std.by_owner, std.impl_fns,

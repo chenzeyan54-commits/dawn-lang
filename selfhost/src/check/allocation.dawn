@@ -53,6 +53,18 @@ pub fn table(entries: List[Entry]) -> Option[Table] = {
   Some(Data { bindings: bindings })
 }
 
+## Whether this table names a binding with this key, in this domain. The
+## table is opaque and its whole content is which bindings it has observed,
+## so this is how anything outside asks; `between` above is the only question
+## about two of them that is left.
+pub fn published(origin: Table, domain: Domain, id: Int) -> Bool = {
+  let data: Data = origin
+  for (binding, held) in map.entries(data.bindings) {
+    if held == id && binding.domain == domain { return true }
+  }
+  false
+}
+
 pub fn entry(declaration: DeclKey, domain: Domain, slot: Int, id: Int) -> Entry =
   Entry { binding: Binding { declaration: declaration, domain: domain, slot: HeaderSlot(slot) }, id: id }
 
@@ -81,24 +93,25 @@ pub fn in_world(origin: Table, from: String, world: String) -> Option[Table] = {
   table(entries)
 }
 
-## A removed/renamed declaration contributes no mapping. Consumers must ask
-## for every reference they use, so an unrelated removal need not lose all
-## other products in the module.
+## What the two revisions agree about, which since binder keys were packed is
+## everything or nothing.
+##
+## A binding's key is `identity.pack` of the declaration that binds it and its
+## lexical slot in that declaration, so a binding both revisions have is a
+## binding both revisions numbered the same. There is nothing left to record,
+## and what remains is the assertion that this is so: a shared binding whose
+## two revisions disagree about its key is a compiler that broke its own
+## rule, and no product is admitted over it.
 pub fn between(old: Table, next: Table) -> Option[Ids] = {
   let a: Data = old
   let b: Data = next
-  var types: Map[Int, Int] = map.empty()
-  var effects: Map[Int, Int] = map.empty()
   for (binding, id) in map.entries(a.bindings) {
     match map.get(b.bindings, binding) {
       None -> ()
-      Some(target) -> match binding.domain {
-        TypeParameter -> { types = map.insert(types, id, target) }
-        EffectParameter -> { effects = map.insert(effects, id, target) }
-      }
+      Some(target) -> if target != id { return None }
     }
   }
-  relocate.new(types, effects)
+  Some(relocate.new())
 }
 
 ## These are declaration binders, never instantiations of a signature. Their
@@ -166,47 +179,44 @@ pub fn compiler_headers(world: String) -> Option[Table] = {
 ## need their own products because their allocations precede function entry;
 ## do not pretend that one entry permutation describes those independent
 ## checks as well.
-pub fn body_relocation(header_ids: Ids, start: Int, count: Int, target: Int,
-  old_sig: Sig, next_sig: Sig, evidence: List[Int]) -> Option[Ids] = {
+pub fn body_relocation(header_ids: Ids, old_sig: Sig, next_sig: Sig,
+  evidence: List[Int]) -> Option[Ids] = {
   for present in old_sig.param_defaults { if present { return None } }
   for present in next_sig.param_defaults { if present { return None } }
-  body_segment_relocation(header_ids, start, count, target, old_sig, next_sig, evidence)
+  body_segment_relocation(header_ids, old_sig, next_sig, evidence)
 }
 
 ## One already-separated boundary. Any preceding defaults must have been
-## checked or replayed, and their intervals relocated by their own call here.
-## The signature may still describe defaults; this interval does not execute
-## them. Both signatures describe entry headers, not a body's inferred output:
-## the sealed output is projected only after the interval is in hand.
+## checked or replayed. The signature may still describe defaults; this
+## boundary does not execute them. Both signatures describe entry headers,
+## not a body's inferred output: the sealed output is projected only after
+## the boundary is admitted.
 ##
-## The interval itself is arithmetic. The one part of it that is not is the
-## entry evidence pack, whose ABI order follows the relocated signature rather
-## than allocation order; that permutation is built here and handed to
-## `relocate.body_interval` as the override it applies inside the interval.
-pub fn body_segment_relocation(header_ids: Ids, start: Int, count: Int, target: Int,
-  old_sig: Sig, next_sig: Sig, evidence: List[Int]) -> Option[Ids] = {
-  let moved = relocate.signature(header_ids, old_sig)?
-  if moved != next_sig { return None }
-  let order = relocate.evidence_order(header_ids, old_sig, moved)?
+## What this asks used to be three things -- does the recorded header carry
+## onto this one, is the entry evidence pack the interval it claims to be,
+## and what permutation does the ABI order impose on it. The pack's slots are
+## packed keys now and consecutive because they are slots of one declaration,
+## and the permutation is the identity whenever the two headers are the same
+## header, which the first question already required. What is left is the
+## first question and the shape of the pack.
+pub fn body_segment_relocation(header_ids: Ids, old_sig: Sig, next_sig: Sig,
+  evidence: List[Int]) -> Option[Ids] = {
+  if old_sig != next_sig { return None }
+  let order = relocate.evidence_order(header_ids, old_sig, next_sig)?
   if len(evidence) != len(order) { return None }
-  var moved_evidence: Map[Int, Int] = map.empty()
   var index = 0
-  for old_index in order {
-    let id = evidence[old_index]
-    if id < start || id >= start + count || evidence[old_index] != evidence[0] + old_index { return None }
-    moved_evidence = map.insert(moved_evidence, id, target + evidence[0] - start + index)
+  for id in evidence {
+    if id != evidence[0] + index { return None }
     index = index + 1
   }
-  relocate.body_interval(header_ids, start, count, target, moved_evidence)
+  Some(relocate.new())
 }
 
 ## Initializers have a declared type, not a function signature or entry
-## evidence pack. Their interval is the plain shift.
-pub fn constant_relocation(header_ids: Ids, start: Int, count: Int, target: Int,
-  old_ty: Ty, next_ty: Ty) -> Option[Ids] = {
-  if relocate.ty(header_ids, old_ty) != Some(next_ty) { return None }
-  let none: Map[Int, Int] = map.empty()
-  relocate.body_interval(header_ids, start, count, target, none)
+## evidence pack.
+pub fn constant_relocation(header_ids: Ids, old_ty: Ty, next_ty: Ty) -> Option[Ids] = {
+  if old_ty != next_ty { return None }
+  Some(relocate.new())
 }
 
 fn binders(owner: DeclKey, type_params: List[Ty], effect_params: List[Eff]) -> Option[List[Entry]] = {
@@ -361,31 +371,25 @@ test "allocation compiler declarations own only observed reserved references" {
   let origin = compiler_headers("compiler-test")
   assert origin != None
   let saved = origin.expect("compiler provenance")
-  let ids = between(saved, saved).expect("compiler IDs")
+  # The compiler's own reserved binders are the same integers in every
+  # revision, because they are written into the tables rather than minted.
+  # What the table is for is the refusal below it: a second table that gives
+  # one of them a different id is not a revision of this one.
+  assert between(saved, saved) != None
+  var reserved: List[Int] = []
   for (_, adt) in map.entries(builtin_types.prelude_adts()) {
     for t in adt.tparams {
-      match t { TyVar(_, id) -> { assert relocate.type_var(ids, id) == Some(id) }, _ -> { assert false } }
+      match t { TyVar(_, id) -> { reserved = reserved ++ [id] }, _ -> { assert false } }
     }
   }
   for (_, tr) in map.entries(builtin_types.prelude_traits()) {
-    match tr.tvar { TyVar(_, id) -> { assert relocate.type_var(ids, id) == Some(id) }, _ -> { assert false } }
+    match tr.tvar { TyVar(_, id) -> { reserved = reserved ++ [id] }, _ -> { assert false } }
   }
-  for info in builtin_types.prelude_impls() {
-    for t in info.tparams {
-      match t { TyVar(_, id) -> { assert relocate.type_var(ids, id) == Some(id) }, _ -> { assert false } }
-    }
-  }
-  for (_, sig) in map.entries(builtin_types.builtins()) {
-    for t in sig.tparams {
-      match t { TyVar(_, id) -> { assert relocate.type_var(ids, id) == Some(id) }, _ -> { assert false } }
-    }
-    for e in sig.eparams {
-      match e { EffVar(_, id) -> { assert relocate.effect_var(ids, id) == Some(id) }, _ -> { assert false } }
-    }
-  }
-  assert relocate.type_var(ids, 0) == Some(0)
-  assert relocate.type_var(ids, 1000000) == None
-  assert relocate.local_id(ids, 0) == None
+  assert len(reserved) > 0
+  assert published(saved, TypeParameter, reserved[0])
+  assert not published(saved, TypeParameter, 1000000)
+  let elsewhere = compiler_headers("another-test").expect("another world")
+  assert between(saved, elsewhere) != None
 }
 
 test "allocation world rebinding moves every declaration or none" {
@@ -397,7 +401,10 @@ test "allocation world rebinding moves every declaration or none" {
   assert in_world(origin, "wrong", "session") == None
   let header_only = table([entry(effect_key, EffectParameter, 0, 1)]).expect("header only")
   assert in_world(header_only, "wrong", "session") == None
-  assert relocate.effect_var(between(origin, moved).expect("isolated worlds"), 1) == None
+  # a rebound table names no binding the original names, so the two agree
+  # about nothing and disagree about nothing
+  assert not published(moved, EffectParameter, 1) == false
+  assert between(origin, moved) != None
   let foreign = DeclKey { ..effect_key, scope: ModuleKey { ..effect_key.scope, world: "foreign" } }
   let mixed = table([entry(effect_key, EffectParameter, 0, 1), entry(foreign, EffectParameter, 0, 2)]).expect("mixed worlds")
   assert in_world(mixed, "world", "session") == None
@@ -419,33 +426,32 @@ test "allocation matches provenance and domains rather than equal integers" {
   let a = fixture_key("a")
   let b = fixture_key("b")
   let old = table([entry(a, TypeParameter, 0, 1), entry(b, TypeParameter, 0, 2), entry(a, EffectParameter, 0, 1)]).expect("old")
-  let next = table([entry(a, TypeParameter, 0, 2), entry(b, TypeParameter, 0, 1), entry(a, EffectParameter, 0, 3)]).expect("next")
-  let ids = between(old, next).expect("mapping")
-  assert relocate.type_var(ids, 1) == Some(2) && relocate.type_var(ids, 2) == Some(1)
-  assert relocate.effect_var(ids, 1) == Some(3)
-  assert relocate.local_id(ids, 1) == None
+  # A binding both revisions name has to be the same integer in both: that is
+  # what a packed key promises, and a pair of tables that says otherwise is a
+  # compiler that broke it.
+  assert between(old, old) != None
+  let swapped = table([entry(a, TypeParameter, 0, 2), entry(b, TypeParameter, 0, 1), entry(a, EffectParameter, 0, 3)]).expect("swapped")
+  assert between(old, swapped) == None
+  # the domains are separate: the same integer under the other domain is a
+  # different binding and says nothing about this one
+  let other_domain = table([entry(a, EffectParameter, 0, 9)]).expect("other domain")
+  assert between(table([entry(a, TypeParameter, 0, 9)]).expect("one domain"), other_domain) != None
+  # a declaration this revision does not have, and one it renamed, are both
+  # simply absent
   let changed = DeclKey { ..a, scope: ModuleKey { ..a.scope, world: "other" } }
-  let foreign = table([entry(changed, TypeParameter, 0, 1)]).expect("foreign")
-  assert relocate.type_var(between(old, foreign).expect("no matches"), 1) == None
-  let renamed = table([entry(fixture_key("renamed"), TypeParameter, 0, 1)]).expect("rename")
-  assert relocate.type_var(between(old, renamed).expect("no rename match"), 1) == None
+  let foreign = table([entry(changed, TypeParameter, 0, 7)]).expect("foreign")
+  assert between(old, foreign) != None && not published(foreign, TypeParameter, 1)
+  let renamed = table([entry(fixture_key("renamed"), TypeParameter, 0, 7)]).expect("rename")
+  assert between(old, renamed) != None && not published(renamed, TypeParameter, 1)
 }
 
-test "allocation constant intervals validate the declared type without function metadata" {
+test "allocation constant boundaries validate the declared type without function metadata" {
   let owner = fixture_key("VALUE")
-  let before = table([entry(owner, TypeParameter, 0, 10)]).expect("constant old type")
-  let after = table([entry(owner, TypeParameter, 0, 20)]).expect("constant new type")
-  let headers = between(before, after).expect("constant header IDs")
+  let headers = between(table([entry(owner, TypeParameter, 0, 10)]).expect("constant table"),
+    table([entry(owner, TypeParameter, 0, 10)]).expect("same table")).expect("constant header IDs")
   let old_ty = builtin_types.TyAdt(7, [builtin_types.TyVar("T", 10)])
-  let next_ty = builtin_types.TyAdt(7, [builtin_types.TyVar("T", 20)])
-  let ids = constant_relocation(headers, 30, 2, 40, old_ty, next_ty).expect("constant interval")
-  assert relocate.carries_interval(ids, 30, 2, 40)
-  assert relocate.ty(ids, old_ty) == Some(next_ty)
-  assert relocate.local_id(ids, 30) == Some(40) && relocate.local_id(ids, 31) == Some(41)
-  assert relocate.type_var(ids, 31) == Some(41) && relocate.effect_var(ids, 31) == Some(41)
-  assert constant_relocation(headers, 30, 2, 40, old_ty, TyUnit) == None
-  assert constant_relocation(headers, 30, -1, 40, old_ty, next_ty) == None
-  assert constant_relocation(headers, 30, 2, -1, old_ty, next_ty) == None
+  assert constant_relocation(headers, old_ty, old_ty) != None
+  assert constant_relocation(headers, old_ty, TyUnit) == None
 }
 
 test "allocation rejects competing owners and inconsistent binding observations" {
@@ -463,8 +469,8 @@ test "allocation combines original module owners without alias identities" {
   let provider = table([entry(a, TypeParameter, 0, 1)]).expect("provider")
   let consumer = table([entry(b, TypeParameter, 0, 2)]).expect("consumer")
   let merged = combine([provider, consumer]).expect("combined")
-  let ids = between(merged, merged).expect("combined IDs")
-  assert relocate.type_var(ids, 1) == Some(1) && relocate.type_var(ids, 2) == Some(2)
+  assert published(merged, TypeParameter, 1) && published(merged, TypeParameter, 2)
+  assert not published(provider, TypeParameter, 2)
   assert combine([provider, provider]) == Some(provider)
   let collision = table([entry(b, TypeParameter, 0, 1)]).expect("separate table")
   assert combine([provider, collision]) == None
@@ -475,51 +481,38 @@ test "allocation signature binders keep lexical slots across renamed variables" 
   let sig = Sig { name: "generic", param_tys: [], param_names: [], param_defaults: [], ret: TyUnit,
     eff: EPure, is_builtin: false, tparams: [TyVar("T", 10), TyVar("U", 11)], constraints: [],
     eparams: [EffVar("e", 20)], owner: None, trait_id: None, op_of: None, inferring: false }
-  let renamed = Sig { ..sig, tparams: [TyVar("X", 30), TyVar("Y", 31)], eparams: [EffVar("f", 40)] }
+  # renaming a binder does not renumber it: the slot is lexical, and the key
+  # is the declaration and the slot
+  let renamed = Sig { ..sig, tparams: [TyVar("X", 10), TyVar("Y", 11)], eparams: [EffVar("f", 20)] }
   let old = table(signature_binders(key, sig).expect("old signature binders")).expect("old table")
   let next = table(signature_binders(key, renamed).expect("new signature binders")).expect("next table")
-  let ids = between(old, next).expect("binder mapping")
-  assert relocate.type_var(ids, 10) == Some(30) && relocate.type_var(ids, 11) == Some(31)
-  assert relocate.effect_var(ids, 20) == Some(40)
+  assert between(old, next) != None
+  assert published(next, TypeParameter, 10) && published(next, EffectParameter, 20)
+  # a revision that renumbered one of them is refused
+  let renumbered = table(signature_binders(key, Sig { ..sig, tparams: [TyVar("T", 12), TyVar("U", 11)] })
+      .expect("renumbered binders")).expect("renumbered table")
+  assert between(old, renumbered) == None
   assert signature_binders(key, Sig { ..sig, tparams: [TyUnit] }) == None
   assert signature_binders(key, Sig { ..sig, eparams: [EPure] }) == None
 }
 
-test "allocation body intervals shift by construction and permute evidence by role" {
+test "allocation body boundaries admit an entry pack that is one run of slots" {
   let a = fixture_key("A")
-  let b = fixture_key("B")
-  let old = table([entry(a, EffectParameter, 0, 1), entry(b, EffectParameter, 0, 2)]).expect("old headers")
-  let next = table([entry(a, EffectParameter, 0, 2), entry(b, EffectParameter, 0, 1)]).expect("next headers")
-  let headers = between(old, next).expect("header IDs")
+  let key = table([entry(a, EffectParameter, 0, 1)]).expect("headers")
+  let headers = between(key, key).expect("header IDs")
   let sig = Sig { name: "body", param_tys: [], param_names: [], param_defaults: [], ret: TyUnit,
     eff: builtin_types.eff_union([EffVar("a", 1), EffVar("b", 2)]), is_builtin: false, tparams: [], constraints: [],
     eparams: [], owner: None, trait_id: None, op_of: None, inferring: false }
-  let moved = relocate.signature(headers, sig).expect("new signature")
-  let ids = body_relocation(headers, 20, 5, 40, sig, moved, [21, 22]).expect("body interval")
-  assert relocate.carries_interval(ids, 20, 5, 40)
-  assert relocate.local_id(ids, 20) == Some(40)
-  # The two entry evidence parameters swap because their variables did; every
-  # other ID in the interval is the plain shift.
-  assert relocate.local_id(ids, 21) == Some(42) && relocate.local_id(ids, 22) == Some(41)
-  assert relocate.local_id(ids, 24) == Some(44)
-  assert relocate.local_id(ids, 19) == None && relocate.local_id(ids, 25) == None
-  assert relocate.type_var(ids, 21) == Some(41) && relocate.effect_var(ids, 24) == Some(44)
-  let pure = Sig { ..sig, eff: EPure }
-  # A following body relocates against the same header IDs. Nothing about the
-  # interval just built reaches it: allocations are disjoint by minting.
-  let following = body_relocation(headers, 25, 1, 45, pure, pure, []).expect("following interval")
-  assert relocate.local_id(following, 25) == Some(45) && relocate.local_id(following, 21) == None
-  assert body_relocation(headers, 20, 5, 40, sig, moved, [21, 23]) == None
-  assert body_relocation(headers, 20, 5, 40, sig, moved, [19, 20]) == None
-  assert body_relocation(headers, 20, 5, 40, sig, moved, []) == None
-  assert body_relocation(headers, 20, -1, 40, sig, moved, [21, 22]) == None
-  assert body_relocation(headers, 20, 5, -1, sig, moved, [21, 22]) == None
-  assert body_relocation(headers, -1, 5, 40, sig, moved, [21, 22]) == None
-  assert body_relocation(headers, 20, 5, 40, sig, sig, [21, 22]) == None
-  assert body_relocation(headers, 20, 5, 40, Sig { ..sig, param_defaults: [true] }, moved, [21, 22]) == None
-  assert body_relocation(headers, 20, 5, 40, sig, Sig { ..moved, param_defaults: [true] }, [21, 22]) == None
-  # `body_segment_relocation` is the same interval for a boundary whose
-  # signature still describes defaults it does not execute.
-  assert body_segment_relocation(headers, 20, 5, 40, Sig { ..sig, param_defaults: [true] },
-    Sig { ..moved, param_defaults: [true] }, [21, 22]) != None
+  # the pack is the declaration's own consecutive slots, in ABI order
+  assert body_relocation(headers, sig, sig, [21, 22]) != None
+  assert body_relocation(headers, sig, sig, [21, 23]) == None
+  assert body_relocation(headers, sig, sig, []) == None
+  # a header that does not carry onto this one is refused, defaults included
+  assert body_relocation(headers, sig, Sig { ..sig, eff: EPure }, [21, 22]) == None
+  assert body_relocation(headers, Sig { ..sig, param_defaults: [true] }, sig, [21, 22]) == None
+  assert body_relocation(headers, sig, Sig { ..sig, param_defaults: [true] }, [21, 22]) == None
+  # `body_segment_relocation` is the same boundary for one whose signature
+  # still describes defaults it does not execute.
+  let with_defaults = Sig { ..sig, param_defaults: [true] }
+  assert body_segment_relocation(headers, with_defaults, with_defaults, [21, 22]) != None
 }

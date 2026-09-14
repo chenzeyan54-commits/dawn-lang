@@ -13,7 +13,7 @@ use std/map
 use std/set
 use check/write_journal
 use check/identity
-use check/identity.{Minted, minted, minted_show}
+use check/identity.{Minted, Part, minted, minted_path, minted_show, free_pool}
 use front/token.{Diag, DiagOwner}
 use front/ast.{TypeRef, TNamed, TQual, TAssoc, TTuple, TFn, EffArg}
 use check/types.{
@@ -29,7 +29,7 @@ use check/types.{
   builtin_type_hard_reserved, builtin_type_apply, builtin_type_render,
   public_builtin_type_names,
   builtins, internal_builtins,
-  prelude_adts, prelude_traits, first_minted_id
+  prelude_adts, prelude_traits
 }
 use check/jsig.{Jsig, JClass, JMethod, JCtor, JField, jsig_refused}
 use check/semantic_reads
@@ -129,15 +129,30 @@ pub type Frame = {
 ## The checker state: every mutable member of the Kotlin Checker class.
 pub type Cx = {
   diags: List[Diag],
-  next_id: Int,
-  # Every nominal and trait id this program has minted, and the declaration
+  # The declaration whose bindings are being minted, and how many each
+  # declaration has minted so far. Together they are what `next_id` used to
+  # be, taken apart: an identifier is `identity.pack(owner_decl, slot)`, so it
+  # says which declaration bound it and which binding of that declaration it
+  # is, and a declaration that was not edited mints the same integers however
+  # many declarations were added in front of it.
+  #
+  # The count is a table rather than one number because a declaration is
+  # entered more than once: its signature's binders are minted in the header
+  # passes and its body's locals much later, and the second visit has to
+  # continue where the first stopped rather than reissue its slots. Nothing
+  # reads the table to find the *next* declaration -- it is keyed by identity,
+  # not ordered -- and a declaration absent from it has minted nothing.
+  owner_decl: Int,
+  decl_slots: Map[Int, Int],
+  # Every id this program has derived from a declaration, and the declaration
   # each one was derived from. A derived id is a pure function of that
   # declaration, so the table is not a counter and nothing reads it to pick
   # the next number: it exists so that two declarations landing on the same
   # 47-bit digest are reported rather than silently sharing an entry in
-  # `adts`, `traits` and `effect_infos`. It spans the whole program, which is
-  # why it travels with the carry (`driver/stdlib.dawn`, `driver/analyze.dawn`)
-  # the way `next_id` does.
+  # `adts`, `traits` and `effect_infos` -- or, for the declarations that own
+  # no nominal id, one row of `decl_slots` and so one set of binder keys. It
+  # spans the whole program, which is why it travels with the carry
+  # (`driver/stdlib.dawn`, `driver/analyze.dawn`).
   identities: Map[Int, Minted],
   adts: Adts,
   traits: Traits,
@@ -326,15 +341,9 @@ pub fn cx_new(owner_class: Option[String], src_path: Option[String]) -> Cx = {
   }
   Cx {
     diags: [],
-    # One counter feeds the prelude ADT ids (Option/Result/ForeignError) and
-    # the prelude trait ids (Ord/Eq/Hash/Show/Iter) alike, so minting has to
-    # open past all of them. Twice it did not: when Show arrived the literal
-    # here stayed at 3, and when Iter arrived it stayed at 4 -- the same number
-    # Iter itself now holds. Neither collided, and both times for the same
-    # non-reason: a trait declaration mints its type variable before its trait
-    # id, so the first user trait steps over the counter's opening value.
-    # first_minted_id reads the tables instead, and the test below walks them.
-    next_id: first_minted_id(),
+    # Outside every declaration until one is entered.
+    owner_decl: free_pool(owner_class.unwrap_or("")),
+    decl_slots: no_slots(),
     identities: map.empty(),
     adts: prelude_adts(),
     traits: prelude_traits(),
@@ -398,34 +407,63 @@ pub fn cx_new(owner_class: Option[String], src_path: Option[String]) -> Cx = {
   }
 }
 
-test "the shared counter starts past every prelude id" {
-  # ADTs and traits draw from one counter but live in separate id spaces, so
-  # a minted id equal to a prelude id of the *other* kind is fine -- equal to
-  # one of its own kind is a silent map overwrite. This walks both tables
-  # rather than naming the ids: the earlier version listed ForeignError and
-  # Show by hand, so when Iter took trait id 4 the counter was left standing
-  # on Iter's id and nothing said a word. A prelude entity added to either
-  # table is covered here the moment it is added.
-  let cx = test_cx()
-  for aid in map.keys(prelude_adts()) {
-    assert cx.next_id > aid
-  }
-  for tid in map.keys(prelude_traits()) {
-    assert cx.next_id > tid
-  }
-  # and it is still derived: a literal put back here would pass the loops above
-  # for exactly as long as it happened to be large enough
-  assert cx.next_id == first_minted_id()
+test "the free pool is a declaration of its own module and of no other" {
+  # Every prelude id a binder key could be confused with is in a different
+  # table -- `adts`, `traits` -- so the pool no longer has to open past them
+  # the way the counter it replaced did. What it does have to be is a
+  # declaration nothing can spell and one module's rather than the program's:
+  # an importer holds the provider's binder ids inside the signature it was
+  # handed, and two modules' pools sharing a number would put two bindings on
+  # one key.
+  let here = cx_new(Some("pkg/m"), None)
+  let elsewhere = cx_new(Some("pkg/n"), None)
+  assert here.owner_decl == module_pool(here)
+  assert module_pool(here) != module_pool(elsewhere)
+  let (one, first) = fresh(here)
+  let (_, also_first) = fresh(elsewhere)
+  assert first != also_first
+  assert mint_cursor(one) == first + 1
+  # and a declaration of that module is not its pool
+  assert module_pool(here) != identity.derive(minted("pkg/m", identity.TypeDecl, "Cell"))
 }
 
-test "a minted id comes from the declaration, not from the counter" {
-  let here = Cx { ..cx_new(Some("pkg/m"), Some("/one/src/m.dawn")), next_id: 40 }
+test "identifiers are numbered inside the declaration that binds them" {
+  let outside = cx_new(Some("pkg/m"), Some("/one/src/m.dawn"))
+  let inside = enter_decl_owner(outside, [identity.Named(identity.FunctionDecl, "f")], 0, 1)
+  assert inside.diags == []
+  let (one, first) = fresh(inside)
+  let (two, second) = fresh(one)
+  # consecutive inside the declaration, and the cursor is the next of them
+  assert second == first + 1
+  assert mint_cursor(two) == second + 1
+  assert identity.packed_declaration(first) == inside.owner_decl
+  assert identity.packed_slot(first) == 0 && identity.packed_slot(second) == 1
+  # a second declaration starts its own slots, and cannot reach the first's
+  let elsewhere = enter_decl_owner(two, [identity.Named(identity.FunctionDecl, "g")], 0, 1)
+  let (three, third) = fresh(elsewhere)
+  assert identity.packed_slot(third) == 0 && third != first
+  # re-entering the first continues it rather than reissuing slot 0: a
+  # signature's binders are minted in the header passes and its body's locals
+  # much later, and the two must not collide
+  let again = enter_decl_owner(three, [identity.Named(identity.FunctionDecl, "f")], 0, 1)
+  let (_, fourth) = fresh(again)
+  assert fourth == second + 1
+  # what `g` mints does not depend on `f` having minted anything
+  let sparse = enter_decl_owner(outside, [identity.Named(identity.FunctionDecl, "g")], 0, 1)
+  let (_, only) = fresh(sparse)
+  assert only == third
+  # and leaving puts the next binding back in the pool
+  assert leave_decl_owner(two).owner_decl == module_pool(two)
+}
+
+test "a minted id comes from the declaration, not from a counter" {
+  let here = cx_new(Some("pkg/m"), Some("/one/src/m.dawn"))
   let (after, id) = mint(here, identity.TypeDecl, "Cell", 0, 1)
   assert after.diags == []
-  # not an allocation: the counter did not move, and the id is nowhere near
-  # the band the counter hands out
-  assert after.next_id == here.next_id
-  assert id > first_minted_id() + 1000000
+  # not an allocation: nothing that hands out identifiers moved, and the id is
+  # nowhere near the band the free pool hands out
+  assert after.decl_slots == here.decl_slots && after.owner_decl == here.owner_decl
+  assert id > 1000000
   assert map.get(after.identities, id) == Some(minted("pkg/m", identity.TypeDecl, "Cell"))
   # The same module checked from a second checkout is the same id. `src_path`
   # is the file path the caller handed in, uncanonicalised, so a derivation
@@ -524,7 +562,13 @@ pub fn owned_by(cx: Cx, module: String, decl: String, start: Int) -> Cx =
 pub fn measured_from(cx: Cx, start: Int) -> Cx =
   Cx { ..cx, owner: None, owner_lo: start }
 
-pub fn unowned(cx: Cx) -> Cx = Cx { ..cx, owner: None, owner_lo: 0 }
+## Outside every declaration: no base to measure a diagnostic from, and no
+## declaration to number a binding inside. A declaration this revision's span
+## view cannot name is entered here on purpose, and what its body binds lands
+## in the free pool -- distinct from everything else, and stable against
+## nothing.
+pub fn unowned(cx: Cx) -> Cx =
+  Cx { ..cx, owner: None, owner_lo: 0, owner_decl: module_pool(cx) }
 
 ## Where the frame first saw an effect raised, back in the coordinates a
 ## diagnostic site works in. The table records the span the way everything
@@ -588,23 +632,75 @@ pub fn check_value_arity(cx: Cx, count: Int, lo: Int, hi: Int) -> Cx =
 
 # ---- fresh ids ----
 
-pub fn fresh(cx: Cx) -> (Cx, Int) = (Cx { ..cx, next_id: cx.next_id + 1 }, cx.next_id)
+fn no_slots() -> Map[Int, Int] = map.empty()
 
-## The id of a nominal or trait declaration. Not an allocation: it is
-## `identity.derive` of the declaration itself, so inserting or removing an
-## unrelated declaration moves nothing, and the JVM compiler and the native
-## one agree about it without having checked the same modules in the same
-## order.
+## The next identifier this context would mint. It is what `next_id` was --
+## a single integer that says where the allocations of everything checked so
+## far stop -- with the difference that it is now the declaration's own
+## cursor, so two contexts that have entered different declarations are not
+## comparable and are never asked to be.
 ##
-## Interning is the whole of the bookkeeping. A digest is not a proof of
-## distinctness, and two declarations that collide would share one row of
-## `adts`/`traits`/`effect_infos` -- the second silently replacing the first.
+## The scheduler reads it on the way into a declaration and on the way out,
+## and the difference is the interval of symbols that declaration minted.
+## That works for the same reason it worked for the counter and for a better
+## one: a declaration's keys are consecutive by construction
+## (`identity.pack`), not by nothing else having minted in between.
+pub fn mint_cursor(cx: Cx) -> Int =
+  identity.pack(cx.owner_decl, slot_of(cx)).unwrap_or(0)
+
+## How many bindings the declaration this context is inside has minted.
+pub fn slot_of(cx: Cx) -> Int = map.get(cx.decl_slots, cx.owner_decl).unwrap_or(0)
+
+## The same for a named declaration, whichever one this context is inside.
+pub fn slots_of(cx: Cx, declaration: Int) -> Int =
+  map.get(cx.decl_slots, declaration).unwrap_or(0)
+
+## Put one declaration's count back, which is what installing a body product
+## does: a body mints inside its own declaration and inside no other, so that
+## row is the whole of what it allocated.
+##
+## A declaration that minted nothing gets no row. An absent row and a row of
+## zero mean the same thing to `slots_of`, and `fresh` only ever writes a
+## count of one or more, so keeping zero out is what makes the table itself
+## comparable -- a body that bound nothing must leave the table the cold path
+## would have left.
+pub fn with_slots(cx: Cx, declaration: Int, slots: Int) -> Cx =
+  if slots == 0 { cx } else { Cx { ..cx, decl_slots: map.insert(cx.decl_slots, declaration, slots) } }
+
+## One binding of the declaration this context is inside.
+##
+## A slot beyond the span is a program this compiler cannot represent rather
+## than a wrong answer, so it is reported and the declaration keeps the key it
+## last issued; every later binding of that declaration then shares it, which
+## is only reached after a diagnostic has already been raised.
+pub fn fresh(cx: Cx) -> (Cx, Int) = {
+  let slot = slot_of(cx)
+  match identity.pack(cx.owner_decl, slot) {
+    Some(id) -> (Cx { ..cx, decl_slots: map.insert(cx.decl_slots, cx.owner_decl, slot + 1) }, id)
+    None -> {
+      let refused = cerr_h(cx, "this declaration binds more than " ++
+          to_string(identity.slot_span()) ++ " names", cx.owner_lo, cx.owner_lo,
+        "split it into several declarations")
+      (refused, identity.pack(cx.owner_decl, identity.slot_span() - 1).unwrap_or(0))
+    }
+  }
+}
+
+## Intern one declaration's derived id, reporting rather than merging when two
+## declarations land on the same digest.
+##
+## A derived id is a pure function of the declaration itself, so inserting or
+## removing an unrelated declaration moves nothing, and the JVM compiler and
+## the native one agree about it without having checked the same modules in
+## the same order. Interning is the whole of the bookkeeping: a digest is not
+## a proof of distinctness, and two declarations that collide would share one
+## row of `adts`/`traits`/`effect_infos`, or one row of `decl_slots` and so
+## one set of binder keys -- the second silently replacing the first.
 ## Reported, and reported by name: there is no deterministic perturbation to
 ## fall back on, because a perturbed id would be a function of which other
 ## declarations this program happens to contain, which is exactly the
 ## property this change exists to remove.
-pub fn mint(cx: Cx, kind: identity.Kind, name: String, lo: Int, hi: Int) -> (Cx, Int) = {
-  let decl = minted(cx.owner_class.unwrap_or(""), kind, name)
+fn interned(cx: Cx, decl: Minted, lo: Int, hi: Int) -> (Cx, Int) = {
   let id = identity.derive(decl)
   match map.get(cx.identities, id) {
     Some(other) -> if other != decl {
@@ -616,6 +712,33 @@ pub fn mint(cx: Cx, kind: identity.Kind, name: String, lo: Int, hi: Int) -> (Cx,
   }
   (Cx { ..cx, identities: map.insert(cx.identities, id, decl) }, id)
 }
+
+## The id of a nominal or trait declaration.
+pub fn mint(cx: Cx, kind: identity.Kind, name: String, lo: Int, hi: Int) -> (Cx, Int) =
+  interned(cx, minted(cx.owner_class.unwrap_or(""), kind, name), lo, hi)
+
+## Enter the declaration whose bindings are about to be minted. Every pass
+## that walks a module's declarations opens each one here, so that what the
+## pass mints inside it is numbered from that declaration; a pass that does
+## not is not wrong, it has merely given up the property, and its bindings
+## land in the free pool with everyone else's.
+##
+## Idempotent, and deliberately so: a declaration is entered once by the
+## header passes and again by the body scheduler, and the second entry
+## continues the first's slots rather than reissuing them.
+pub fn enter_decl_owner(cx: Cx, path: List[Part], lo: Int, hi: Int) -> Cx = {
+  let (interned_cx, id) = interned(cx, minted_path(cx.owner_class.unwrap_or(""), path), lo, hi)
+  Cx { ..interned_cx, owner_decl: id }
+}
+
+## Leave it again, without naming what comes next. Anything minted from here
+## until the next declaration is entered belongs to the free pool.
+pub fn leave_decl_owner(cx: Cx) -> Cx = Cx { ..cx, owner_decl: module_pool(cx) }
+
+## This module's free pool. Nothing production mints here: every pass that
+## walks declarations enters each one first, and the inline test beside
+## `check_module` is where that is said.
+pub fn module_pool(cx: Cx) -> Int = free_pool(cx.owner_class.unwrap_or(""))
 
 pub fn fresh_effvar(cx: Cx, name: String) -> (Cx, Eff) = {
   let (cx1, id) = fresh(cx)
@@ -810,7 +933,7 @@ test "trait name reads retain candidate names and disabled logging" {
     let (cold, cold_answer) = trait_name_read(Cx { ..candidate, function_reads: None }, 700)
     assert answer == name && cold_answer == name
     assert observed.function_reads == Some([semantic_reads.TraitName(700, name)]) && cold.function_reads == None
-    assert observed.diags == cold.diags && observed.next_id == cold.next_id
+    assert observed.diags == cold.diags && observed.decl_slots == cold.decl_slots
   }
   let (original, answer) = trait_name_read(initial, EQ_ID)
   assert answer == info.name && original.function_reads == Some([semantic_reads.TraitName(EQ_ID, info.name)])
@@ -860,7 +983,7 @@ test "implementation presence reads retain hits misses and disabled logging" {
     assert observed.function_reads == Some([semantic_reads.ImplementationPresence(700, TyInt, present)])
     let (cold, cold_answer) = implementation_presence_read(Cx { ..candidate, function_reads: None }, 700, TyInt)
     assert cold_answer == answer && cold.function_reads == None
-    assert observed.next_id == cold.next_id && observed.diags == cold.diags
+    assert observed.decl_slots == cold.decl_slots && observed.diags == cold.diags
     let (headless, absent) = implementation_presence_read(candidate, 700, TyTuple([]))
     assert not absent && headless.function_reads == Some([semantic_reads.ImplementationPresence(700, TyTuple([]), false)])
   }

@@ -43,10 +43,12 @@ use check/types.{
   has_impl_at, insert_impl, type_args_of, sub_goals
 }
 
-use check/identity.{TypeDecl, TraitDecl, EffectDecl}
+use check/identity
+use check/identity.{TypeDecl, TraitDecl, EffectDecl, FunctionDecl, ConstDecl, Named, ImplHead}
 use check/cx.{
   AliasE, Cx, ModExports, Origin, OPrelude, OImport, OLocal, cx_new, test_cx, cerr,
-  cerr_h, cerr_o, fresh, fresh_effvar, mint, alias_shadow, alias_shadow_at, effect_of, resolve_eff_at,
+  cerr_h, cerr_o, fresh, fresh_effvar, mint, enter_decl_owner, leave_decl_owner,
+  alias_shadow, alias_shadow_at, effect_of, resolve_eff_at,
   label_eff, java_enabled_read, java_find_class_read, java_class_name_read,
   resolve_alias_target, resolve_type, resolve_return_type, is_const_serializable,
   const_refusal_hint, no_sig,
@@ -643,6 +645,7 @@ pub fn pass_type_shells(cx: Cx, m: Module) -> (Cx, List[Option[Shell]]) = {
   var cx1 = cx
   var shells: List[Option[Shell]] = []
   for d in module_types(m) {
+    cx1 = enter_decl_owner(cx1, [Named(TypeDecl, d.name)], d.nlo, d.nhi)
     let (name_cx, java_name) = java_class_name_read(cx1, d.name)
     cx1 = name_cx
     if java_name != None {
@@ -851,6 +854,7 @@ pub fn pass_ctor_fields(cx: Cx, m: Module, shells: List[Option[Shell]]) -> Cx !i
       }
       Some(s) -> s
     }
+    cx1 = enter_decl_owner(cx1, [Named(TypeDecl, d.name)], d.nlo, d.nhi)
     let info = adt_of(cx1.adts, sh.adt)
     # the Kotlin quirk: the tparam scope comes from the FIRST parsed ctor's info
     var tp: Map[String, Ty] = map.empty()
@@ -1052,10 +1056,11 @@ pub fn pass_resolve_aliases(cx: Cx) -> Cx !io = {
   var cx1 = cx
   for name in map.keys(cx.aliases) {
     let al = map.get(cx1.aliases, name).expect("alias listed")
+    cx1 = enter_decl_owner(cx1, [Named(TypeDecl, name)], al.nlo, al.nhi)
     let (cx2, _) = resolve_alias_target(cx1, al, al.nlo, al.nhi)
     cx1 = cx2
   }
-  cx1
+  leave_decl_owner(cx1)
 }
 
 test "alias cycles and derive Show violations are reported at the declaration" {
@@ -1149,6 +1154,7 @@ test "alias cycles and derive Show violations are reported at the declaration" {
 pub fn pass_effects(cx: Cx, m: Module) -> Cx !io = {
   var cx1 = cx
   for d in module_effects(m) {
+    cx1 = enter_decl_owner(cx1, [Named(EffectDecl, d.name)], d.nlo, d.nhi)
     if alias_shadows(cx1, d.name) {
       cx1 = alias_shadow(cx1, d.name, d.nlo, d.nhi)
       continue
@@ -1343,6 +1349,7 @@ fn resolve_ground_row(cx: Cx, atoms: List[String], nlo: Int, nhi: Int) -> (Cx, O
 pub fn pass_register_traits(cx: Cx, m: Module) -> Cx !io = {
   var cx1 = cx
   for d in module_traits(m) {
+    cx1 = enter_decl_owner(cx1, [Named(TraitDecl, d.name)], d.nlo, d.nhi)
     if alias_shadows(cx1, d.name) {
       cx1 = alias_shadow(cx1, d.name, d.nlo, d.nhi)
       continue
@@ -1744,6 +1751,13 @@ pub fn pass_register_impls(
   # explicit impls
   var eq_hash_impls: List[(Int, Ty, Int, Int)] = []
   for d in module_impls(m) {
+    # The same head `identity.declarations` gives this impl, so the binders
+    # its subject and its methods mint are numbered inside the impl and not
+    # inside whichever declaration the previous pass left open.
+    var head_names: List[String] = []
+    for tp in d.tparams { head_names = head_names ++ [tp.name] }
+    cx1 = enter_decl_owner(cx1,
+      [ImplHead(d.trait_name, identity.type_shape(d.subject, head_names))], d.tlo, d.thi)
     let tid = match map.get(cx1.traits_by_name, d.trait_name) {
       None -> {
         let pool = map.keys(cx1.traits_by_name)
@@ -2387,6 +2401,7 @@ pub fn pass_fn_signatures(cx: Cx, m: Module) -> (Cx, List[Sig]) !io = {
   var cx1 = cx
   var sigs: List[Sig] = []
   for d in module_fns(m) {
+    cx1 = enter_decl_owner(cx1, [Named(FunctionDecl, d.name)], d.nlo, d.nhi)
     var tpnames: List[String] = []
     for tp in d.tparams { tpnames = tpnames ++ [tp.name] }
     if dup_names(tpnames) {
@@ -2678,6 +2693,7 @@ pub fn pass_const_decls(cx: Cx, m: Module) -> (Cx, List[Option[Ty]]) !io = {
   for d in module_consts(m) { all = set.insert(all, d.name) }
   cx1 = Cx { ..cx1, all_const_names: all }
   for d in module_consts(m) {
+    cx1 = enter_decl_owner(cx1, [Named(ConstDecl, d.name)], d.nlo, d.nhi)
     if alias_shadows(cx1, d.name) {
       cx1 = alias_shadow(cx1, d.name, d.nlo, d.nhi)
       decl_tys = decl_tys ++ [no_ty2()]

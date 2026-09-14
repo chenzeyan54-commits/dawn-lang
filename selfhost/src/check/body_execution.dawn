@@ -211,11 +211,11 @@ test "body recording captures all roles at actual scheduler entries" {
   assert spanless(replayed.syms) == spanless(actual.bodies.cx.syms)
   assert replayed.fns == actual.bodies.cx.fns
   assert replayed.alias_resolved == actual.bodies.cx.alias_resolved && replayed.frame == actual.bodies.cx.frame
-  assert replayed.diags == actual.bodies.cx.diags && replayed.next_id == actual.bodies.cx.next_id
+  assert replayed.diags == actual.bodies.cx.diags && replayed.decl_slots == actual.bodies.cx.decl_slots
   assert match replayed.body_writes { None -> true, Some(_) -> false }
   let (next, tm) = checker.assemble_module_bodies(actual.bodies)
   let (old, cold_tm) = checker.assemble_module_bodies(cold)
-  assert tm == cold_tm && next.next_id == old.next_id && next.diags == old.diags
+  assert tm == cold_tm && next.decl_slots == old.decl_slots && next.diags == old.diags
   assert next.fns == old.fns && next.alias_resolved == old.alias_resolved && next.frame == old.frame
   let prefix = Some([semantic_reads.StdModuleMode(true)])
   let observed_headers = ModuleHeaders { ..headers, cx: Cx { ..headers.cx, function_reads: prefix } }
