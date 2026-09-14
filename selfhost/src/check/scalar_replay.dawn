@@ -990,3 +990,200 @@ test "scalar replay reuses an admitted body when a generic impl is changed" {
   assert actual.bodies.cx.function_reads == expected.cx.function_reads
   assert actual.bodies.cx.body_writes == expected.cx.body_writes
 }
+
+test "scalar replay reuses an admitted body when an effect declaration is added" {
+  # The effect row of the edit table. An admitted signature is pure: the
+  # candidate's `effs` must be empty, its `eff` must be `EPure`, and it may
+  # carry no effect parameters, so no effect declaration in the module is one
+  # an admitted body could have used. The edit still renumbers the
+  # declarations after it and moves every byte offset into them, which is the
+  # half admission has to survive, and a declared effect is also the one shape
+  # here that puts a second entry in the module's nominal id space.
+  let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
+  let body = "fn compute(x: Int) -> Int = {\n let y = x + 1\n if y > 0 { y * 2 } else { -x }\n}\n"
+  let declared = "effect Ask { fn ask() -> Int }\n"
+  let before = body
+  let after = declared ++ body
+  let old_snapshot = source_snapshot.of(before).expect("recorded snapshot")
+  let next_snapshot = source_snapshot.of(after).expect("candidate snapshot")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(old_snapshot), map.empty())
+  let next = checker.check_module_headers(base, source_snapshot.syntax(next_snapshot), map.empty())
+  assert old.cx.diags == [] && next.cx.diags == []
+  let saved = body_execution.record(scope, old)
+  let actual = replay(admit(scope, old, old_snapshot, saved), next, next_snapshot)
+  let expected = checker.check_module_body_products(next)
+  assert actual.reused == 1 && actual.checked == 0
+  assert actual.bodies.functions == expected.functions
+  assert actual.bodies.constants == expected.constants
+  assert actual.bodies.impl_methods == expected.impl_methods
+  assert actual.bodies.trait_defaults == expected.trait_defaults
+  assert actual.bodies.tests == expected.tests
+  assert actual.bodies.cx.frame == expected.cx.frame
+  assert actual.bodies.cx.syms == expected.cx.syms
+  assert actual.bodies.cx.decl_slots == expected.cx.decl_slots
+  assert actual.bodies.cx.owner_decl == expected.cx.owner_decl
+  assert actual.bodies.cx.diags == expected.cx.diags
+  assert actual.bodies.cx.function_reads == expected.cx.function_reads
+  assert actual.bodies.cx.body_writes == expected.cx.body_writes
+}
+
+test "scalar replay reuses an admitted body when an effect declaration is removed" {
+  let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
+  let body = "fn compute(x: Int) -> Int = {\n let y = x + 1\n if y > 0 { y * 2 } else { -x }\n}\n"
+  let declared = "effect Ask { fn ask() -> Int }\n"
+  let before = declared ++ body
+  let after = body
+  let old_snapshot = source_snapshot.of(before).expect("recorded snapshot")
+  let next_snapshot = source_snapshot.of(after).expect("candidate snapshot")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(old_snapshot), map.empty())
+  let next = checker.check_module_headers(base, source_snapshot.syntax(next_snapshot), map.empty())
+  assert old.cx.diags == [] && next.cx.diags == []
+  let saved = body_execution.record(scope, old)
+  let actual = replay(admit(scope, old, old_snapshot, saved), next, next_snapshot)
+  let expected = checker.check_module_body_products(next)
+  assert actual.reused == 1 && actual.checked == 0
+  assert actual.bodies.functions == expected.functions
+  assert actual.bodies.constants == expected.constants
+  assert actual.bodies.impl_methods == expected.impl_methods
+  assert actual.bodies.trait_defaults == expected.trait_defaults
+  assert actual.bodies.tests == expected.tests
+  assert actual.bodies.cx.frame == expected.cx.frame
+  assert actual.bodies.cx.syms == expected.cx.syms
+  assert actual.bodies.cx.decl_slots == expected.cx.decl_slots
+  assert actual.bodies.cx.owner_decl == expected.cx.owner_decl
+  assert actual.bodies.cx.diags == expected.cx.diags
+  assert actual.bodies.cx.function_reads == expected.cx.function_reads
+  assert actual.bodies.cx.body_writes == expected.cx.body_writes
+}
+
+test "scalar replay reuses an admitted body when an effect declaration is changed" {
+  # The rewritten revision renames the effect's operation, which is the
+  # part of an effect declaration a body would name if it could.
+  let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
+  let body = "fn compute(x: Int) -> Int = {\n let y = x + 1\n if y > 0 { y * 2 } else { -x }\n}\n"
+  let declared = "effect Ask { fn ask() -> Int }\n"
+  let rewritten = "effect Ask { fn probe() -> Int }\n"
+  let before = declared ++ body
+  let after = rewritten ++ body
+  let old_snapshot = source_snapshot.of(before).expect("recorded snapshot")
+  let next_snapshot = source_snapshot.of(after).expect("candidate snapshot")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(old_snapshot), map.empty())
+  let next = checker.check_module_headers(base, source_snapshot.syntax(next_snapshot), map.empty())
+  assert old.cx.diags == [] && next.cx.diags == []
+  let saved = body_execution.record(scope, old)
+  let actual = replay(admit(scope, old, old_snapshot, saved), next, next_snapshot)
+  let expected = checker.check_module_body_products(next)
+  assert actual.reused == 1 && actual.checked == 0
+  assert actual.bodies.functions == expected.functions
+  assert actual.bodies.constants == expected.constants
+  assert actual.bodies.impl_methods == expected.impl_methods
+  assert actual.bodies.trait_defaults == expected.trait_defaults
+  assert actual.bodies.tests == expected.tests
+  assert actual.bodies.cx.frame == expected.cx.frame
+  assert actual.bodies.cx.syms == expected.cx.syms
+  assert actual.bodies.cx.decl_slots == expected.cx.decl_slots
+  assert actual.bodies.cx.owner_decl == expected.cx.owner_decl
+  assert actual.bodies.cx.diags == expected.cx.diags
+  assert actual.bodies.cx.function_reads == expected.cx.function_reads
+  assert actual.bodies.cx.body_writes == expected.cx.body_writes
+}
+
+test "scalar replay reuses an admitted body when a type declaration is added" {
+  # The type row of the edit table. A removed declaration is the direction the
+  # other cells do not cover: every byte offset into the body drops rather
+  # than rises, and the recorded revision holds a declaration index the
+  # candidate revision does not have at all.
+  let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
+  let body = "fn compute(x: Int) -> Int = {\n let y = x + 1\n if y > 0 { y * 2 } else { -x }\n}\n"
+  let declared = "type Shape = { value: Int }\n"
+  let before = body
+  let after = declared ++ body
+  let old_snapshot = source_snapshot.of(before).expect("recorded snapshot")
+  let next_snapshot = source_snapshot.of(after).expect("candidate snapshot")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(old_snapshot), map.empty())
+  let next = checker.check_module_headers(base, source_snapshot.syntax(next_snapshot), map.empty())
+  assert old.cx.diags == [] && next.cx.diags == []
+  let saved = body_execution.record(scope, old)
+  let actual = replay(admit(scope, old, old_snapshot, saved), next, next_snapshot)
+  let expected = checker.check_module_body_products(next)
+  assert actual.reused == 1 && actual.checked == 0
+  assert actual.bodies.functions == expected.functions
+  assert actual.bodies.constants == expected.constants
+  assert actual.bodies.impl_methods == expected.impl_methods
+  assert actual.bodies.trait_defaults == expected.trait_defaults
+  assert actual.bodies.tests == expected.tests
+  assert actual.bodies.cx.frame == expected.cx.frame
+  assert actual.bodies.cx.syms == expected.cx.syms
+  assert actual.bodies.cx.decl_slots == expected.cx.decl_slots
+  assert actual.bodies.cx.owner_decl == expected.cx.owner_decl
+  assert actual.bodies.cx.diags == expected.cx.diags
+  assert actual.bodies.cx.function_reads == expected.cx.function_reads
+  assert actual.bodies.cx.body_writes == expected.cx.body_writes
+}
+
+test "scalar replay reuses an admitted body when a type declaration is removed" {
+  let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
+  let body = "fn compute(x: Int) -> Int = {\n let y = x + 1\n if y > 0 { y * 2 } else { -x }\n}\n"
+  let declared = "type Shape = { value: Int }\n"
+  let before = declared ++ body
+  let after = body
+  let old_snapshot = source_snapshot.of(before).expect("recorded snapshot")
+  let next_snapshot = source_snapshot.of(after).expect("candidate snapshot")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(old_snapshot), map.empty())
+  let next = checker.check_module_headers(base, source_snapshot.syntax(next_snapshot), map.empty())
+  assert old.cx.diags == [] && next.cx.diags == []
+  let saved = body_execution.record(scope, old)
+  let actual = replay(admit(scope, old, old_snapshot, saved), next, next_snapshot)
+  let expected = checker.check_module_body_products(next)
+  assert actual.reused == 1 && actual.checked == 0
+  assert actual.bodies.functions == expected.functions
+  assert actual.bodies.constants == expected.constants
+  assert actual.bodies.impl_methods == expected.impl_methods
+  assert actual.bodies.trait_defaults == expected.trait_defaults
+  assert actual.bodies.tests == expected.tests
+  assert actual.bodies.cx.frame == expected.cx.frame
+  assert actual.bodies.cx.syms == expected.cx.syms
+  assert actual.bodies.cx.decl_slots == expected.cx.decl_slots
+  assert actual.bodies.cx.owner_decl == expected.cx.owner_decl
+  assert actual.bodies.cx.diags == expected.cx.diags
+  assert actual.bodies.cx.function_reads == expected.cx.function_reads
+  assert actual.bodies.cx.body_writes == expected.cx.body_writes
+}
+
+test "scalar replay reuses an admitted body when a type declaration is changed" {
+  # The rewritten revision changes both the field name and the field type,
+  # so neither the declaration's spelling nor its length carries over.
+  let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
+  let body = "fn compute(x: Int) -> Int = {\n let y = x + 1\n if y > 0 { y * 2 } else { -x }\n}\n"
+  let declared = "type Shape = { value: Int }\n"
+  let rewritten = "type Shape = { other: Bool }\n"
+  let before = declared ++ body
+  let after = rewritten ++ body
+  let old_snapshot = source_snapshot.of(before).expect("recorded snapshot")
+  let next_snapshot = source_snapshot.of(after).expect("candidate snapshot")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(old_snapshot), map.empty())
+  let next = checker.check_module_headers(base, source_snapshot.syntax(next_snapshot), map.empty())
+  assert old.cx.diags == [] && next.cx.diags == []
+  let saved = body_execution.record(scope, old)
+  let actual = replay(admit(scope, old, old_snapshot, saved), next, next_snapshot)
+  let expected = checker.check_module_body_products(next)
+  assert actual.reused == 1 && actual.checked == 0
+  assert actual.bodies.functions == expected.functions
+  assert actual.bodies.constants == expected.constants
+  assert actual.bodies.impl_methods == expected.impl_methods
+  assert actual.bodies.trait_defaults == expected.trait_defaults
+  assert actual.bodies.tests == expected.tests
+  assert actual.bodies.cx.frame == expected.cx.frame
+  assert actual.bodies.cx.syms == expected.cx.syms
+  assert actual.bodies.cx.decl_slots == expected.cx.decl_slots
+  assert actual.bodies.cx.owner_decl == expected.cx.owner_decl
+  assert actual.bodies.cx.diags == expected.cx.diags
+  assert actual.bodies.cx.function_reads == expected.cx.function_reads
+  assert actual.bodies.cx.body_writes == expected.cx.body_writes
+}
