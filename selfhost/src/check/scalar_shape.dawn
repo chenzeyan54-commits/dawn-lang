@@ -2,7 +2,8 @@
 # the recording. Admission does not pair two parsed trees: the candidate
 # declaration's own bytes have to be unchanged, so it parses to the recorded
 # tree, and what remains to ask is whether that tree is in the class at all.
-use front/ast.{Expr, EInt, EFloat, EBool, EUnit, EVar, EUnary, EBinary, EIf, EBlock, SLet, OpNeg, OpAdd}
+use front/ast.{Expr, EInt, EFloat, EBool, EUnit, EVar, EUnary, EBinary, EIf, EBlock, SLet, OpNeg,
+  OpAdd, TNamed }
 
 ## checker.declare reports a binder that shadows an imported module alias, and
 ## that read of the alias table leaves no journal entry. Collect every name the
@@ -24,7 +25,13 @@ pub fn binders(e: Expr, into: List[String]) -> Option[List[String]] = match e {
     var out = into
     for s in xs {
       match s {
-        SLet(name, false, None, init, _, _) -> { out = binders(init, out)? ++ [name] }
+        # A declared type on the binding is in the class, and what it names
+        # is not decided here: resolving it is a read like any other, so the
+        # recorded log carries the answer and the replay path revalidates it.
+        # A body that names something the read allowlist does not cover is
+        # refused where that allowlist is, which is where every other question
+        # about what an admitted body may say is answered.
+        SLet(name, false, _, init, _, _) -> { out = binders(init, out)? ++ [name] }
         _ -> return None
       }
     }
@@ -46,5 +53,8 @@ test "scalar shape collects every declared binder and refuses unpaired nodes" {
   let nested = EBlock([SLet("a", false, None, EInt(1, 0, 1), 0, 2)], Some(branch), 0, 5)
   assert binders(nested, []) == Some(["a", "b"])
   assert binders(EBlock([SLet("m", true, None, x, 0, 2)], Some(x), 0, 3), []) == None
+  let annotated = EBlock([SLet("t", false, Some(TNamed("T", [], [], 0, 1)), x, 0, 2)],
+    Some(EVar("t", 0, 1)), 0, 3)
+  assert binders(annotated, []) == Some(["t"])
   assert binders(EBlock([], Some(EBinary(OpAdd, x, x, 0, 1, 0, 2)), 0, 3), []) == Some([])
 }

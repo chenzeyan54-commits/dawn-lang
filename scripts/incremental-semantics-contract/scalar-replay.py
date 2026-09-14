@@ -22,6 +22,7 @@ from cold import ROOT, edit, run
 SUBJECT = 'selfhost/src/check/scalar_replay.dawn'
 SCHEDULER = 'selfhost/src/check/checker.dawn'
 CONTEXT = 'selfhost/src/check/cx.dawn'
+SHAPE = 'selfhost/src/check/scalar_shape.dawn'
 
 
 def main():
@@ -53,6 +54,20 @@ def main():
          'match query_runtime.finish(opened, read, value) {\n        Some(engine) -> (asked.engine, value)'),
         ('memo-not-carried', 'let carried = Prepared { ..prepared, memo: memo }', 'let carried = prepared'),
         ('memo-not-threaded', '(Pass { ..state, prepared: Some(after) }, product)', '(state, product)'),
+        # The signature binders. A scoped query is the declaration's own, and
+        # what the executor hands in is the context the scheduler entered the
+        # declaration with, where nothing is bound yet. Asking it there, or
+        # rebuilding the binders wrongly, refuses every generic body.
+        ('binder-context-unbound', 'return (memo, checker.revalidate_read(scoped, read))',
+         'return (memo, checker.revalidate_read(cx, read))'),
+        ('binder-context-tparams', 'TyVar(name, _) -> { out = map.insert(out, name, parameter) }',
+         'TyVar(_, _) -> ()'),
+        ('generic-carried-binder',
+         'for parameter in s.tparams { if parameter == t { return true } }',
+         'for parameter in s.tparams { if parameter == t { return false } }'),
+        ('generic-entry-bound-write',
+         'BoundsKey(id) -> {\n        if not set.has(bound_ids, id) { return None }',
+         'BoundsKey(id) -> {\n        if true { return None }'),
         ('source-owner', 'not snapshot_matches(old, old_source)', 'false'),
         ('observer-mode', 'Some(_) -> moved.function_reads', 'Some(_) -> None'),
         ('current-isolation', 'isolated: cx.frame.isolated', 'isolated: false'),
@@ -139,6 +154,12 @@ def main():
         ('diagnostic-order', CONTEXT,
          '  Cx { ..cx, diags: cx.diags ++ [raised(cx, msg, lo, hi, "")] }',
          '  Cx { ..cx, diags: [raised(cx, msg, lo, hi, "")] ++ cx.diags }'),
+        # Class membership is decided in the shape walk, and a binding with a
+        # declared type is what puts a scoped query in an admitted body's log
+        # at all. Refusing it there leaves the binder context unreachable.
+        ('annotated-binder', SHAPE,
+         'SLet(name, false, _, init, _, _) -> { out = binders(init, out)? ++ [name] }',
+         'SLet(name, false, None, init, _, _) -> { out = binders(init, out)? ++ [name] }'),
     ]
     variants = [(name, SUBJECT, old, new) for name, old, new in own] + shared
     originals = {p: (ROOT / p).read_text() for p in {v[1] for v in variants}}

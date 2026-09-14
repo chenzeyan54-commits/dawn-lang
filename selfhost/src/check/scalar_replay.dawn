@@ -8,7 +8,7 @@ use std/set
 use check/checker
 use check/checker.{ModuleHeaders, ModuleBodies, BodyExecutor}
 use check/cx.{Cx, Frame, cx_new}
-use check/types.{Ty, TyInt, TyFloat, TyBool, TyUnit, Sig, Sym, EPure}
+use check/types.{Ty, TyInt, TyFloat, TyBool, TyUnit, TyVar, Sig, Sym, Eff, EffVar, EPure}
 use check/tast.{TFun}
 use check/body_execution
 use check/body_execution.{Recorded, SavedFunction, FunctionInput}
@@ -18,7 +18,7 @@ use check/identity
 use check/identity.{ModuleKey, DeclKey}
 use check/allocation
 use check/scalar_shape
-use check/write_journal.{SymbolKey}
+use check/write_journal.{SymbolKey, BoundsKey}
 use check/source_projection
 use check/source_snapshot
 use check/source_snapshot.{Snapshot}
@@ -26,7 +26,8 @@ use check/callee_index
 use check/body_admit
 use check/body_admit.{View}
 use check/semantic_reads
-use check/semantic_reads.{AssignableType, FunctionRead}
+use check/semantic_reads.{AssignableType, FunctionRead, BuiltinTypeAnswer,
+  ScopedTypeParameter, ScopedEffectVariable }
 use check/query_runtime
 use front/ast.{FnDecl, DFn}
 
@@ -78,21 +79,87 @@ fn primitive(t: Ty) -> Bool = match t {
   TyInt -> true, TyFloat -> true, TyBool -> true, TyUnit -> true, _ -> false
 }
 
+## The types a body of this class carries from the revision that recorded it
+## into the one replaying it: the primitives, and the type parameters its own
+## signature binds. A type parameter is a name and an id minted for this
+## declaration's own parameter slot, so it names the same binder in every
+## revision that still declares it, and `allocation.body_relocation` refuses
+## the body unless the recorded and candidate signatures are that same value
+## field for field.
+fn carried(s: Sig, t: Ty) -> Bool = {
+  if primitive(t) { return true }
+  for parameter in s.tparams { if parameter == t { return true } }
+  false
+}
+
+## The type and effect binders `checker.enter_fn` installs for a signature
+## (`checker.dawn:13527`). It reads the signature and nothing else, which is
+## what lets the replay path put the same binders back without entering the
+## body.
+fn signature_tparams(s: Sig) -> Map[String, Ty] = {
+  var out: Map[String, Ty] = map.empty()
+  for parameter in s.tparams {
+    match parameter {
+      TyVar(name, _) -> { out = map.insert(out, name, parameter) }
+      _ -> ()
+    }
+  }
+  out
+}
+
+## The effect axis of the same binding. `parameters` refuses a signature with
+## effect parameters, so on an admitted body this is always empty; it is here
+## because the context a body-local query is asked under is the whole binder
+## frame, and leaving half of it to whatever the executor happened to hand in
+## is what this knife is about.
+fn signature_eff_vars(s: Sig) -> Map[String, Eff] = {
+  var out: Map[String, Eff] = map.empty()
+  for parameter in s.eparams {
+    match parameter {
+      EffVar(name, _) -> { out = map.insert(out, name, parameter) }
+      _ -> ()
+    }
+  }
+  out
+}
+
+## The context a body-local query is revalidated under. What the executor
+## hands in is the context the scheduler entered the declaration with, where
+## the signature binders are not bound yet: `check_fn` binds them on the way
+## into the body, so a scoped query asked before that binding answers `None`
+## for every type parameter and refuses every generic body. The binders are a
+## function of the candidate signature, so they go back here without running
+## anything.
+fn binder_context(cx: Cx, s: Sig) -> Cx =
+  Cx { ..cx, current_tparams: signature_tparams(s), current_eff_vars: signature_eff_vars(s) }
+
 ## The half of class membership decidable from the declaration header, and the
 ## parameter names the body may refer to. Walking the body is the other half,
 ## and admission runs that walk once, pairing the two revisions, rather than
 ## once per revision.
 fn parameters(d: FnDecl, s: Sig) -> Option[Set[String]] = {
-  if d.tparams != [] || d.eparams != [] || d.effs != [] || d.ret == None ||
-    s.tparams != [] || s.eparams != [] || len(s.constraints) != 0 || s.eff != EPure ||
-    s.inferring || s.is_builtin || s.trait_id != None || not primitive(s.ret) ||
+  if d.eparams != [] || d.effs != [] || d.ret == None ||
+    s.eparams != [] || len(s.constraints) != 0 || s.eff != EPure ||
+    s.inferring || s.is_builtin || s.trait_id != None || not carried(s, s.ret) ||
+    len(d.tparams) != len(s.tparams) ||
     len(d.params) != len(s.param_tys) || len(d.params) != len(s.param_names) { return None }
   for present in s.param_defaults { if present { return None } }
+  # The signature's type parameters are this declaration's own, spelled the
+  # way the declaration spells them and bounded by nothing. Refusing a bound
+  # is what keeps the entry context rebuildable: `enter_fn` turns a bound into
+  # a dictionary in the frame, and nothing in this class can name one.
+  let tparams = signature_tparams(s)
+  if map.len(tparams) != len(s.tparams) { return None }
+  var ti = 0
+  for parameter in d.tparams {
+    if parameter.bounds != [] || map.get(tparams, parameter.name) != Some(s.tparams[ti]) { return None }
+    ti = ti + 1
+  }
   var bound: Set[String] = set.empty()
   var i = 0
   for param in d.params {
     if param.default != None || param.name != s.param_names[i] ||
-      not primitive(s.param_tys[i]) || set.has(bound, param.name) { return None }
+      not carried(s, s.param_tys[i]) || set.has(bound, param.name) { return None }
     bound = set.insert(bound, param.name)
     i = i + 1
   }
@@ -122,34 +189,72 @@ fn recorded(prior: FnDecl, prior_sig: Sig, p: Product, declaration: Int) -> Opti
   # accepts its header, `allocation.body_relocation` requires the recorded header to be
   # it field for field, and `source_projection.same_text` requires the
   # declaration's own bytes, so the candidate body is the recorded body.
+  # The binder frame the recorded body was entered under is the one its own
+  # signature names. `enter_fn` rewrites each binder's bound on the way in,
+  # and for a signature this class admits that write is the value the header
+  # pass already put there, so the product carries no net bound change and
+  # `assemble` puts none back. A product that says otherwise was not entered
+  # the way the candidate revision will enter this declaration; the guards
+  # below are closed rather than diagnostic.
+  let tparams = signature_tparams(prior_sig)
+  let eff_vars = signature_eff_vars(prior_sig)
+  var bound_ids: Set[Int] = set.empty()
+  for parameter in prior_sig.tparams {
+    match parameter {
+      TyVar(_, id) -> { bound_ids = set.insert(bound_ids, id) }
+      _ -> return None
+    }
+  }
   if p.tree.sig != prior_sig || p.tree.name != prior.name ||
-    p.signatures != [] || p.aliases != [] || len(p.bounds) != 0 || p.diagnostics != [] { return None }
+    p.signatures != [] || p.aliases != [] || len(p.bounds) != 0 ||
+    p.tparams != tparams || p.effect_vars != eff_vars || p.diagnostics != [] { return None }
   let reads = p.function_reads?
   if reads == [] { return None }
   for read in reads {
     match read {
-      AssignableType(a, b, true) -> if not primitive(a) || not primitive(b) { return None }
+      AssignableType(a, b, true) -> if not carried(prior_sig, a) || not carried(prior_sig, b) { return None }
+      # A binder asked for by name from inside the body. This is the one
+      # family here whose answer belongs to the declaration rather than to the
+      # module, so it is revalidated under the candidate signature's binders
+      # and never shared between bodies. The recorded answer is not compared
+      # here: the revalidation compares it, against the binders of the
+      # declaration the candidate revision is actually checking.
+      ScopedTypeParameter(_, _) -> ()
+      ScopedEffectVariable(_, _) -> ()
+      # A type named in the body resolves through the builtin table before it
+      # reaches the binders, so admitting the binders means admitting this.
+      BuiltinTypeAnswer(_, _) -> ()
       _ -> return None
     }
   }
   var symbols: Map[Int, Sym] = map.empty()
   for change in p.symbols {
     let symbol = change.value?
-    if map.has(symbols, change.key) || not primitive(symbol.ty) || symbol.mutable ||
+    if map.has(symbols, change.key) || not carried(prior_sig, symbol.ty) || symbol.mutable ||
       symbol.dict_of != None || symbol.ev_of != None || symbol.cell_of != None { return None }
     symbols = map.insert(symbols, change.key, symbol)
   }
   var written: Set[Int] = set.empty()
+  var bounds_written: Set[Int] = set.empty()
   for write in p.body_writes? {
     match write {
       SymbolKey(id) -> {
         if not map.has(symbols, id) { return None }
         written = set.insert(written, id)
       }
+      # The bound `enter_fn` rewrites for each of this signature's own
+      # binders. It is journaled because the entry context writes it, and it
+      # carries no change because what it writes is what the header pass
+      # already recorded for that binder.
+      BoundsKey(id) -> {
+        if not set.has(bound_ids, id) { return None }
+        bounds_written = set.insert(bounds_written, id)
+      }
       _ -> return None
     }
   }
-  if set.len(written) != map.len(symbols) { return None }
+  if set.len(written) != map.len(symbols) ||
+    set.len(bounds_written) != set.len(bound_ids) { return None }
   # checker.declare reports a binder that shadows an imported module alias,
   # and that table read leaves no journal entry to revalidate. Name every
   # binder the recorded body declares so the candidate revision can be asked
@@ -263,8 +368,8 @@ fn shared(read: FunctionRead) -> Bool = match read {
 ## facts a revision may answer for all of its bodies. `checker.revalidate_read`
 ## has no effect row and writes nothing this pass reads, so what the memo holds
 ## is a value and not a cached observation.
-fn revalidated(memo: Memo, cx: Cx, read: FunctionRead) -> (Memo, Option[Bool]) = {
-  if not shared(read) { return (memo, checker.revalidate_read(cx, read)) }
+fn revalidated(memo: Memo, cx: Cx, scoped: Cx, read: FunctionRead) -> (Memo, Option[Bool]) = {
+  if not shared(read) { return (memo, checker.revalidate_read(scoped, read)) }
   let asked = query_runtime.read(memo, read)
   match asked.answer {
     query_runtime.Available(value) -> (asked.engine, value)
@@ -330,7 +435,7 @@ fn relocation(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[(Prior,
     prior.lo, prior.hi, d.lo, d.hi) { return None }
   let view = View { symbols: saved.symbols,
     # Admission is closed to named calls: `scalar_shape.binders` pairs no
-    # call node and `recorded` accepts no read but `AssignableType`, so no
+    # call node and `recorded` accepts no read that could name one, so no
     # admitted body has a callee to resolve. Widening this class consumes
     # `prepared.callees`; until then admission refuses every call node.
     callee: (owner, name, builtin, trait_id) => None }
@@ -357,9 +462,10 @@ fn candidate(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> (Prepared, Opti
   # candidate coordinates to be compared and thrown away. The rebuilt log is
   # only what an observing caller installs, so it is built only when the
   # caller is observing.
+  let scoped = binder_context(cx, sig)
   var memo = prepared.memo
   for read in reads {
-    let (next_memo, verdict) = revalidated(memo, cx, read)
+    let (next_memo, verdict) = revalidated(memo, cx, scoped, read)
     memo = next_memo
     if verdict != Some(true) { return (Prepared { ..prepared, memo: memo }, None) }
   }
@@ -887,9 +993,9 @@ test "scalar replay reuses an admitted body when a trait declaration is added" {
   # is admitted, and neither what that body checks to nor the module the
   # replay assembles may change. What makes the edit safe is not that traits
   # are unrelated to bodies: it is that this admitted class cannot name one.
-  # `parameters` refuses a signature with constraints, with type or effect
-  # parameters, or with a trait id, and `scalar_shape.binders` refuses every
-  # call node, so an admitted body has no trait to be wrong about. What the
+  # `parameters` refuses a signature with a bound on a type parameter, with
+  # effect parameters or with a trait id, and `scalar_shape.binders` refuses
+  # every call node, so an admitted body has no trait to be wrong about. What the
   # edit does move is the declaration index of everything after it and every
   # byte offset into it, which is the half admission has to survive.
   let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
@@ -1319,7 +1425,7 @@ test "scalar replay asks one candidate revision each shared question once" {
         query_runtime.Available(_) -> ()
         _ -> { computed = computed + 1 }
       }
-      let (next_memo, verdict) = revalidated(memo, headers.cx, fact)
+      let (next_memo, verdict) = revalidated(memo, headers.cx, headers.cx, fact)
       memo = next_memo
       assert verdict == checker.revalidate_read(headers.cx, fact)
     }
@@ -1384,5 +1490,103 @@ test "scalar replay carries one memo across the bodies of a revision and no furt
   assert match query_runtime.read(fresh.memo, probe).answer {
     query_runtime.Needs(_) -> true
     _ -> false
+  }
+}
+
+test "scalar replay reuses a generic body under the candidate signature's binders" {
+  # M2.3. The scoped queries a body asks belong to the declaration, not to the
+  # module: the executor hands the replay path the context the scheduler
+  # entered the declaration with, where no binder is bound yet, and
+  # `check_fn` binds them on the way into the body. The same recorded fact is
+  # false in the first context and true in the second, and that difference is
+  # the whole knife: without the binders put back, no generic body is ever
+  # reused.
+  let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
+  let body = "fn hold[T](x: T) -> T = {\n let y: T = x\n y\n}\n"
+  let after = "type Added = { n: Int }\n" ++ body
+  let old_snapshot = source_snapshot.of(body).expect("recorded snapshot")
+  let next_snapshot = source_snapshot.of(after).expect("candidate snapshot")
+  let new_syntax = source_snapshot.syntax(next_snapshot)
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(old_snapshot), map.empty())
+  let next = checker.check_module_headers(base, new_syntax, map.empty())
+  assert old.cx.diags == [] && next.cx.diags == []
+  let saved = body_execution.record(scope, old)
+  assert saved.refused == 0
+  let admitted: AdmittedData = admit(scope, old, old_snapshot, saved)
+  assert admitted_count(admitted) == 1
+  let prepared = prepare(admitted, next, next_snapshot).expect("prepared candidate revision")
+  let declaration = match new_syntax.decls[1] { DFn(d) -> d, _ -> panic("hold syntax") }
+  let sig = map.get(next.cx.fns, "hold").expect("hold header")
+  let (prior, _) = relocation(prepared, next.cx, declaration, sig).expect("relocation")
+  # Not a vacuous judgment: this body really does ask for its own type
+  # parameter by name, and that question is the one the entry context cannot
+  # answer.
+  var asked_binders = 0
+  for fact in prior.product.function_reads.expect("recorded log") {
+    match fact {
+      ScopedTypeParameter(_, _) -> {
+        asked_binders = asked_binders + 1
+        assert not shared(fact)
+        assert checker.revalidate_read(next.cx, fact) == Some(false)
+        assert checker.revalidate_read(binder_context(next.cx, sig), fact) == Some(true)
+      }
+      _ -> ()
+    }
+  }
+  assert asked_binders > 0
+  let actual = replay(admit(scope, old, old_snapshot, saved), next, next_snapshot)
+  let expected = checker.check_module_body_products(next)
+  assert actual.reused == 1 && actual.checked == 0
+  assert actual.bodies.functions == expected.functions
+  assert actual.bodies.cx.current_tparams == expected.cx.current_tparams
+  # The bound row of every binder in scope, compared entry by entry rather
+  # than map against map: comparing two `Map[Int, List[Int]]` values here
+  # links against a generated dictionary class that this module cannot load
+  # (see the report; it is a compiler defect, not a property of this test).
+  var bound_rows = 0
+  for (id, declared) in map.entries(expected.cx.current_tparam_bounds) {
+    match map.get(actual.bodies.cx.current_tparam_bounds, id) {
+      Some(replayed) -> { assert len(replayed) == len(declared) }
+      None -> panic("the replayed module lost a bound row")
+    }
+    bound_rows = bound_rows + 1
+  }
+  assert bound_rows == map.len(actual.bodies.cx.current_tparam_bounds) && bound_rows > 0
+  assert actual.bodies.cx.frame == expected.cx.frame
+  assert actual.bodies.cx.syms == expected.cx.syms
+  assert actual.bodies.cx.decl_slots == expected.cx.decl_slots
+  assert actual.bodies.cx.diags == expected.cx.diags
+  assert actual.bodies.cx.function_reads == expected.cx.function_reads
+  assert actual.bodies.cx.body_writes == expected.cx.body_writes
+}
+
+test "scalar replay refuses a generic body whose binders changed" {
+  # The other half of the same rule. Renaming the type parameter and putting a
+  # bound on it are both edits to the declaration's own head: the first makes
+  # every binder the body names another binder, the second puts a dictionary
+  # in the entry frame that nothing in this class can rebuild. Both land cold.
+  let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
+  let body = "fn hold[T](x: T) -> T = {\n let y: T = x\n y\n}\n"
+  let old_snapshot = source_snapshot.of(body).expect("recorded snapshot")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(old_snapshot), map.empty())
+  assert old.cx.diags == []
+  let saved = body_execution.record(scope, old)
+  for text in [
+    "fn hold[Item](x: Item) -> Item = {\n let y: Item = x\n y\n}\n",
+    "trait Held[T] { fn held(x: T) -> Int }\n" ++
+      "fn hold[T: Held](x: T) -> T = {\n let y: T = x\n y\n}\n"
+  ] {
+    let next_snapshot = source_snapshot.of(text).expect("candidate snapshot")
+    let next = checker.check_module_headers(base, source_snapshot.syntax(next_snapshot), map.empty())
+    assert next.cx.diags == []
+    let actual = replay(admit(scope, old, old_snapshot, saved), next, next_snapshot)
+    let expected = checker.check_module_body_products(next)
+    assert actual.reused == 0
+    assert actual.bodies.functions == expected.functions
+    assert actual.bodies.cx.diags == expected.cx.diags
+    assert actual.bodies.cx.syms == expected.cx.syms
+    assert actual.bodies.cx.decl_slots == expected.cx.decl_slots
   }
 }
