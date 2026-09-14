@@ -24,6 +24,10 @@
 #              the read has one answer. <detail> is `held-by=<site>` naming
 #              the function that establishes it; the gate checks that function
 #              still writes the field.
+#   diagnostic the read is only reached while a diagnostic is being written,
+#              so its answer never leaves a run whose product admission
+#              refuses. <detail> is `refused-by=<site>` naming that guard; the
+#              gate checks it still looks at the diagnostics a body raised.
 #   uncovered  a real hole. <detail> is `backlog`, or
 #              `compensated-by=<site>` naming the admission-side guard that
 #              re-asks the question; the gate checks that guard still reads
@@ -38,9 +42,8 @@
 check/checker.dawn::alias_binding_evar::aliases | uncovered | backlog | the diagnostic path walks every local alias to name the one that bound an unsolved effect variable; no fact records the walk
 check/checker.dawn::alias_binding_evar::module_exports | uncovered | backlog | the same walk continues into every imported surface, and an alias added to any of them changes the message
 check/checker.dawn::assignable_read::function_reads | write |  | the old value of cx.function_reads inside its own Cx update; writer ownership is scripts/incremental-semantics-contract/journal-coverage.py's inventory
-check/checker.dawn::assoc_impl_of::impl_table | uncovered | backlog | an associated member resolves its impl directly; cx.implementation_presence_read is the recorded form and this path does not use it
+check/checker.dawn::assoc_impl_of::impl_table | logged | ReducedAssociatedType@check/checker.dawn::reduce_assoc_read+ReducedEffect@check/checker.dawn::reduce_eff_read | the two reductions are the only callers a body reaches now that has_index_impl asks implementation_presence_read instead, and each records the whole reduction, which is the answer this lookup decided
 check/checker.dawn::bind_dicts::frame | write |  | the old value of cx.frame inside its own Cx update; writer ownership is scripts/incremental-semantics-contract/journal-coverage.py's inventory
-check/checker.dawn::bind_dicts::traits | uncovered | backlog | dictionary binding reads the whole TraitI, of which only the name has a fact (TraitName)
 check/checker.dawn::builtin_sig::bins | logged | FunctionAnswer@check/checker.dawn::lookup_fn_sig_read | the builtin table is the last step of one name lookup, and lookup_fn_sig_read records the whole answer including absence
 check/checker.dawn::builtin_sig::hidden_bins | logged | FunctionAnswer@check/checker.dawn::lookup_fn_sig_read | which builtins this module may name only narrows that same recorded lookup
 check/checker.dawn::builtin_visible::is_std_module | logged | FunctionAnswer@check/checker.dawn::lookup_fn_sig_read+FunctionCandidates@check/checker.dawn::fn_pool_read | the std-only gate is asked from the lookup and from the did-you-mean pool, and both record their answer
@@ -97,8 +100,8 @@ check/checker.dawn::fn_pool::fns | logged | FunctionCandidates@check/checker.daw
 check/checker.dawn::fn_pool::std_fns | logged | FunctionCandidates@check/checker.dawn::fn_pool_read | the std half of the did-you-mean pool, recorded as the pool itself
 check/checker.dawn::fn_pool_read::function_reads | product | function_reads | body_product.assemble reinstalls cx.function_reads from the product, so this is body-local state and not a question about the module environment
 check/checker.dawn::fn_pool_read::function_reads | write |  | the old value of cx.function_reads inside its own Cx update; writer ownership is scripts/incremental-semantics-contract/journal-coverage.py's inventory
-check/checker.dawn::impl_method_trait::local_impls | uncovered | backlog | the module scans its own impls to find the trait a method belongs to; adding an impl in the candidate revision changes the answer silently
-check/checker.dawn::impl_method_trait::traits | uncovered | backlog | the trait found by that scan is opened for its name and members with no fact
+check/checker.dawn::impl_method_trait::local_impls | diagnostic | refused-by=check/scalar_replay.dawn::recorded | the scan runs only inside the advice string of an effect refusal, and its input is a span pair in this revision's coordinates, which a candidate revision cannot be asked about; a body that raised the refusal is never admitted, so the answer never leaves the run that computed it
+check/checker.dawn::impl_method_trait::traits | diagnostic | refused-by=check/scalar_replay.dawn::recorded | the trait that scan found is opened on the same advice path and for the same reason
 check/checker.dawn::in_control_arm::frame | product | frame | body_product.assemble reinstalls cx.frame from the product, so this is body-local state and not a question about the module environment
 check/checker.dawn::in_handler_arm::frame | product | frame | body_product.assemble reinstalls cx.frame from the product, so this is body-local state and not a question about the module environment
 check/checker.dawn::in_with_sugar::frame | product | frame | body_product.assemble reinstalls cx.frame from the product, so this is body-local state and not a question about the module environment

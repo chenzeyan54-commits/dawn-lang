@@ -39,9 +39,9 @@ This is the mechanical version of that walk, so the next widening of admission
 5. Holds the whole set to `ledger.txt` in both directions: a read that is not
    in the ledger fails, and a ledger row whose read has gone fails.
 
-`ledger.txt` gives every read one of six verdicts (`logged`, `product`,
-`write`, `scheduler`, `invariant`, `uncovered`) and a reason in the author's
-own words. The header of that file is the format. `--uncovered` prints just
+`ledger.txt` gives every read one of seven verdicts (`logged`, `product`,
+`write`, `scheduler`, `invariant`, `diagnostic`, `uncovered`) and a reason in
+the author's own words. The header of that file is the format. `--uncovered` prints just
 the holes, which is the wiring backlog: a row an admission-side guard already
 compensates for is accounted for and is not printed.
 
@@ -73,6 +73,15 @@ compensates for is accounted for and is not printed.
   span table, and `checker.check_module_headers` clears the flag on its way
   out. The judgment behind that claim is `check/cx` "a body pass records no
   type spans".
+* `diagnostic` names a read that is only reached while a diagnostic is being
+  written, which is where a walk over a whole table to phrase a hint lives
+  (`checker.impl_method_trait`, `checker.alias_binding_evar`). Its answer
+  never leaves the run that computed it, because every admission path today
+  declines a body whose check raised a diagnostic. `refused-by=<site>` names
+  that guard, and the gate checks the guard still looks at the diagnostics a
+  body raised. It is the verdict for a walk whose *input* is a span pair in
+  one revision's coordinates, which no fact can carry, and it is not a licence
+  to skip a fact a stable input would allow.
 * `uncovered` must say `backlog`, or `compensated-by=<site>` naming the
   admission-side guard that re-asks the question. The gate checks that guard
   still reads that field. Reverting the `module_aliases` guard in
@@ -121,10 +130,11 @@ python3 scripts/journal-reads/check.py --src <dir>  # scan a tree somewhere else
 ```
 
 `--self-test` runs a five-module synthetic tree: one positive control that must
-stay clean, eight negative controls (an unledgered read, a reason-free
+stay clean, nine negative controls (an unledgered read, a reason-free
 exemption, a reverted compensating guard, a read accessor that stopped
 recording its fact, a `product` claim `assemble` does not back, a stale row, a
-`scheduler` row whose named site stopped setting the coordinate, and an
-`invariant` row whose named site stopped establishing it), and three lexical
+`scheduler` row whose named site stopped setting the coordinate, an
+`invariant` row whose named site stopped establishing it, and an admission
+guard that stopped refusing a diagnosed body), and three lexical
 controls (a `test` block, a comment and a string literal, each spelling a table
 read that must not count).

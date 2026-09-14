@@ -3383,11 +3383,14 @@ pub fn check_unwrap_typed(cx: Cx, ot: Ty, operand: TExpr, msg: String, lo: Int, 
 ## Does `t` -- or, if it is opaque and has none of its own, its target -- have
 ## an `Index` impl? The same order `resolve_witness` and `reduce_assoc` use, so
 ## the message below cannot refuse what they would have accepted.
-fn has_index_impl(cx: Cx, t: Ty) -> Bool =
-  match assoc_impl_of(cx, INDEX_ID, t) {
-    Some(_) -> true
-    None -> false
+fn has_index_impl(cx: Cx, t: Ty) -> (Cx, Bool) = {
+  let (cx1, here) = implementation_presence_read(cx, INDEX_ID, t)
+  if here { return (cx1, true) }
+  match t {
+    TyOpaque(_, _, _, _, tgt) -> has_index_impl(cx1, tgt)
+    _ -> (cx1, false)
   }
+}
 
 test "record field reads preserve generic substitution and refusal shortcuts" {
   let (syntax, pd) = parser.parse_module("type Box[T] = { value: T }\ntype Choice = First | Last\n")
@@ -6932,8 +6935,9 @@ fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
       # A ground subject with no impl keeps its own message. The general one
       # ("no impl of `Index` for `Bool`") is true but drops the hint that
       # matters most here -- that absence has an answer, and it is `get`.
-      if is_ground(tt) && not has_index_impl(cx1, tt) {
-        let (render_cx, text) = type_display_read(cx1, tt)
+      let (cxi, indexable) = if is_ground(tt) { has_index_impl(cx1, tt) } else { (cx1, true) }
+      if not indexable {
+        let (render_cx, text) = type_display_read(cxi, tt)
         let cx2 = cerr_h(render_cx,
           "`[]` needs an `Index` impl for `" ++ text ++ "`", lo, hi,
           "List and Map have one; when absence is a normal case, " ++
@@ -6941,7 +6945,7 @@ fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
         let (cx3, _, _) = check_expr(cx2, index, no_expected())
         return (cx3, TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
       }
-      let (render_cx, text) = type_display_read(cx1, tt)
+      let (render_cx, text) = type_display_read(cxi, tt)
       let (cx2, w) = resolve_witness(render_cx, INDEX_ID, tt, lo, hi,
         "indexing a " ++ text)
       match w {
@@ -13482,10 +13486,14 @@ fn bind_dicts(cx: Cx, s: Sig, nlo: Int, nhi: Int) -> Cx = {
     for tr_id in bounds_of(s, i) {
       match tp {
         TyVar(tn, vid) -> {
-          let tr = trait_of(cx1.traits, tr_id)
+          # the trait's own name, asked through the recorded form: the symbol
+          # a dictionary binds is spelled from it, so a candidate revision
+          # that renamed the trait binds a different name
+          let (cxt, tr_name) = trait_name_read(cx1, tr_id)
+          cx1 = cxt
           let (cx2, sid) = fresh(cx1)
           let sym = Sym {
-            name: tr.name ++ "$" ++ tn,
+            name: tr_name ++ "$" ++ tn,
             ty: tp,
             mutable: false,
             dlo: owner_off(cx, nlo),

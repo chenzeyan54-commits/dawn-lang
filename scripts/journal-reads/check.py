@@ -31,7 +31,7 @@ generics, methods). This is the mechanical version of that walk.
 It scans the Dawn sources textually, builds a conservative call graph from the
 seven body-checking entry points in `check/checker`, collects every read of a
 `Cx` field reachable from them, and holds the whole set to a checked-in ledger
-(`ledger.txt`) that gives each read site one of six verdicts:
+(`ledger.txt`) that gives each read site one of seven verdicts:
 
   logged     the read happens inside a function that records a
              `semantic_reads` fact, so admission has something to revalidate.
@@ -51,6 +51,11 @@ seven body-checking entry points in `check/checker`, collects every read of a
              the read has a single answer and admission has nothing to
              compare. `held-by=<site>` names the function that establishes it,
              and the gate checks that function still writes that field.
+  diagnostic the read is only reached while a diagnostic is being written, so
+             its answer never leaves a run whose product admission refuses:
+             every admission path today declines a body whose check raised
+             one. `refused-by=<site>` names that guard, and the gate checks
+             the guard still looks at the diagnostics a body raised.
   uncovered  none of those. Every one of these carries a reason, plus either
              `compensated-by=<site>` naming the admission-side guard that
              re-asks the question, or `backlog` saying the hole is open and
@@ -90,11 +95,17 @@ ROOTS = [
     ('check/checker', 'check_const_init'),
 ]
 
-VERDICTS = ('logged', 'product', 'write', 'scheduler', 'invariant', 'uncovered')
+VERDICTS = ('logged', 'product', 'write', 'scheduler', 'invariant', 'diagnostic', 'uncovered')
 
 # A verdict that stands on a named site elsewhere in the tree, and the prefix
 # its detail column must carry to name it.
 NAMED_SITE = {'scheduler': 'set-by=', 'invariant': 'held-by='}
+
+# A `diagnostic` row stands on the admission guard that declines a body whose
+# check raised a diagnostic, so the field it has to be holding down is the
+# diagnostic list rather than the table that was read.
+DIAGNOSTIC_SITE = 'refused-by='
+DIAGNOSTIC_FIELDS = ('diagnostics', 'diags')
 
 TOKEN = re.compile(r'#[^\n]*|"(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z_0-9]*|[^\s]')
 IDENT = re.compile(r'^[A-Za-z_]')
@@ -421,6 +432,12 @@ def parse_ledger(text, name='ledger.txt'):
         if verdict == 'logged' and not detail:
             problems.append(f'{name}:{number}: {target} is logged but names no semantic_reads fact')
             continue
+        if verdict == 'diagnostic' and not detail.startswith(DIAGNOSTIC_SITE):
+            problems.append(
+                f'{name}:{number}: {target} is diagnostic, so detail must be '
+                f'`{DIAGNOSTIC_SITE}<site>` naming the admission guard that declines a body '
+                f'whose check raised one')
+            continue
         if verdict in NAMED_SITE and not detail.startswith(NAMED_SITE[verdict]):
             problems.append(
                 f'{name}:{number}: {target} is {verdict}, so detail must be '
@@ -513,6 +530,16 @@ def audit(sources, ledger=None):
                 problems.append(
                     f'ledger.txt:{row.line}: {owner} no longer writes cx.{row.field}, so the read in '
                     f'{row.site} is not {row.verdict} by anyone')
+        elif row.verdict == 'diagnostic':
+            guard = row.detail[len(DIAGNOSTIC_SITE):]
+            target = next((k for k, f in fns.items() if f.site == guard), None)
+            if target is None:
+                problems.append(f'ledger.txt:{row.line}: no function named {guard}')
+            elif not any(reads_field(fns[target], f) for f in DIAGNOSTIC_FIELDS):
+                problems.append(
+                    f'ledger.txt:{row.line}: {guard} no longer looks at the diagnostics a body raised, '
+                    f'so nothing stops one that read cx.{row.field} on its diagnostic path from being '
+                    f'admitted')
         elif row.verdict == 'uncovered' and row.detail.startswith('compensated-by='):
             guard = row.detail[len('compensated-by='):]
             target = next((k for k, f in fns.items() if f.site == guard), None)
@@ -618,13 +645,20 @@ pub fn declare(cx: Cx, name: String) -> Cx = {
   let seed = cx.next_id
   let here = owner_off(cx, seed)
   let (cx1, answer) = cx.effect_slot_read(name)
-  alias_shadow(record_span_at(cx1, here), name)
+  let tip = advice(cx1, name)
+  alias_shadow(record_span_at(cx1, here), tip)
 }
+pub fn advice(cx: Cx, name: String) -> String =
+  match map.get(cx.consts, name) { Some(_) -> name, None -> "" }
 pub fn unreached(cx: Cx) -> Int = cx.next_id
 ''',
     'check/scalar_replay': '''
 pub fn candidate(cx: Cx, name: String) -> Option[Int] = {
   if map.has(cx.module_aliases, name) { return None }
+  Some(1)
+}
+pub fn admit(product: Product) -> Option[Int] = {
+  if product.diagnostics != [] { return None }
   Some(1)
 }
 ''',
@@ -638,6 +672,7 @@ check/cx.dawn::effect_slot_read::effects | logged | EffectSlot | the lookup is t
 check/checker.dawn::declare::next_id | product | next_id | the allocator is body-local
 check/cx.dawn::owner_off::owner_lo | scheduler | set-by=check/cx.dawn::owned_by | the coordinate the scheduler set on the way in
 check/cx.dawn::record_span_at::record_ty_spans | invariant | held-by=check/cx.dawn::clear_spans | false for the whole of a body pass
+check/checker.dawn::advice::consts | diagnostic | refused-by=check/scalar_replay.dawn::admit | only the hint text reads it
 '''
 
 
@@ -658,9 +693,9 @@ def self_test():
     # 1. An unjournaled read that nobody has ledgered.
     injected = dict(CONTROL_TREE)
     injected['check/checker'] = CONTROL_TREE['check/checker'].replace(
-        '  alias_shadow(record_span_at(cx1, here), name)\n',
+        '  alias_shadow(record_span_at(cx1, here), tip)\n',
         '  if map.has(cx1.effects, name) { return cx1 }\n'
-        '  alias_shadow(record_span_at(cx1, here), name)\n')
+        '  alias_shadow(record_span_at(cx1, here), tip)\n')
     run(injected, CONTROL_LEDGER, 'injected unjournaled read', 'unledgered read of cx.effects')
 
     # 2. A ledger row with no reason at all.
@@ -707,7 +742,15 @@ pub fn candidate(cx: Cx, name: String) -> Option[Int] = Some(1)
     run(unheld, CONTROL_LEDGER, 'invariant nobody holds',
         'clear_spans no longer writes cx.record_ty_spans')
 
-    # 9. Lexical controls: the test block, the comment and the string literal
+    # 9. A `diagnostic` row whose admission guard stopped declining a body
+    #    whose check raised one.
+    admitting = dict(CONTROL_TREE)
+    admitting['check/scalar_replay'] = CONTROL_TREE['check/scalar_replay'].replace(
+        '  if product.diagnostics != [] { return None }\n', '')
+    run(admitting, CONTROL_LEDGER, 'admission stopped refusing a diagnosed body',
+        'admit no longer looks at the diagnostics a body raised')
+
+    # 10. Lexical controls: the test block, the comment and the string literal
     #    in the control tree all spell cx.module_aliases and none may count.
     _, _, found, _, _ = scan(CONTROL_TREE)
     sites = {site for site, _, _ in found}
@@ -721,7 +764,7 @@ pub fn candidate(cx: Cx, name: String) -> Option[Int] = Some(1)
         for line in failures:
             print('FAIL: ' + line, file=sys.stderr)
         return 1
-    print(f'OK: {len(CONTROL_TREE)}-module control tree, 1 positive and 8 negative controls, '
+    print(f'OK: {len(CONTROL_TREE)}-module control tree, 1 positive and 9 negative controls, '
           f'3 lexical controls')
     return 0
 
@@ -783,7 +826,7 @@ def main():
     print(f'OK: {sites} Cx table read(s) at {len(found)} site(s) reachable from {len(ROOTS)} body entry '
           f'points; {counts["logged"]} logged, {counts["product"]} body-local, {counts["write"]} in their '
           f'own write, {counts["scheduler"]} scheduler coordinates, {counts["invariant"]} invariant, '
-          f'{counts["uncovered"]} uncovered and named')
+          f'{counts["diagnostic"]} diagnostic only, {counts["uncovered"]} uncovered and named')
     return 0
 
 
