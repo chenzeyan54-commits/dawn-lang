@@ -421,16 +421,27 @@ pub type CValue =
 ## declaration and the number changes completely, which is the point;
 ## nothing outside a single program may read it, no golden may compare it
 ## literally, and no artifact may be matched to another build by it.
-## `scripts/selfhost-core-diff.sh` normalises the names away
-## (`NORM`, `s/Adt[0-9]+/AdtN/g`) for that reason rather than for the old one
-## -- the counter it used to be papering over is gone, and whether the
-## normalisation can now be retired is a separate question with its own
-## evidence to gather.
+## `scripts/selfhost-core-diff.sh` used to hash a second, normalised copy of
+## every dump with these names alpha-renamed, to paper over the counter. It
+## does not any more. Measured on 2026-09-14 over six edit classes applied to
+## an early std module and an early compiler module, twelve runs: the set of
+## modules whose exact hash moved and the set whose normalised hash moved were
+## the same set every time, and each time it held only the edited module, so
+## the filter was an identity on the question the golden asks and was deleted.
+## The same twelve runs on a pre-derivation tree moved up to 51 of the 106
+## modules under the exact hash and half as many under the normalised one,
+## which is what the filter used to be for.
 ##
-## The normalisation covers the *names* built here. A bare id also reaches Core
-## as an integer (an effect label's, for one), where no filter can tell it from
-## an ordinary constant, so a golden re-record after an edit that renames or
-## moves a declaration is the expected outcome rather than a signal.
+## Ids also reach Core as bare integers, where no filter could have told them
+## from an ordinary constant. A binder or local is `identity.pack` of the
+## declaration that binds it and its slot inside that declaration, and
+## `ir/lower.densify` renumbers both domains into one run from zero per module,
+## so a dump prints `v0` and `v1` and moves only when its own declaration's
+## slots move. A handler installation is the one packed key printed rather than
+## renumbered: it reaches Core as the prompt literal of `ctl_run` instead of as
+## a symbol. So a golden re-record is the expected outcome of an edit that
+## renames a declaration, or that adds a binder ahead of another inside the
+## same declaration, rather than a signal.
 pub fn ty_key(t: Ty) -> String =
   match t {
     TyInt -> "Int"

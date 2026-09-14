@@ -406,7 +406,8 @@ comptime 那条已关，剩下的一条仍等维护者裁决（明细见语义�
    一整个 name-resolution 阶段，属 `ARC-07/08/09` 那条 HOLD 线。`ARC-02` 的 method 超限现在
    带 `--> path:line:col`，余下的是 std 模块、`<clinit>`、JVM 入口包装与 class 整体超限
    （后者 ASM 不点名 method，只能打文件路径，而**裸文件路径不算源码位置**）；余下部分要给
-   `CFun` 加 origin，那与 `selfhost.norm.sha` 的 identity proof 判据直接冲突，应随 JVM
+   `CFun` 加 origin，那与 Core golden 的 identity proof 判据直接冲突（判据 2026-09-14 起
+   整个落在逐字节的 `selfhost.sha` 上，归一化伴生 golden 已退役），应随 JVM
    调试信息行号表一起做。**所以这两项不该继续挂在「小刀」队列里等人再推一次。**
 3. **把 `SEM-04` 留给维护者裁决：** Cursor 是携带 owner 的值还是 generative identity，以及
    不同 owner 的 Eq/Ord 是否拒绝；裁决前只保留静态候选，不写 workaround。

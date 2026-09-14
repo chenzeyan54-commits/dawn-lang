@@ -37,10 +37,6 @@
 #                        here -- without carrying 7MB in the repository.
 #                        Regenerate locally to see the content. Exact: it moves
 #                        for anything at all, noise included.
-#   golden/selfhost.norm.sha
-#                        the same, with the compiler's own noise filtered out
-#                        (see NORM below). Equality preserves string contents
-#                        and generated-name identity relationships.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
@@ -49,18 +45,17 @@ golden="$ROOT/scripts/core-golden"
 mode=check
 [ "${1:-}" = "--record" ] && mode=record
 
-# ## The noise filter -- one definition, both readers
+# ## There is no noise filter any more
 #
-# `selfhost.sha` is exact. `selfhost.norm.sha` filters only generated-name IDs.
-# Type inference and ADT declarations share a counter, so unrelated additions
-# can renumber generated names such as structeq$Adt307. Normalize whole modules
-# in both readers, retaining the relationship between definitions and uses.
-# Whole-line substitution erased user strings, and erasing every ID to AdtN
-# also erased distinctions between generated entities. Strings now stay exact,
-# including panic sites; generated-name IDs are consistently alpha-renamed.
-# Trait IDs stay exact until Core carries their stable identities.
-NORM="$ROOT/scripts/core-normalize.py"
-python3 scripts/core-normalize.py --self-test
+# `selfhost.sha` is the only golden of the compiler's Core, and it is exact. A
+# companion `selfhost.norm.sha` used to hold the same hashes with generated
+# `$Adt<N>` names alpha-renamed, because type inference and ADT declarations
+# shared one counter and an unrelated addition anywhere renumbered generated
+# names everywhere. That counter is gone: nominal and trait ids are derived
+# from the declaration, and binder and local ids are packed keys densified per
+# module during lowering, so a generated name in a module nobody touched is
+# the same string in the next revision. The note beside `ty_key` in
+# `selfhost/src/ir/core.dawn` says what the number is and is not.
 
 # Programs chosen for coverage, not size: calc has closures, `?` and list
 # work; traits has dictionaries with both slot kinds and a derived Ord; eqhash
@@ -117,8 +112,8 @@ for p in "${PROGS[@]}"; do cp "$OUT/$p/$p.core" "$OUT/flat/"; done
 
 # the compiler itself: hashes only.
 #
-# `selfhost` here is relative, and must stay relative: NORM keeps the *path* in
-# a baked panic site (see above) and the driver bakes whatever path it was
+# `selfhost` here is relative, and must stay relative: a panic site bakes the
+# *path* it was compiled from, and the driver bakes whatever path it was
 # handed. Measured 2026-08-04 -- `__lower --dump D /abs/path/to/selfhost` puts
 #
 #   str "unwrapped None at /home/dawn/workspace/dawn-lang/selfhost/src/main.dawn:164"
@@ -135,20 +130,12 @@ if ! grep -q ', 0 failed' "$OUT/self.log"; then
   exit 1
 fi
 ( cd "$OUT/self" && sha256sum ./*.core | sort -k2 ) > "$OUT/selfhost.sha"
-# The same hashes with generated-name IDs normalized, but all strings exact.
-norm_sha() {
-  ( cd "$1" && for f in ./*.core; do
-      printf '%s  %s\n' "$(python3 "$NORM" < "$f" | sha256sum | cut -d' ' -f1)" "$f"
-    done | sort -k2 )
-}
-norm_sha "$OUT/self" > "$OUT/selfhost.norm.sha"
 
 if [ "$mode" = record ]; then
   rm -rf "$golden"
   mkdir -p "$golden"
   cp "$OUT/flat"/*.core "$golden/"
   cp "$OUT/selfhost.sha" "$golden/"
-  cp "$OUT/selfhost.norm.sha" "$golden/"
   echo "recorded $(ls "$golden"/*.core | wc -l | tr -d ' ') dumps + $(wc -l < "$golden/selfhost.sha" | tr -d ' ') module hashes"
   exit 0
 fi
@@ -160,18 +147,10 @@ fi
 
 fail=0
 if ! diff -ru "$golden" "$OUT/flat" -x 'selfhost*.sha' > "$OUT/d.txt"; then
-  # Whole modules are required: normalizing just changed lines can miss a
-  # changed reference to a definition on an unchanged line.
-  if python3 "$NORM" --equal "$golden" "$OUT/flat"; then
-    echo "Core IR changed, but only in generated ADT ids -- no other content differs:"
-    grep -E '^[+-]' "$OUT/d.txt" | grep -Ev '^(\+\+\+|---)' | head -6
-    echo "  (re-record with --record; see the note in this script)"
-  else
-    echo "Core IR changed:"
-    head -80 "$OUT/d.txt"
-    n=$(wc -l < "$OUT/d.txt" | tr -d ' ')
-    [ "$n" -gt 80 ] && echo "... ($n diff lines total)"
-  fi
+  echo "Core IR changed:"
+  head -80 "$OUT/d.txt"
+  n=$(wc -l < "$OUT/d.txt" | tr -d ' ')
+  [ "$n" -gt 80 ] && echo "... ($n diff lines total)"
   fail=1
 fi
 
@@ -179,39 +158,9 @@ if ! diff -u "$golden/selfhost.sha" "$OUT/selfhost.sha" > "$OUT/s.txt"; then
   echo
   moved=$(grep -E '^[+-][0-9a-f]{64} ' "$OUT/s.txt" \
     | sed -E 's|^.*  \./(.*)\.core$|\1|' | sort -u)
-  # split them: a module whose normalised hash also moved really changed
-  drifted=""
-  changed=""
-  for m in $moved; do
-    if [ -f "$golden/selfhost.norm.sha" ] && \
-       diff -q <(grep " \./$m\.core\$" "$golden/selfhost.norm.sha") \
-               <(grep " \./$m\.core\$" "$OUT/selfhost.norm.sha") > /dev/null 2>&1; then
-      drifted="$drifted $m"
-    else
-      changed="$changed $m"
-    fi
-  done
-  if [ -n "$changed" ]; then
-    echo "Core IR of the compiler changed in these modules:"
-    for m in $changed; do echo "  $m"; done
-  fi
-  if [ -n "$drifted" ]; then
-    echo "Only generated ADT ids shifted in these -- no other content changed:"
-    for m in $drifted; do echo "  $m"; done
-  fi
+  echo "Core IR of the compiler changed in these modules:"
+  for m in $moved; do echo "  $m"; done
   echo "  (rerun with --dump to see the content: bin/dawn __lower --dump <dir> selfhost)"
-  fail=1
-elif ! diff -q "$golden/selfhost.norm.sha" "$OUT/selfhost.norm.sha" > /dev/null; then
-  # The normalised hashes are only *read* when the exact ones moved, so a
-  # golden recorded under a different NORM sits there unnoticed and answers
-  # every future question wrongly -- it would put a really-changed module in
-  # the drifted bucket. They can only disagree while the exact ones agree if
-  # NORM itself changed, so say exactly that. (Proved red 2026-08-04 by the
-  # #143 commit before its re-record: same tree, new filter.)
-  echo
-  echo "selfhost.norm.sha is stale: the exact hashes all agree, so nothing the"
-  echo "  compiler emits moved -- the noise filter (NORM) changed since the"
-  echo "  golden was recorded. Re-record."
   fail=1
 fi
 

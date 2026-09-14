@@ -56,6 +56,10 @@
 > `structeq$AdtNNNNN` 的编号后缀统一偏移 14，零指令变化**。在干净基线上给 `checker.dawn`
 > 追加一个五行空函数得到逐字节相同的漂移，故这不归因于本设计，是 `ARC-09` 共享计数器本身
 > 的性质。`selfhost.norm.sha` 的噪声滤镜正是为分辨这两件事而存在的。
+>
+> **2026-09-14 更新：** 共享计数器本身已经没了（nominal/trait id 由声明派生，binder/local
+> 是打包键并在下降期按模块稠密化），于是滤镜连同 `selfhost.norm.sha` 一起退役；今天
+> `selfhost.sha` 逐字节即可，说明见 `selfhost/src/ir/core.dawn` 中 `ty_key` 旁的注释。
 
 ## ARC-02 — P1 — JVM classfile 硬边界变成无源码位置的内部异常
 
@@ -91,11 +95,14 @@
 > 再往下就没有了，指向其中任何一个声明都是猜。本项因此仍是 partial。
 >
 > **原建议里「lowered function 保留 source origin」（给 `CFun` 加 origin）已判为不做，且不是
-> 成本问题而是冲突问题：** `scripts/core-golden/selfhost.norm.sha` 存在的全部意义是「纯代码
-> 移动时它一个字节都不动」，那是重构声称「只搬代码没改语义」时唯一可信的证据。今天全仓
-> Core dump 里只有 3 处行号字面量（`e!` 展开的 panic 消息烘进去的字符串常量），脚本为这 3 处
-> 专门写了一条正则滤镜并附了长篇说明。给 Core 节点普遍加行号就是把 3 处扩散到每个节点，滤镜
-> 要么救不了、要么等于把 span 全滤掉。`native-backend-plan.md` 已有裁决：**保持 Core 无 span
+> 成本问题而是冲突问题：** Core golden 存在的全部意义是「纯代码移动时它一个字节都不动」，
+> 那是重构声称「只搬代码没改语义」时唯一可信的证据。今天全仓 Core dump 里只有 3 处行号
+> 字面量（`e!` 展开的 panic 消息烘进去的字符串常量），代价因此是有界的。给 Core 节点普遍
+> 加行号就是把 3 处扩散到每个节点，那条判据就不成立了。（**2026-09-14 更新：** 这条判据
+> 原本挂在归一化伴生 golden `selfhost.norm.sha` 上，它已退役，判据现在整个落在逐字节的
+> `selfhost.sha` 上，只会更严。那 3 处行号字面量从来不在归一化的覆盖范围里：
+> `core-normalize.py` 只 alpha-rename `$Adt<N>`，它的 self-test 明确要求行号位移必须可见。）
+> `native-backend-plan.md` 已有裁决：**保持 Core 无 span
 > 是有意的**，等真正做调试信息行号表时再一次性加。所以那件事属于「JVM LineNumberTable」的
 > 独立项，不该塞进本条。
 >

@@ -331,7 +331,7 @@ benign mutant `slab-drops-the-redundant-tail-clamp` 单独记下，它只去掉�
    本地 measurement 工具，不把不稳定 wall/RSS 阈值塞进共享 CI。
 5. `python3 scripts/gen-rtsrc.py` 重生 `selfhost/src/embed/rtsrc.dawn`；runtime 文本进入 native
    driver，不能只改磁盘版。
-6. 重录 `scripts/core-golden/selfhost.sha` 与 `.norm.sha` 中 `embed.rtsrc` 的 hash；按实际
+6. 重录 `scripts/core-golden/selfhost.sha` 中 `embed.rtsrc` 的 hash；按实际
    differential 结果在提交正文逐条写合法 `Emit-Change(...)`，不得预写豁免。
 
 完整验证包括 `scripts/rc-contract/run.sh`、新增 benchmark 的
