@@ -11,6 +11,7 @@ use compiler/check/types.{Sig, Sym, Ty, eff_labels, sig_abi_eff}
 use compiler/front/token.{Diag}
 use compiler/check/checker.{headers_for_body_probe, headers_with_impls_for_body_probe, check_fn, check_fn_body, check_param_default, default_sig, check_fn_inferred, check_fn_inferred_body, check_test, check_const_init, check_module, check_module_headers, exports_of, ModuleBodies, assemble_module_bodies, impl_body_key, check_trait_default, strip_param_defaults}
 use compiler/check/function_product
+use compiler/check/callee_index
 use compiler/check/relocate
 use compiler/check/relocate_tree
 use compiler/check/relocate_header
@@ -31,8 +32,8 @@ use compiler/front/ast.{Module, FnDecl, module_fns, module_tests}
 ## is an equivalence oracle for the index on real header shapes.
 pub fn checked_callee(cx: Cx, owner: Option[String], name: String, builtin: Bool,
   tr: Option[Int]) -> Option[Sig] = {
-  let indexed = relocate_tree.callee_signature(relocate_tree.callee_index(cx), cx, owner, name, builtin, tr)
-  let scanned = relocate_tree.scanned_callee_signature(cx, owner, name, builtin, tr)
+  let indexed = callee_index.signature(callee_index.of(cx), cx, owner, name, builtin, tr)
+  let scanned = callee_index.scanned_signature(cx, owner, name, builtin, tr)
   if indexed != scanned { panic("callee index disagrees with the linear scan: " ++ name) }
   indexed
 }

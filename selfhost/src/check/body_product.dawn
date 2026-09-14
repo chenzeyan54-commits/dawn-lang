@@ -11,6 +11,7 @@ use check/types.{Sig, Sym, Ty, Eff, CtorI, FieldI, EffectI, AWorld, TyInt, TyUni
 use check/tast.{TFun, TConst, XUnit, XLocal, XInt, XCallBuiltin}
 use front/token.{Diag, DiagOwner}
 use front/ast.{TypeRef, TNamed}
+use check/evidence_spelling
 use check/relocate
 use check/relocate.{Ids}
 use check/semantic_reads
@@ -258,7 +259,7 @@ fn projected_changes[K, V, L, W](writes: List[Change[K, V]], key: fn(K) -> Optio
 ## A symbol's declaring span is an offset from the declaration that minted it,
 ## the same currency the tree that reads the symbol is in, so only its
 ## identity moves here.
-fn projected_symbol(v: View, s: Sym) -> Option[Sym] = relocate.checked_symbol(v.ids, s)
+fn projected_symbol(v: View, s: Sym) -> Option[Sym] = evidence_spelling.checked_symbol(s)
 
 fn projected_frame(v: View, f: Frame) -> Option[Frame] = {
   if len(f.lambda_stack) != 0 || len(f.loop_stack) != 0 { return None }
@@ -268,7 +269,7 @@ fn projected_frame(v: View, f: Frame) -> Option[Frame] = {
     for (name, id) in map.entries(scope) {
       let old = map.get(v.symbols, id)?
       if old.name != name { return None }
-      let symbol = relocate.checked_symbol(v.ids, old)?
+      let symbol = evidence_spelling.checked_symbol(old)?
       if map.has(next, symbol.name) { return None }
       next = map.insert(next, symbol.name, id)
     }

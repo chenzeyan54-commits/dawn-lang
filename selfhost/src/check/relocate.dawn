@@ -8,11 +8,11 @@
 # same integers in the candidate revision, whatever else the file gained or
 # lost, so there is no table to record and no interval to shift.
 #
-# What survives is the half of this module that was never a mapping: reading
-# an evidence key's band back out of the key, and refusing a recorded symbol
-# whose compiler-owned spelling does not match the key it carries. Both are
-# admission questions rather than translations, and both are answered from
-# the value in hand.
+# The half of this module that was never a mapping -- reading an evidence
+# key's band back out of the key, and refusing a recorded symbol whose
+# compiler-owned spelling does not match it -- is `check/evidence_spelling`
+# now. It is an admission question rather than a translation, and it answers
+# from the value in hand.
 #
 # The ABI permutation went the same way as the tables. An evidence row is
 # sorted by effect id (`types.by_id`), an effect id derives from its
@@ -23,16 +23,7 @@
 # refusal of two signatures whose ABI rows do not correspond, and that
 # question is now asked directly by comparing `types.nev` with the number of
 # operands in hand.
-use std/map
-use std/str
-use check/types.{
-  Ty, Sym, Eff, TyInt, TyUnit, TyVar, TyAdt, TyFn,
-  EffVar, EffAssoc,
-  label_key, var_key, assoc_key, key_is_label, key_is_variable,
-  key_effect_id, key_var_id, key_trait_id,
-  ev_label_name, ev_assoc_name, ev_var_name,
-  EvidenceRole, LabelSlot, VariableSlot, AssociatedSlot
-}
+use check/types.{Ty, Eff, TyInt, TyVar, TyAdt, TyFn, EffVar, EffAssoc, var_key}
 use check/tast.{WitRef, WForward, WConcrete, WApply}
 
 ## A relocation carries nothing: one constructor and no fields. The type is
@@ -57,104 +48,6 @@ pub fn witness(ids: Ids, w: WitRef) -> Option[WitRef] = Some(w)
 ## An evidence key names an effect, a trait or an effect variable, and none of
 ## the three moves.
 pub fn evidence_key(ids: Ids, key: Int) -> Option[Int] = Some(key)
-
-## What a compiler-owned evidence symbol is evidence *of*, recovered from the
-## key it carries and the name it was given, and refused when the two
-## disagree. The two are independent records of the same fact -- the key is
-## the erased runtime lookup, the name is the semantic origin -- so a
-## recorded symbol that fails this is a product this compiler did not write.
-pub fn symbol_evidence_role(owner: Ids, s: Sym) -> Option[EvidenceRole] = {
-  let key = s.ev_of?
-  let _ = evidence_name(s.name, key)?
-  if key_is_label(key) { return Some(LabelSlot(key_effect_id(key))) }
-  if key_is_variable(key) { return Some(VariableSlot(key_var_id(key))) }
-  let tr = key_trait_id(key)
-  let subject = assoc_subject(s.name, tr)?
-  let (tv, member) = subject
-  Some(AssociatedSlot(tv, tr, member))
-}
-
-## A recorded symbol, checked rather than rewritten. An ordinary binding
-## passes on sight; a compiler-owned evidence binding has to spell the key it
-## carries, because an unrecognized generated name is one this compiler has
-## no account of.
-pub fn checked_symbol(owner: Ids, s: Sym) -> Option[Sym] =
-  match s.ev_of {
-    None -> Some(s)
-    Some(key) -> {
-      let _ = evidence_name(s.name, key)?
-      Some(s)
-    }
-  }
-
-## The evidence spellings, read back. Associated keys encode only the trait,
-## so the type variable and the member come out of the name; the other two
-## bands are the key itself.
-fn evidence_name(name: String, key: Int) -> Option[String] = {
-  if key_is_label(key) {
-    let prefix = ev_label_name(key_effect_id(key), "")
-    if not str.starts_with(name, prefix) || str.len(name) == str.len(prefix) { return None }
-    return Some(name)
-  }
-  if key_is_variable(key) {
-    if name != ev_var_name(key_var_id(key)) { return None }
-    return Some(name)
-  }
-  let _ = assoc_subject(name, key_trait_id(key))?
-  Some(name)
-}
-
-## `ev$a$<tvar>$<trait>$<member>`, split at the trait this key names. The
-## type variable is whatever sits where the spelling puts it, and the name
-## has to agree with the key about the trait or there is nothing to split on.
-fn assoc_subject(name: String, tr: Int) -> Option[(Int, String)] = {
-  let body = str.strip_prefix(name, ev_assoc_name_head())?
-  let (subject, tail) = str.split_once(body, "\$")?
-  let tv = parse_int(subject)?
-  let member = str.strip_prefix(tail, to_string(tr) ++ "\$")?
-  # the spelling has to be exactly the one this key and this subject produce,
-  # so that nothing is recovered from a name the compiler did not mint
-  if member == "" || ev_assoc_name(tv, tr, member) != name { return None }
-  Some((tv, member))
-}
-
-## The fixed part of that spelling, taken off `ev_assoc_name` rather than
-## written out again: `ev_assoc_name(0, 0, "")` is the head followed by the
-## two zeroes and their separators.
-fn ev_assoc_name_head() -> String = {
-  let sample = ev_assoc_name(0, 0, "")
-  str.slice(sample, 0, str.len(sample) - 4)
-}
-
-test "relocation reads an evidence symbol's band out of the key it carries" {
-  let ids = new()
-  let base = Sym { name: ev_var_name(7), ty: TyUnit, mutable: false, dlo: 0, dhi: 1,
-    dict_of: None, ev_of: Some(var_key(7)), cell_of: None }
-  let labelled = Sym { ..base, name: ev_label_name(5, "Ask"), ev_of: Some(label_key(5)) }
-  let associated = Sym { ..base, name: ev_assoc_name(2, 3, "E"), ev_of: Some(assoc_key(3)) }
-  # Each of the three bands is read out of the key, and the name beside it is
-  # an independent record of the same fact.
-  assert symbol_evidence_role(ids, base) == Some(VariableSlot(7))
-  assert symbol_evidence_role(ids, labelled) == Some(LabelSlot(5))
-  assert symbol_evidence_role(ids, associated) == Some(AssociatedSlot(2, 3, "E"))
-  # A name that does not spell the key it carries is a product this compiler
-  # did not write, in every band.
-  assert symbol_evidence_role(ids, Sym { ..base, name: ev_var_name(8) }) == None
-  assert symbol_evidence_role(ids, Sym { ..labelled, name: ev_label_name(6, "Ask") }) == None
-  assert symbol_evidence_role(ids, Sym { ..labelled, name: ev_label_name(5, "") }) == None
-  assert symbol_evidence_role(ids, Sym { ..associated, name: ev_assoc_name(2, 4, "E") }) == None
-  assert symbol_evidence_role(ids, Sym { ..associated, name: ev_assoc_name(2, 3, "") }) == None
-  assert symbol_evidence_role(ids, Sym { ..base, ev_of: None }) == None
-  # `checked_symbol` asks the same question of the whole record: an ordinary
-  # binding passes on sight, a mis-spelled evidence one does not.
-  let ordinary = Sym { ..base, name: "x", ev_of: None }
-  assert checked_symbol(ids, ordinary) == Some(ordinary)
-  assert checked_symbol(ids, base) == Some(base)
-  assert checked_symbol(ids, labelled) == Some(labelled)
-  assert checked_symbol(ids, associated) == Some(associated)
-  assert checked_symbol(ids, Sym { ..base, name: "unrecognized" }) == None
-  assert checked_symbol(ids, Sym { ..associated, name: ev_assoc_name(2, 4, "E") }) == None
-}
 
 test "relocation carries every reference domain it is handed" {
   let ids = new()

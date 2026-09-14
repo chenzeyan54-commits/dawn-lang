@@ -23,6 +23,7 @@ use check/write_journal.{SymbolKey}
 use check/source_projection
 use check/source_snapshot
 use check/source_snapshot.{Snapshot}
+use check/callee_index
 use check/relocate_tree
 use check/relocate_tree.{View}
 use check/semantic_reads.{AssignableType}
@@ -47,7 +48,7 @@ type AdmittedData = { scope: ModuleKey, ready: Option[Ready] }
 pub opaque type Admitted = AdmittedData
 
 type Prepared = { scope: ModuleKey, ready: Ready, headers: Ids,
-  candidates: Map[Int, (DeclKey, Int)], callees: relocate_tree.CalleeIndex,
+  candidates: Map[Int, (DeclKey, Int)], callees: callee_index.CalleeIndex,
   old_tokens: source_projection.Tokens, tokens: source_projection.Tokens }
 
 fn primitive(t: Ty) -> Bool = match t {
@@ -216,7 +217,7 @@ fn prepare(admitted: AdmittedData, next: ModuleHeaders, source: Snapshot) -> Opt
   # It is built from the header revision's `cx`, which is the revision these
   # products are relocated onto.
   Some(Prepared { scope: scope, ready: settled, headers: headers, candidates: candidates,
-    callees: relocate_tree.callee_index(next.cx),
+    callees: callee_index.of(next.cx),
     old_tokens: source_snapshot.tokens(settled.source), tokens: source_snapshot.tokens(source) })
 }
 
@@ -363,8 +364,8 @@ test "scalar replay moves unchanged bodies through the current scheduler" {
   let prepared = prepare(admitted, next, next_snapshot).expect("prepared candidate")
   let no_trait: Option[Int] = None
   for (_, declared) in map.entries(next.cx.fns) {
-    assert relocate_tree.callee_signature(prepared.callees, next.cx, declared.owner, declared.name, false, no_trait) ==
-      relocate_tree.scanned_callee_signature(next.cx, declared.owner, declared.name, false, no_trait)
+    assert callee_index.signature(prepared.callees, next.cx, declared.owner, declared.name, false, no_trait) ==
+      callee_index.scanned_signature(next.cx, declared.owner, declared.name, false, no_trait)
   }
   let actual = replay(admit(scope, old, old_snapshot, saved), next, next_snapshot)
   let expected = checker.check_module_body_products(next)

@@ -72,10 +72,12 @@ def main():
             ("evidence-arity", "if nev(sig_abi_eff(f.sig)) != len(f.ev_syms) { return None }",
              "if false { return None }"),
         ]),
-        ("relocate_tree", "tree callee lookup preserves declaring owners across module aliases", [
+        ("callee_index", "callee lookup preserves declaring owners across module aliases", [
             # The production lookup is the index, so these three mutate the
             # index. The linear scan they used to mutate is now only the
-            # oracle `callee_answers_agree` compares against.
+            # oracle `callee_answers_agree` compares against. The module moved
+            # out of the tree visitor in K7: finding a callee is a lookup, not
+            # a translation.
             ("callee-owner", "let key = (sig.owner, sig.name)",
              "let key: (Option[String], String) = (None, sig.name)"),
             ("callee-module-alias", "for (_, sig) in map.entries(cx.module_fn_sigs) { by_key = index_signature(by_key, sig) }", ""),

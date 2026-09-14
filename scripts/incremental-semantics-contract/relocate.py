@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Prove semantic-domain relocation with compiling mutations of its real code.
+"""Prove evidence-symbol spelling with compiling mutations of its real code.
 
-Only the mapper changes in each private subject. Every negative must reach a
+Only the reader changes in each private subject. Every negative must reach a
 named assertion; a seed, syntax, linking or runtime capability failure is not
-evidence that missing references and namespace mixups are caught.
+evidence that a mis-spelled generated name is caught.
+
+The file keeps its old name because `.github/workflows/gates.yml` names it;
+its subject moved to `check/evidence_spelling` in K7.
 """
 import re
 import shutil
@@ -15,25 +18,26 @@ from cold import ROOT, edit, run
 
 
 def owning_assertion(output):
-    return bool(re.search(r"^FAIL\s+check/relocate :: relocation [^\n]*\n\s+assertion failed:", output, re.M))
+    return bool(re.search(r"^FAIL\s+check/evidence_spelling :: evidence spelling [^\n]*\n\s+assertion failed:", output, re.M))
 
 
 def main():
     started = time.monotonic()
-    assert owning_assertion("FAIL  check/relocate :: relocation control\n  assertion failed: expected\n")
-    assert not owning_assertion("FAIL  check/relocate :: relocation control\n  NoSuchMethodError\n")
-    assert not owning_assertion("FAIL  elsewhere :: relocation control\n  assertion failed: expected\n")
-    original = (ROOT / "selfhost/src/check/relocate.dawn").read_text()
+    assert owning_assertion("FAIL  check/evidence_spelling :: evidence spelling control\n  assertion failed: expected\n")
+    assert not owning_assertion("FAIL  check/evidence_spelling :: evidence spelling control\n  NoSuchMethodError\n")
+    assert not owning_assertion("FAIL  elsewhere :: evidence spelling control\n  assertion failed: expected\n")
+    original = (ROOT / "selfhost/src/check/evidence_spelling.dawn").read_text()
     variants = [
-        # What is left of this module is one question it answers from the
-        # value in hand, and the controls follow it. A binder does not move
-        # between revisions any more -- it is `identity.pack` of its
-        # declaration and its slot -- so the tables, the intervals and every
-        # control that turned one of them off went with the production code
-        # they mutated (K5). The ABI permutation followed in K6: a row is
-        # ordered by effect id and an id derives from its declaration, so the
-        # permutation could only be the identity, and the refusal it carried
-        # is a width comparison in `check/relocate_tree` now.
+        # This is one question answered from the value in hand, and the
+        # controls follow it. A binder does not move between revisions any
+        # more -- it is `identity.pack` of its declaration and its slot -- so
+        # the tables, the intervals and every control that turned one of them
+        # off went with the production code they mutated (K5). The ABI
+        # permutation followed in K6: a row is ordered by effect id and an id
+        # derives from its declaration, so the permutation could only be the
+        # identity, and the refusal it carried is a width comparison in the
+        # tree visitor now. K7 moved what is left out of `check/relocate`,
+        # which was never a mapping, into `check/evidence_spelling`.
         #
         # The question: which band is this evidence key in, and does the name
         # beside it spell the same thing. Each band is read back by arithmetic
@@ -60,17 +64,17 @@ def main():
             shutil.copytree(ROOT / directory, root / directory,
                             ignore=shutil.ignore_patterns("build", ".dawn"))
         (root / "packages").symlink_to(ROOT / "packages", target_is_directory=True)
-        target = root / "selfhost/src/check/relocate.dawn"
+        target = root / "selfhost/src/check/evidence_spelling.dawn"
         for name, source in subjects:
             target.write_text(source)
             status, output = run("test", target)
             if name == "positive":
                 if status:
-                    raise RuntimeError("Positive relocation subject failed\n" + output)
+                    raise RuntimeError("Positive evidence spelling subject failed\n" + output)
             elif not status or not owning_assertion(output):
                 raise RuntimeError(name + " did not reach its owning assertion\n" + output)
-            print("OK: typed relocation " + name, flush=True)
-    print(f"OK: typed relocation and {len(variants)} compiling mutants, {time.monotonic() - started:.2f}s")
+            print("OK: evidence spelling " + name, flush=True)
+    print(f"OK: evidence spelling and {len(variants)} compiling mutants, {time.monotonic() - started:.2f}s")
 
 
 if __name__ == "__main__":
