@@ -247,14 +247,24 @@
 > 可每轮只完成一项，P 项 pending 最坏 O(P²) 次 ready 判定）。原文建议的 indegree
 > queue/SCC 一次调度没做，本项因此不是 fixed。
 
-## ARC-09 — P2 — 一个全局 `next_id` 混合稳定身份与临时身份
+## ARC-09 — P2 — 一个全局 `next_id` 混合稳定身份与临时身份（已修）
 
 <!-- audit-anchor: present selfhost/src/check/cx.dawn | next_id: Int -->
 
-> **后续处置（2026-08-09）：open/HOLD。** 既有裁决不在尚无 incremental cache contract 时
-> 为“更稳定的 golden”重排全部 ID；这会制造大面积无语义产物变化，却没有消费者能验证收益。
-> 重开条件是增量检查、跨 expression cache 或持久 symbol identity 先提出稳定 key 契约；条件
-> 未满足前不进入自治 TODO。
+> **已修（2026-09-14，增量语义引擎 K4 + K5）。** 重开条件（「增量检查、跨 expression cache
+> 或持久 symbol identity 先提出稳定 key 契约」）由增量语义引擎满足，两刀按这条建议拆了
+> 计数器：nominal 与 trait 的整数改由声明派生（`check/identity.derive`），类型变量、
+> 效果变量和本地分配改成「声明号 + 槽位」的打包键（`check/identity.pack`），
+> `Cx.next_id` 与它的跨模块 carry 一并删除。下降期新增一趟重编号
+> （`ir/lower.densify`）把两个域摊回模块级小整数，所以 C 的 `v<id>` 仍是小数字。
+>
+> 当年判不做的三条理由逐条答复：① 「会重命名语言里每一个生成符号，是比它去掉的噪声
+> 更大的 Emit-Change」——实测不是：九个固定语料的 class 文件逐字节相同，唯一改的字节
+> 是 `with handle` 安装号作为 `ctl_run` 的 prompt 字面量，只影响装 handler 的程序，
+> 一条 `Emit-Change(emit selfhost)` 具名申报；② 「会毁掉 flat dump 那半边唯一完好的
+> 证明」——Core golden 17 个 dump 只动了一个，正是那个 prompt 字面量；③ 「今天没有增量
+> 编译，收益是空的」——收益已经兑现：body product 不再带取号区间，装配不再要求
+> 计数器坐标对齐（`check/body_product.assemble` 原前置条件删除）。
 
 - **证据：S。** `Cx.next_id` 同时分配 type var、ADT、effect、trait、local symbol：`selfhost/src/check/cx.dawn:87`、`:313`，以及 `selfhost/src/check/passes.dawn:44`、`:633`、`:1003`、`:1112`、`selfhost/src/check/checker.dawn:109`。
 - 计数器跨模块传递：`selfhost/src/driver/analyze.dawn:1023`、`:1044`、`:1065`；ID 又进入 type key 与 generated symbol：`selfhost/src/ir/core.dawn:349`、`selfhost/src/ir/lower.dawn:735`、`selfhost/src/c/emitc.dawn:1160`。

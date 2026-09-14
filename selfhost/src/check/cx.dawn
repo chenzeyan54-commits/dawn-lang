@@ -665,7 +665,11 @@ pub fn slots_of(cx: Cx, declaration: Int) -> Int =
 ## comparable -- a body that bound nothing must leave the table the cold path
 ## would have left.
 pub fn with_slots(cx: Cx, declaration: Int, slots: Int) -> Cx =
-  if slots == 0 { cx } else { Cx { ..cx, decl_slots: map.insert(cx.decl_slots, declaration, slots) } }
+  Cx { ..cx, decl_slots: installed_slots(cx, declaration, slots) }
+
+## The table itself, for the one caller that spells the whole record update.
+pub fn installed_slots(cx: Cx, declaration: Int, slots: Int) -> Map[Int, Int] =
+  if slots == 0 { cx.decl_slots } else { map.insert(cx.decl_slots, declaration, slots) }
 
 ## One binding of the declaration this context is inside.
 ##

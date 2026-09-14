@@ -159,8 +159,11 @@ check/cx.dawn::dictionary_symbol_read::frame | logged | DictionarySymbol | the a
 check/cx.dawn::eff_witness_at::frame | product | frame | body_product.assemble reinstalls cx.frame from the product, so this is body-local state and not a question about the module environment
 check/cx.dawn::effect_candidates_read::effects | logged | EffectCandidates | the answer is recorded as EffectCandidates, so admission can re-ask it on the candidate revision or refuse
 check/cx.dawn::effect_of::effect_infos | uncovered | backlog | reached with a fact from declared_effect_info_read and without one from label_eff, so the table is read on a path that records nothing
-check/cx.dawn::fresh::next_id | product | next_id | body_product.assemble reinstalls cx.next_id from the product, so this is body-local state and not a question about the module environment
-check/cx.dawn::fresh::next_id | write |  | the old value of cx.next_id inside its own Cx update; writer ownership is scripts/incremental-semantics-contract/journal-coverage.py's inventory
+check/cx.dawn::fresh::decl_slots | write |  | the old table inside its own Cx update; writer ownership is scripts/incremental-semantics-contract/journal-coverage.py's inventory
+check/cx.dawn::fresh::owner_decl | uncovered | backlog | which declaration the scheduler entered, which is what the identifier being minted is numbered inside; it is the product's own key rather than a table the candidate revision answers, so there is nothing to compare against, and body_product.capture refuses a transition that changed it
+check/cx.dawn::fresh::owner_lo | uncovered | backlog | where that declaration starts, read only to place the diagnostic for a declaration that binds more names than a slot can hold; the same read `owner_off` makes, and the same reason it has no candidate-revision answer
+check/cx.dawn::slot_of::decl_slots | product | decl_slots | the row `fresh` writes, read back to find the next slot; body_product.assemble puts that row back from the product
+check/cx.dawn::slot_of::owner_decl | uncovered | backlog | the same field `fresh` reads, for the same reason
 check/cx.dawn::function_return_display_read::adts | logged | RenderedFunctionReturn | the answer is recorded as RenderedFunctionReturn, so admission can re-ask it on the candidate revision or refuse
 check/cx.dawn::implementation_arity_read::impl_table | logged | ImplementationArity | the answer is recorded as ImplementationArity, so admission can re-ask it on the candidate revision or refuse
 check/cx.dawn::implementation_presence_read::impl_table | logged | ImplementationPresence | the answer is recorded as ImplementationPresence, so admission can re-ask it on the candidate revision or refuse

@@ -6,7 +6,7 @@
 use std/map
 use std/list
 use std/set
-use check/cx.{Cx, Frame, cx_new, slot_of, slots_of, with_slots, write_symbol, write_signature, write_alias, write_bounds}
+use check/cx.{Cx, Frame, cx_new, slot_of, slots_of, installed_slots, with_slots, write_symbol, write_signature, write_alias, write_bounds}
 use check/types.{Sig, Sym, Ty, Eff, CtorI, FieldI, EffectI, AWorld, TyInt, TyUnit, TyVar, TyAdt, TyList, TyAssoc, TyFn, EPure, EffVar, EUnion, ELabeled, BuiltinTypeI, BtStdOnly, BtLeaf}
 use check/tast.{TFun, TConst, XUnit, XLocal, XInt, XCallBuiltin}
 use front/token.{Diag, DiagOwner}
@@ -114,7 +114,8 @@ fn environment_unchanged(a: Cx, b: Cx, tracked: Bool) -> Bool =
   a.is_std_module == b.is_std_module && a.owner_class == b.owner_class &&
   a.mod_path == b.mod_path && a.owner == b.owner && a.owner_lo == b.owner_lo &&
   a.src_path == b.src_path && a.line_starts == b.line_starts && environment_map_same(a.moved, b.moved, tracked) &&
-  environment_map_same(a.module_exports, b.module_exports, tracked) && environment_map_same(a.ty_spans, b.ty_spans, tracked) && a.record_ty_spans == b.record_ty_spans
+  environment_map_same(a.module_exports, b.module_exports, tracked) && environment_map_same(a.ty_spans, b.ty_spans, tracked) && a.record_ty_spans == b.record_ty_spans &&
+  a.owner_decl == b.owner_decl
 
 ## Top-level function/default/method bodies finish their nested frames. This
 ## boundary is not an independently cached expression or suspended lambda.
@@ -170,9 +171,9 @@ fn touched_changes[K: Eq + Hash, V](before: Map[K, V], after: Map[K, V], keys: L
 
 fn capture_with_mode[T](before: Cx, after: Cx, tree: T, tracked: Bool) -> Option[BodyProduct[T]] = {
   # A body mints inside the declaration it was entered for and inside no
-  # other, so a transition that changed which declaration that is, or that
-  # reissued slots it had already handed out, is not one body.
-  if before.owner_decl != after.owner_decl || slot_of(after) < slot_of(before) { return None }
+  # other, so a transition that reissued slots it had already handed out is
+  # not one body. Which declaration it is, is `environment_unchanged`'s.
+  if slot_of(after) < slot_of(before) { return None }
   if not environment_unchanged(before, after, tracked) { return None }
   if len(after.frame.lambda_stack) != 0 || len(after.frame.loop_stack) != 0 { return None }
   if len(after.diags) < len(before.diags) || list.take(after.diags, len(before.diags)) != before.diags { return None }
@@ -225,7 +226,8 @@ fn capture_with_mode[T](before: Cx, after: Cx, tree: T, tracked: Bool) -> Option
 pub fn assemble[T](current: Cx, product: BodyProduct[T]) -> Option[Cx] = {
   if slots_of(current, product.owner_decl) > product.owner_slots { return None }
   Some(Cx {
-    ..with_slots(current, product.owner_decl, product.owner_slots),
+    ..current,
+    decl_slots: installed_slots(current, product.owner_decl, product.owner_slots),
     syms: apply_changes(current.syms, product.symbols),
     fns: apply_changes(current.fns, product.signatures),
     alias_resolved: apply_changes(current.alias_resolved, product.aliases),

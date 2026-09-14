@@ -74,11 +74,10 @@ effect variable 和本地分配（symbol、handler安装）五个引用域。同
 须单射，缺少引用映射返回失败以供冷回退，不能默认为旧 ID。类型递归遍历覆盖所有
 Ty/Eff 构造器，效果集合在映射后按目标 ID 重新规范化。此层暂不启用复用，只为后续 TAST/Cx 迁移提供基础。
 
-**前两个域已经不需要映射了。** nominal 与 trait 的整数不再由计数器发放，而是
+**五个域都不需要映射了。** nominal 与 trait 的整数不再由计数器发放，而是
 `identity.derive(声明)`：模块的 emission owner、声明种类字母和名字拼成一个前缀无歧义的
 串，FNV-1a 64 位后过一遍 murmur3 的终混，取低 47 位落进 `[2^32, 2^32 + 2^47)`。
-它与计数器域（`first_minted_id()` 起的小整数）和 prelude 的保留号两不相交，
-`label_key` 乘三之后仍在 `Int` 内。于是：
+它与 prelude 的保留号不相交，`label_key` 乘三之后仍在 `Int` 内。于是：
 
 - 在一个声明前面插入无关声明**不再平移**它后面的任何 nominal/trait 号，
   消费者引用 provider 的类型或 trait 时两边算出同一个整数，
@@ -86,8 +85,8 @@ Ty/Eff 构造器，效果集合在映射后按目标 ID 重新规范化。此层
 - **摘要不是区分性的证明。** 每次取号都先查 `Cx.identities`（id → 声明）：
   同号不同声明是硬错误，诊断点名两个声明。不做确定性微扰，因为微扰会让一个 id
   取决于本程序恰好还有哪些声明，而这正是这次改动要去掉的性质。
-  这张表随 `next_id` 走同一条 carry（`driver/stdlib`、`driver/analyze`），
-  因为跨模块撞车和模块内撞车一样致命。
+  这张表走 carry（`driver/stdlib`、`driver/analyze`），
+  因为跨模块撞车和模块内撞车一样致命；carry 上已经没有别的取号状态了。
 - 派生输入里**没有** `ModuleKey.world` 和 `ModuleKey.source`：前者冷跑是 `"cold"`、
   会话里是会话名，后者是调用方原样传入、未规范化的文件路径。
   任何一个进去，发射的字节就会取决于是哪一次运行、仓库检出在哪里。
@@ -99,6 +98,39 @@ Ty/Eff 构造器，效果集合在映射后按目标 ID 重新规范化。此层
   标签键全部改写，隐藏 evidence 参数的顺序从「声明序」变成「派生序」（稳定但不可读）。
   唯一泄漏进诊断文本的 id 序是 `checker.sam_snapshot` 里 `ctl` 效果的点名，
   它改为按名字排序（`types.eff_ctl_labels`）。
+
+**后三个域是「声明号 + 槽位」的打包键。** 类型变量、效果变量和本地分配
+（symbol、字典、evidence、handler 安装）的整数是 `identity.pack(声明, 槽位)`：
+声明号就是上面那个派生值，槽位是这个声明第几次取号，14 位，越界是诊断而不是截断。
+`Cx` 上没有计数器了，只有「现在在哪个声明里」（`owner_decl`）和
+「每个声明取到第几号」（`decl_slots`）。于是：
+
+- **一个声明绑定的名字只取决于这个声明本身。** 在 `f` 的 body 里加一个 `let`，
+  `g` 的每一个 `TyVar` id、每一个 `Sym` 键都不动（判词在 `check/checker`：
+  *a declaration numbers its binders and locals inside itself*）。
+  跨修订恒等，所以 `relocate` 的 `type_var`/`effect_var`/`local_id`、
+  `Interval`/`body_interval`/`carries_interval` 全部删除，`allocation.between`
+  只剩一条断言：两版都认领的绑定必须是同一个整数。
+- **产物不再有坐标。** `BodyProduct` 记的是「哪个声明、取到第几号」而不是
+  「从哪号开始、取了几号」，`assemble` 因此不再问当前上下文的计数器停在哪里
+  （`body_product.dawn` 原 `:306` 的前置条件删除）。这是本刀的收益判据。
+- 槽位表跨越两次进入：签名的 binder 在 header pass 取号，body 的局部量在调度器
+  进入同一个声明时**接着**取，不重发槽 0。一个本修订的 span view 叫不出名字的声明
+  （重名，或父声明重名）进入 `unowned`，它绑定的名字落进本模块的
+  **free pool**（`identity.free_pool(owner)`，每模块一个、由模块名派生），
+  仍然互不相同，只是不再对无关编辑稳定。
+  生产路径不往 pool 里取号，判词在 `check/checker` 的同一条 test 里
+  （`not map.has(cx.decl_slots, module_pool(cx))`）。
+- **下降期稠密化**：`ir/lower.densify` 在模块下降完之后，按
+  captures → params → dicts → evs → body 首次出现（与 `ir/coredump.names_of` 同序）
+  把打包键与 lowering 自己的临时号一起摊成从 0 起的模块级连续整数。
+  两个消费者要它：`c/emitc` 把局部量印成 `v<id>`，`jvm/emit` 用同一张模块级表
+  查局部量的类型。lowering 的临时号起点因此不再扫全模块最大键，而是
+  `identity.temporary_floor()`（打包键的上界）。
+- 代价只在 C：每个生成的 C 文件里的 `v<id>`/`p<id>` 全变，`native-fixpoint` 必须重新收敛。
+  **JVM class 文件逐字节不变**：槽位由 `alloc` 的调用顺序决定，
+  `jvm/emit` 里没有任何按 syms 键的迭代或排序，实测九个固定语料全部相同。
+
 handler安装 ID 也来自 fresh，但不一定存在于 syms；不能只从符号表收集本地 ID。
 部分内部调用将 prompt/evidence key 编成 XInt 参数，后续 TAST 迁移必须按内部操作的
 参数语义处理，不能把它们当普通数字原样保留，也不能将用户数字字面量一起改写。
