@@ -28,8 +28,8 @@ SHAPE = 'selfhost/src/check/scalar_shape.dawn'
 def main():
     started = time.monotonic()
     own = [
-        ('disable-replay', '(Pass { ..state, prepared: Some(after) }, product)',
-         '(Pass { ..state, prepared: Some(after) }, None)'),
+        ('disable-replay', '(Pass { ..state, prepared: Some(after) }, verdict)',
+         '(Pass { ..state, prepared: Some(after) }, Unadmitted)'),
         # The shared memo. Its key is the recorded fact, its verdicts are
         # answered once for the whole candidate revision, and none of them
         # crosses into another revision. Each of those three is a separate
@@ -53,7 +53,7 @@ def main():
          'match query_runtime.finish(opened, read, value) {\n        Some(engine) -> (engine, value)',
          'match query_runtime.finish(opened, read, value) {\n        Some(engine) -> (asked.engine, value)'),
         ('memo-not-carried', 'let carried = Prepared { ..prepared, memo: memo }', 'let carried = prepared'),
-        ('memo-not-threaded', '(Pass { ..state, prepared: Some(after) }, product)', '(state, product)'),
+        ('memo-not-threaded', '(Pass { ..state, prepared: Some(after) }, verdict)', '(state, verdict)'),
         # The signature binders. A scoped query is the declaration's own, and
         # what the executor hands in is the context the scheduler entered the
         # declaration with, where nothing is bound yet. Asking it there, or
@@ -114,24 +114,36 @@ def main():
         # sixth goes there when admission refuses, so a category that stops
         # being counted is a category that left the remainder silently.
         ('cold-remainder-function',
-         '        }\n'
-         '        None -> cold.function(cold_pass(stepped), cx, d, sig)',
-         '        }\n        None -> cold.function(stepped, cx, d, sig)'),
+         'Unadmitted -> cold.function(unadmitted(stepped), cx, d, sig)',
+         'Unadmitted -> cold.function(stepped, cx, d, sig)'),
         ('cold-remainder-inferred-body',
-         'inferred_body: (n, cx, d, sig) => cold.inferred_body(cold_pass(n), cx, d, sig),',
+         'inferred_body: (n, cx, d, sig) => cold.inferred_body(unadmitted(n), cx, d, sig),',
          'inferred_body: (n, cx, d, sig) => cold.inferred_body(n, cx, d, sig),'),
         ('cold-remainder-constant',
-         'constant: (n, cx, d, ty, visible) => cold.constant(cold_pass(n), cx, d, ty, visible),',
+         'constant: (n, cx, d, ty, visible) => cold.constant(unadmitted(n), cx, d, ty, visible),',
          'constant: (n, cx, d, ty, visible) => cold.constant(n, cx, d, ty, visible),'),
         ('cold-remainder-method',
-         'method: (n, cx, tr, subject, d, sig) => cold.method(cold_pass(n), cx, tr, subject, d, sig),',
+         'method: (n, cx, tr, subject, d, sig) => cold.method(unadmitted(n), cx, tr, subject, d, sig),',
          'method: (n, cx, tr, subject, d, sig) => cold.method(n, cx, tr, subject, d, sig),'),
         ('cold-remainder-default-body',
-         'default_body: (n, cx, tr, d, sig, body) => cold.default_body(cold_pass(n), cx, tr, d, sig, body),',
+         'default_body: (n, cx, tr, d, sig, body) => cold.default_body(unadmitted(n), cx, tr, d, sig, body),',
          'default_body: (n, cx, tr, d, sig, body) => cold.default_body(n, cx, tr, d, sig, body),'),
         ('cold-remainder-test-body',
-         'test_body: (n, cx, name, body) => cold.test_body(cold_pass(n), cx, name, body)',
+         'test_body: (n, cx, name, body) => cold.test_body(unadmitted(n), cx, name, body)',
          'test_body: (n, cx, name, body) => cold.test_body(n, cx, name, body)'),
+        # The three columns. A claim the candidate revision withdrew is not a
+        # class this producer never claimed, the reused column is not the
+        # absence of the other two, and `checked` is their sum and not one of
+        # them.
+        ('count-rejected-as-unadmitted',
+         'Rejected -> cold.function(rejected(stepped), cx, d, sig)',
+         'Rejected -> cold.function(unadmitted(stepped), cx, d, sig)'),
+        ('count-reused-column',
+         'Some(after) -> (reused(stepped), after, product.tree)',
+         'Some(after) -> (stepped, after, product.tree)'),
+        ('count-checked-sum',
+         'checked: outcome.counts.cold_unadmitted + outcome.counts.cold_rejected,',
+         'checked: outcome.counts.cold_unadmitted,'),
         # Every declaration a revision adds or drops renumbers the
         # declarations after it, so the recorded slice has to be taken at the
         # index the recording gave this declaration and not at the index the

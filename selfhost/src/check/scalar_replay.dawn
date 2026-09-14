@@ -31,8 +31,28 @@ use check/semantic_reads.{AssignableType, FunctionRead, BuiltinTypeAnswer,
 use check/query_runtime
 use front/ast.{FnDecl, DFn}
 
-pub type Replayed = { bodies: ModuleBodies, checked: Int, reused: Int }
-type Counts = { checked: Int, reused: Int }
+## What one replay pass did with the candidate revision's declarations.
+## `checked` is the two cold columns added up and is kept because it is what
+## a caller that only wants "how much was not reused" asks for.
+pub type Replayed = { bodies: ModuleBodies, checked: Int, reused: Int,
+  cold_unadmitted: Int, cold_rejected: Int }
+
+## The three ways a declaration leaves this pass, counted apart because they
+## answer different questions. `reused` came back from the recording.
+## `cold_unadmitted` is a declaration this producer never claimed: one of the
+## five categories it does not implement, or a function whose header, identity
+## or bytes put it outside the class. `cold_rejected` is a claim the candidate
+## revision withdrew: the body was admitted and paired, and then one of the
+## facts it recorded stopped holding. The first cold column measures how
+## narrow the class is, the second how far the environment moved, and only the
+## second is what better validation can shrink. One `checked` could not be
+## read for either.
+type Counts = { reused: Int, cold_unadmitted: Int, cold_rejected: Int }
+
+## Why one declaration was not reused. The product travels with the verdict so
+## that the caller does not have to ask a second time what `candidate` already
+## decided.
+type Verdict = Reused(product: Product) | Unadmitted | Rejected
 
 ## One candidate revision's verdicts on the facts its recorded bodies logged.
 ## The key is the recorded fact itself, because a fact is a query and the
@@ -72,8 +92,16 @@ type Prepared = { scope: ModuleKey, ready: Ready,
 ## refused still leaves its work there for the next one.
 type Pass = { counts: Counts, prepared: Option[Prepared] }
 
-fn cold_pass(state: Pass) -> Pass =
-  Pass { ..state, counts: Counts { ..state.counts, checked: state.counts.checked + 1 } }
+fn zero_counts() -> Counts = Counts { reused: 0, cold_unadmitted: 0, cold_rejected: 0 }
+
+fn reused(state: Pass) -> Pass =
+  Pass { ..state, counts: Counts { ..state.counts, reused: state.counts.reused + 1 } }
+
+fn unadmitted(state: Pass) -> Pass =
+  Pass { ..state, counts: Counts { ..state.counts, cold_unadmitted: state.counts.cold_unadmitted + 1 } }
+
+fn rejected(state: Pass) -> Pass =
+  Pass { ..state, counts: Counts { ..state.counts, cold_rejected: state.counts.cold_rejected + 1 } }
 
 fn primitive(t: Ty) -> Bool = match t {
   TyInt -> true, TyFloat -> true, TyBool -> true, TyUnit -> true, _ -> false
@@ -447,15 +475,15 @@ fn relocation(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[(Prior,
 ## the facts this body asked about are the facts the next body is about to
 ## ask about, and an answer is no less true for having refused the body that
 ## paid for it.
-fn candidate(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> (Prepared, Option[Product]) = {
+fn candidate(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> (Prepared, Verdict) = {
   let (saved, view) = match relocation(prepared, cx, d, sig) {
     Some(pair) -> pair
-    None -> return (prepared, None)
+    None -> return (prepared, Unadmitted)
   }
   let p = saved.product
   let reads = match p.function_reads {
     Some(recorded_reads) -> recorded_reads
-    None -> return (prepared, None)
+    None -> return (prepared, Unadmitted)
   }
   # The recorded log is revalidated where it lies: each fact is walked beside
   # the answer the candidate revision observes, and nothing is rebuilt in
@@ -467,7 +495,7 @@ fn candidate(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> (Prepared, Opti
   for read in reads {
     let (next_memo, verdict) = revalidated(memo, cx, scoped, read)
     memo = next_memo
-    if verdict != Some(true) { return (Prepared { ..prepared, memo: memo }, None) }
+    if verdict != Some(true) { return (Prepared { ..prepared, memo: memo }, Rejected) }
   }
   let carried = Prepared { ..prepared, memo: memo }
   let projected = match cx.function_reads {
@@ -476,11 +504,11 @@ fn candidate(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> (Prepared, Opti
   }
   let moved = match projected {
     Some(product) -> product
-    None -> return (carried, None)
+    None -> return (carried, Rejected)
   }
   # These fields pass through this closed producer unchanged. The old final
   # value is not a write: preserve the corresponding current scheduler state.
-  (carried, Some(BodyProduct { ..moved, in_test: cx.in_test, const_cutoff: cx.const_cutoff,
+  (carried, Reused(BodyProduct { ..moved, in_test: cx.in_test, const_cutoff: cx.const_cutoff,
     loop_jumps: cx.loop_jumps, take_cell: cx.take_cell,
     function_reads: match cx.function_reads { None -> None, Some(_) -> moved.function_reads },
     body_writes: match cx.body_writes { None -> None, Some(_) -> moved.body_writes },
@@ -496,8 +524,11 @@ pub fn replay(admitted: Admitted, next: ModuleHeaders, source: Snapshot) -> Repl
   let valid = next.cx.diags == [] && snapshot_matches(next, source)
   let prepared: Option[Prepared] = if valid { prepare(data, next, source) } else { None }
   let (outcome, bodies) = checker.execute_module_bodies(next,
-    Pass { counts: Counts { checked: 0, reused: 0 }, prepared: prepared }, pass_executor())
-  Replayed { bodies: bodies, checked: outcome.counts.checked, reused: outcome.counts.reused }
+    Pass { counts: zero_counts(), prepared: prepared }, pass_executor())
+  Replayed { bodies: bodies,
+    checked: outcome.counts.cold_unadmitted + outcome.counts.cold_rejected,
+    reused: outcome.counts.reused, cold_unadmitted: outcome.counts.cold_unadmitted,
+    cold_rejected: outcome.counts.cold_rejected }
 }
 
 ## The executor the pass runs. It is named rather than built inside `replay`
@@ -507,28 +538,34 @@ fn pass_executor() -> BodyExecutor[Pass] = {
   let cold: BodyExecutor[Pass] = checker.cold_body_executor()
   BodyExecutor {
     function: (state, cx, d, sig) => {
-      let stepped_hit: (Pass, Option[Product]) = match state.prepared {
+      let stepped_hit: (Pass, Verdict) = match state.prepared {
         Some(p) -> {
-          let (after, product) = candidate(p, cx, d, sig)
-          (Pass { ..state, prepared: Some(after) }, product)
+          let (after, verdict) = candidate(p, cx, d, sig)
+          (Pass { ..state, prepared: Some(after) }, verdict)
         }
-        None -> (state, None)
+        None -> (state, Unadmitted)
       }
       let (stepped, hit) = stepped_hit
       match hit {
-        Some(product) -> match body_product.assemble(cx, product) {
-          Some(after) -> (Pass { ..stepped,
-            counts: Counts { ..stepped.counts, reused: stepped.counts.reused + 1 } }, after, product.tree)
-          None -> cold.function(cold_pass(stepped), cx, d, sig)
+        # A product that will not install is a claim withdrawn as much as a
+        # fact that stopped holding: the body was this producer's and the
+        # candidate revision would not take it.
+        Reused(product) -> match body_product.assemble(cx, product) {
+          Some(after) -> (reused(stepped), after, product.tree)
+          None -> cold.function(rejected(stepped), cx, d, sig)
         }
-        None -> cold.function(cold_pass(stepped), cx, d, sig)
+        Rejected -> cold.function(rejected(stepped), cx, d, sig)
+        Unadmitted -> cold.function(unadmitted(stepped), cx, d, sig)
       }
     },
-    inferred_body: (n, cx, d, sig) => cold.inferred_body(cold_pass(n), cx, d, sig),
-    constant: (n, cx, d, ty, visible) => cold.constant(cold_pass(n), cx, d, ty, visible),
-    method: (n, cx, tr, subject, d, sig) => cold.method(cold_pass(n), cx, tr, subject, d, sig),
-    default_body: (n, cx, tr, d, sig, body) => cold.default_body(cold_pass(n), cx, tr, d, sig, body),
-    test_body: (n, cx, name, body) => cold.test_body(cold_pass(n), cx, name, body)
+    # The five categories this producer does not implement. Every one of them
+    # is unadmitted rather than rejected: nothing was claimed for them, so
+    # there is nothing for the candidate revision to withdraw.
+    inferred_body: (n, cx, d, sig) => cold.inferred_body(unadmitted(n), cx, d, sig),
+    constant: (n, cx, d, ty, visible) => cold.constant(unadmitted(n), cx, d, ty, visible),
+    method: (n, cx, tr, subject, d, sig) => cold.method(unadmitted(n), cx, tr, subject, d, sig),
+    default_body: (n, cx, tr, d, sig, body) => cold.default_body(unadmitted(n), cx, tr, d, sig, body),
+    test_body: (n, cx, name, body) => cold.test_body(unadmitted(n), cx, name, body)
   }
 }
 
@@ -552,7 +589,7 @@ test "scalar replay moves unchanged bodies through the current scheduler" {
   assert match table(scope, next) { Some(_) -> true, None -> false }
   let admitted: AdmittedData = admit(scope, old, old_snapshot, saved)
   assert match prepare(admitted, next, next_snapshot) {
-    Some(p) -> match candidate(p, next.cx, declaration, sig) { (_, Some(_)) -> true, (_, None) -> false }
+    Some(p) -> match candidate(p, next.cx, declaration, sig) { (_, Reused(_)) -> true, _ -> false }
     None -> false
   }
   # The index the preparation carries is the revision's own: on a real
@@ -971,13 +1008,23 @@ test "scalar replay leaves every category but an admitted function to the cold p
   let actual = replay(admit(scope, old, old_snapshot, saved), next, next_snapshot)
   let expected = checker.check_module_body_products(next)
   let function_census = map.get(roles, "function").expect("function census")
-  assert actual.checked == function_census - actual.reused +
+  # Every declaration the scheduler dispatched leaves the pass through exactly
+  # one of the three columns, and the cold remainder is the two cold ones
+  # added up. The census says how many of each category there were; the
+  # columns say what this pass did with them.
+  assert actual.reused + actual.cold_unadmitted + actual.cold_rejected ==
+    function_census +
     map.get(roles, "inferred_body").expect("inferred body census") +
     map.get(roles, "constant").expect("constant census") +
     map.get(roles, "method").expect("method census") +
     map.get(roles, "default_body").expect("default body census") +
     map.get(roles, "test_body").expect("test body census")
-  assert actual.reused == 1 && actual.checked == 6
+  assert actual.checked == actual.cold_unadmitted + actual.cold_rejected
+  # Nothing here is rejected: the one function outside the class is outside it
+  # by its parameter type, which is an admission question and not a fact that
+  # stopped holding.
+  assert actual.reused == 1 && actual.cold_unadmitted == 6 && actual.cold_rejected == 0
+  assert actual.checked == 6
   assert actual.bodies.functions == expected.functions
   assert actual.bodies.constants == expected.constants
   assert actual.bodies.impl_methods == expected.impl_methods
@@ -1465,17 +1512,17 @@ test "scalar replay carries one memo across the bodies of a revision and no furt
         }
       }
     }
-    let (after_body, product) = candidate(carried, next.cx, d, sig)
-    assert product != None
+    let (after_body, verdict) = candidate(carried, next.cx, d, sig)
+    assert match verdict { Reused(_) -> true, _ -> false }
     carried = after_body
   }
   assert questions == 2 && answered_already == 1
   # The production pass carries the same preparation, so the memo the module
   # ends with is the one its bodies filled.
   let (outcome, _) = checker.execute_module_bodies(next,
-    Pass { counts: Counts { checked: 0, reused: 0 },
+    Pass { counts: zero_counts(),
       prepared: prepare(admitted, next, next_snapshot) }, pass_executor())
-  assert outcome.counts.reused == 2
+  assert outcome.counts.reused == 2 && outcome.counts.cold_unadmitted == 0
   let finished = outcome.prepared.expect("carried preparation")
   let probe = AssignableType(TyInt, TyInt, true)
   assert shared(probe)
@@ -1589,4 +1636,44 @@ test "scalar replay refuses a generic body whose binders changed" {
     assert actual.bodies.cx.syms == expected.cx.syms
     assert actual.bodies.cx.decl_slots == expected.cx.decl_slots
   }
+}
+
+test "scalar replay counts a withdrawn claim apart from a class it never claimed" {
+  # P8. The two cold columns answer different questions, and one number could
+  # answer neither. `cold_unadmitted` is the width of the class: the constant,
+  # the test body and the function whose parameter is not a type this producer
+  # carries were never claimed for replay at all. `cold_rejected` is the
+  # candidate revision withdrawing a claim that was made: `hold` is admitted
+  # and paired, its bytes, its header and its identity are the recorded ones,
+  # and then the revision answers one of the facts its body recorded
+  # differently.
+  let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
+  let text = "const K: Int = 7\n" ++
+    "fn hold[T](x: T) -> T = {\n let y: T = x\n y\n}\n" ++
+    "fn cold_one(s: String) -> String = s\n" ++
+    "test \"probe\" { assert true }\n"
+  let snapshot = source_snapshot.of(text).expect("snapshot")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(snapshot), map.empty())
+  assert old.cx.diags == []
+  let saved = body_execution.record(scope, old)
+  let plain = replay(admit(scope, old, snapshot, saved), old, snapshot)
+  assert plain.reused == 1 && plain.cold_unadmitted == 3 && plain.cold_rejected == 0
+  assert plain.checked == plain.cold_unadmitted + plain.cold_rejected
+  # The same revision with one table moved under it. Nothing about the
+  # declaration changed, so admission still pairs it; what changed is the
+  # answer to a question its body asked.
+  let shadow = map.get(old.cx.btypes, "Int").expect("the Int builtin")
+  let moved = ModuleHeaders { ..old,
+    cx: Cx { ..old.cx, btypes: map.insert(old.cx.btypes, "T", shadow) } }
+  let actual = replay(admit(scope, old, snapshot, saved), moved, snapshot)
+  assert actual.reused == 0 && actual.cold_rejected == 1 && actual.cold_unadmitted == 3
+  assert actual.checked == 4
+  let expected = checker.check_module_body_products(moved)
+  assert actual.bodies.functions == expected.functions
+  assert actual.bodies.constants == expected.constants
+  assert actual.bodies.tests == expected.tests
+  assert actual.bodies.cx.diags == expected.cx.diags
+  assert actual.bodies.cx.syms == expected.cx.syms
+  assert actual.bodies.cx.decl_slots == expected.cx.decl_slots
 }

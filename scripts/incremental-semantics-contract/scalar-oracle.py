@@ -28,13 +28,11 @@ def main():
     original = (ROOT / 'selfhost/src/check/scalar_replay.dawn').read_text()
     variants = [
         ('disguised-cold',
-         'Some(after) -> (Pass { ..stepped,\n'
-         '            counts: Counts { ..stepped.counts, reused: stepped.counts.reused + 1 } }, after, product.tree)',
+         'Some(after) -> (reused(stepped), after, product.tree)',
          'Some(after) -> {\n            let (ignored, checked, tree) = cold.function(stepped, cx, d, sig)\n'
-         '            (Pass { ..stepped, counts: Counts { ..stepped.counts, reused: stepped.counts.reused + 1 } },'
-         ' checked, tree)\n          }'),
-        ('lost-current-symbols', '}, after, product.tree)',
-         '}, Cx { ..after, syms: map.empty() }, product.tree)'),
+         '            (reused(stepped), checked, tree)\n          }'),
+        ('lost-current-symbols', '(reused(stepped), after, product.tree)',
+         '(reused(stepped), Cx { ..after, syms: map.empty() }, product.tree)'),
         # `stale-source` stood here and turned the projection off, leaving the
         # recorded product where the projected one belongs. A product is
         # coordinate-free now -- every reference in it is the same integer in
