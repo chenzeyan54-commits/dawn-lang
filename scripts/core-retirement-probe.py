@@ -47,11 +47,11 @@ the probe does distinguish the two states. Full numbers in
 Usage
 -----
 
-    scripts/core-golden/retirement-probe.py                  # this tree
-    scripts/core-golden/retirement-probe.py --tree /path/to/old-worktree \
+    scripts/core-retirement-probe.py                  # this tree
+    scripts/core-retirement-probe.py --tree /path/to/old-worktree \
         --seed-cache ~/workspace/dawn-lang/.dawn/seeds --expect-filtering
-    scripts/core-golden/retirement-probe.py --self-test      # verdict negative control
-    scripts/core-golden/retirement-probe.py --only fn --targets std/list.dawn
+    scripts/core-retirement-probe.py --self-test      # verdict negative control
+    scripts/core-retirement-probe.py --only fn --targets std/list.dawn
 
 The tree is never touched. Every edit is applied to a throwaway copy under
 `--workdir` (a temporary directory by default), which is where `bin/dawn`
@@ -77,7 +77,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_TREE = HERE.parent.parent
+DEFAULT_TREE = HERE.parent
 
 # Appended at the end of the file, never inserted, so no existing line moves:
 # panic sites are baked with file:line and a shifted line is a real change that
