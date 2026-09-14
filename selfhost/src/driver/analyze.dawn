@@ -2080,6 +2080,54 @@ test "a consumer names a provider's effect without minting the provider's identi
   })
 }
 
+test "the program a render reads from carries this revision's declaration spans" {
+  in_mem(() => {
+    # `identity.absolute` keeps a diagnostic's own offsets when the revision
+    # has no view of its owner (`check/identity.dawn`), which is the right
+    # answer for a diagnostic nothing can locate and the wrong one for a
+    # program that simply never collected the views. Nothing asserted which
+    # of the two a rendering path gets, and the difference is invisible in a
+    # module whose declarations start at the top of the file.
+    let std = std_or_die()
+    let root = "/tmp/dawn-selfhost-analyze/renderview"
+    mkdirs("${root}/src")
+    let text = "pub fn other(x: Int) -> Int = x\n\npub fn broken() -> Int = \"not an Int\"\n"
+    put("${root}/src/main.dawn", text)
+    let prog = analyze_program(load_directory(root), std, ct_default(), jsig_refused())
+    # Every module a render may reach has a view of the revision it was
+    # checked from, which is the whole of what `rendered_diags` needs.
+    assert len(prog.modules) == 1
+    for cm in prog.modules { assert map.has(prog.decl_spans, cm.mod_path) }
+    var owned = 0
+    for ld in prog.diags {
+      if ld.d.owner != None { owned = owned + 1 }
+    }
+    assert owned == len(prog.diags) && owned > 0
+    let literal = match str.index_of(text, "\"not an Int\"") {
+      Some(i) -> i
+      None -> panic("the fixture has no literal")
+    }
+    let rendered = rendered_diags(prog)
+    assert len(rendered) == len(prog.diags)
+    var located = false
+    for ld in rendered {
+      assert ld.d.owner == None
+      if ld.d.lo == literal && ld.d.hi == literal + 12 { located = true }
+    }
+    assert located
+    # The same program with the views dropped is the silent fallback, and it
+    # is silent: the offsets come back declaration-relative, still owned, and
+    # point into the file's first declaration. That is why the assertion
+    # above is about the program the render reads and not about `absolute`.
+    let viewless = Program { ..prog, decl_spans: map.empty() }
+    let unresolved = rendered_diags(viewless)
+    assert unresolved != rendered
+    for ld in unresolved {
+      assert ld.d.owner != None && ld.d.lo < literal
+    }
+  })
+}
+
 test "user code still cannot reach a std-only builtin" {
   in_mem(() => {
     # The negative control for all of the above. Opening std to its own sources

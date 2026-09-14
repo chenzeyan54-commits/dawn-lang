@@ -443,9 +443,12 @@ compiler trait binder和runtime擦除绑定；
 继承那两条判词的是 `check/cx.mint` 的 intern 表，五个负控在同一个脚本里守它：
 撞车被静默接受、不登记、顺手推进计数器、把机器相关的 src_path 读进派生输入、丢掉声明种类。
 CI的incremental-allocation独立运行该脚本，
-并运行`provenance.py`的十个生产生成器负控：丢用户/std/compiler来源、丢provider carry、
+并运行`provenance.py`的十一个生产生成器负控：丢用户/std/compiler来源、丢provider carry、
 错误header放行、漏std world重绑定，三个丢 intern 表跨模块 carry 的控制，
-以及一个消费者侧的：导入效果时不写provider的id、改按导入方作用域自铸一个。
+一个消费者侧的（导入效果时不写provider的id、改按导入方作用域自铸一个），
+以及一个渲染侧的：程序装配时丢掉 carry 的 `decl_spans`。`identity.absolute` 在视图
+缺失时按设计保留诊断自己的偏移，所以丢视图的程序会把声明内偏移当绝对值印出来且不出声；
+owning 判词是 `driver/analyze` 里那条「渲染读的程序带着本修订的声明视图」。
 四个旧的消费者侧负控随`module_references`退役，理由逐条记在脚本里。
 每个负控必须命中它自己owning的具名断言，脚本按变异体记owner而不是共用一条。
 native门禁另显式执行allocation模块测试；当前已被生产driver引用，与主图有重叠，计数不相加。
@@ -724,8 +727,14 @@ the other state contracts and their existing budget without exceeding the pole.
 std身份变化及构造器的负预算拒绝。`--shards N --shard I` 按 index 取模把这12个负控
 分片（约定同 `diagnostic-reads.py`），不带旗标时行为不变：正样本加全部12个负控。
 正样本只在 shard 0 跑，代价与理由写在 prefix.py 分片处；每个分片仍会先套用全部
-锚点，所以锚点漂移在任何一片都是硬失败。`lsp-prefix.py` 覆盖三个工作区接线负控，要求
-owning FAIL 后是断言失败，不把 JVM 链接错误算作成功。工作区计数测试在共享server里，
+锚点，所以锚点漂移在任何一片都是硬失败。`lsp-prefix.py` 覆盖四个 LSP 跨修订负控，要求
+owning FAIL 后是断言失败，不把 JVM 链接错误算作成功。三个是工作区接线（会话、绕过
+缓存、冲突后留缓存），第四个换掉 `checker.left` 的 resolver：复用产物带的是自己声明
+量出来的偏移，加不回候选修订的声明起点，definition 就指向声明搬家前的位置。
+它的 owning 判词是 `lsp/server` 的跨修订 definition 案例：同一模块两个修订，
+第二个只在声明前加空行与注释，复用两个 body 后问 `lspq` 局部的定义位置，
+与新修订的位置以及冷检查的答案逐一相等。该负控同时会红两条同修订判词，
+理由记在脚本里：resolver 只有一个，跨修订只有这一条判词在问它。工作区计数测试在共享server里，
 同时由 JVM/native selfhost 套件运行。原有 `scripts/lsp-workspace-contract/run.sh`
 另行守18个协议案例和20个资源/工作区负控，不能只靠新计数测试替代它。
 

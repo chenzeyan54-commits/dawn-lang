@@ -16,6 +16,7 @@ from cold import ROOT, edit, run
 # other test has said nothing about the guard it was written for.
 CARRY = "module provenance carry keeps exporting owners across header reorder"
 EFFECTS = "a consumer names a provider's effect without minting the provider's identity"
+SPANS = "the program a render reads from carries this revision's declaration spans"
 
 
 def main():
@@ -40,6 +41,13 @@ def main():
         ("drop-std-identity-carry", CARRY, std_path, "identities: interned,\n    mods: mods,",
          "identities: map.empty(),\n    mods: mods,"),
         ("drop-std-identity-step", CARRY, std_path, "interned = cx1.identities", "interned = interned"),
+        # The carry's fourth field. `identity.absolute` keeps a diagnostic's
+        # own offsets when the revision has no view of its owner, so a program
+        # assembled without the views renders declaration-relative offsets as
+        # absolute and says nothing about it.
+        ("drop-render-view", SPANS, driver_path,
+         "Program { modules: out, diags: diags, decl_spans: carry.decl_spans }",
+         "Program { modules: out, diags: diags, decl_spans: map.empty() }"),
         # The consumer half, on the effect axis: a module that imports an
         # effect writes the provider's id into its own table, and this mutant
         # has it derive one from the name in the importing scope instead.

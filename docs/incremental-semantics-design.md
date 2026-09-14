@@ -192,6 +192,16 @@ typed tree 的跨度、符号的声明位置与 frame 记下的效果见证位�
 值表的键与 Core dump 打印的都仍是文件位置。解析时越出本声明范围的偏移，说明 checker
 漏减了一处起点，那是编译器自身的错，就地停住而不是把另一套坐标交给后端。
 
+这条链的两端各有一条判词。跨修订那端在 `lsp/server` 的测试段：同一模块两个修订，
+第二个只在某声明前插入空行与注释，两个 body 全部复用（`reused == 2 && checked == 0`），
+之后 `lspq` 给出的局部定义位置等于新修订的位置、不等于旧修订的位置，也等于对新修订
+冷检查的答案。负控换掉 `checker.left` 的 resolver，位置就停在声明内偏移上
+（`lsp-prefix.py` 的 `resolver-drops-the-declaration`）。渲染那端在 `driver/analyze`
+的测试段：`identity.absolute` 在视图缺失时按设计保留诊断自己的偏移，所以缺视图是静默的，
+判词因此改问程序装配：渲染读的程序为每个模块带着本修订的视图，于是 `rendered_diags`
+之后没有诊断还留着 owner；同一个程序把视图清空后的对照就在判词里，作为那条静默的写照。
+负控是丢掉 carry 的视图（`provenance.py` 的 `drop-render-view`）。
+
 ## 五、七期与报告
 
 P4 查询运行时采用会话内不可变 owner，key/value 先参数化，不把 Cx stringify 当作

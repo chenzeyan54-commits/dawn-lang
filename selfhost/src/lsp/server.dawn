@@ -19,7 +19,7 @@ use json/parser
 use json/value.{Json, JNull, JBool, JNum, JInt, JStr, JArr, JObj, error_text}
 use json/render.{render}
 use driver/analyze.{
-  Program, ProjectPlan, LocDiag,
+  Program, ProjectPlan, LocDiag, CheckedMod,
   rendered_diags,
   analyze_standalone, standalone_entry, project_plan,
   project_module_path, load_entries_over, canon
@@ -28,17 +28,26 @@ use compiler_plan/source
 use driver/incremental
 use driver/fsmem
 use compiler_plan/envmem
-use ir/interp.{ct_default}
+use ir/interp.{ct_default, CtOut}
 use check/jsig.{Jsig, JsigLease, JsigProbe, jsig_refused_lease, refused_probe}
 use driver/stdlib.{StdCtx, load_std, std_load_error_text}
-use check/checker.{exports_of, visible_bins}
+use check/checker.{
+  exports_of, visible_bins,
+  check_module_headers, check_module_body_products, assemble_module_bodies
+}
+use check/cx.{Cx, ModExports, cx_new}
+use check/identity.{module_key}
+use check/tast.{TModule}
+use check/scalar_replay
+use check/body_execution
+use check/source_snapshot
 use lsp/lspq.{QCx, Target, find_target}
 use lsp/lspc.{CItem, completions_at}
 use front/lexer.{line_starts_of, view_of, SourceView}
 use front/diag.{utf16_len}
 use check/types.{Sig, builtins, sig_render}
 use front/ast.{
-  Decl, DFn, DType, DConst, DTrait, DImpl, DUseJava, DUseModule, DTest, DEffect
+  Module, Decl, DFn, DType, DConst, DTrait, DImpl, DUseJava, DUseModule, DTest, DEffect
 }
 use front/token.{Diag}
 use front/fmt
@@ -2413,6 +2422,108 @@ test "a local definition still resolves against the requesting document" {
       }
       None -> panic("a definition in the requesting document must resolve")
     }
+  }))
+}
+
+test "a replayed body's definition points at the candidate revision's position" {
+  # P3's third sentence on the definition half. A body product carries the
+  # positions its own declaration measured, so a declaration that only moved
+  # is reused with offsets that are still relative to it; `checker.left`
+  # resolves them against the candidate revision's span view on the way out.
+  # Drop that and the jump lands where the declaration used to be, which is a
+  # confidently wrong location rather than a missing one, and every gate stays
+  # green because the replayed and cold products still agree about every
+  # integer that is not a position.
+  #
+  # The fixture and its probes are local to the test on purpose: a module
+  # function here would be part of `lsp.server`'s Core, and nothing about
+  # this belongs in the compiler the golden records.
+  io.with_fs_real(() => io.with_env_real(() => {
+    # The two revisions. `moved` is spelled identically in both; the candidate
+    # adds a blank line and a comment above it and changes nothing else, so
+    # its body product is reusable and its position is not the recorded one.
+    fn revision(head: List[String]) -> String =
+      join(head ++ [
+        "fn moved() -> Int = {",
+        "  let value = 42",
+        "  value",
+        "}",
+        ""
+      ], "\n")
+    # A query context over one module checked without a program around it:
+    # the probe needs the module's own typed tree and nothing else, and
+    # building it here is what lets the test hand `lspq` a revision whose
+    # bodies were replayed rather than checked.
+    fn probe_qcx(std: StdCtx, m: Module, cx: Cx, tm: TModule) -> QCx = {
+      let entry = CheckedMod { mod_path: "sample", class_name: "sample", path: "sample.dawn",
+        m: m, cx: cx, tm: tm,
+        ct: CtOut { diags: [], consts: map.empty(), blocks: map.empty() } }
+      let no_env: Map[String, ModExports] = map.empty()
+      QCx { entry: entry,
+        prog: Program { modules: [entry], diags: [], decl_spans: map.empty() },
+        std: std, exports_env: no_env, bins: visible_bins(builtins(), cx) }
+    }
+    # Where `lspq` says the local is declared, asked at the read of it.
+    fn probe_local(qc: QCx, text: String) -> (Int, Int) = {
+      let read = match str.index_of(text, "  value\n}") {
+        Some(i) -> i + 2
+        None -> panic("the probe text has no read of `value`")
+      }
+      match find_target(qc, read) {
+        Some(t) -> match t.def {
+          Some(sp) -> sp
+          None -> panic("no definition offered for the local read")
+        }
+        None -> panic("nothing under the cursor at the local read")
+      }
+    }
+    # Where the local is declared, which for a `let` binding is the statement
+    # that binds it rather than the name inside it.
+    fn declared_at(text: String) -> (Int, Int) = {
+      let binding = "let value = 42"
+      match str.index_of(text, binding) {
+        Some(i) -> (i, i + str.len(binding))
+        None -> panic("the probe text has no declaration of `value`")
+      }
+    }
+
+    let std = match load_std("std") {
+      Ok(sc) -> sc
+      Err(e) -> panic("std: ${std_load_error_text(e)}")
+    }
+    let before = revision(["fn other(x: Int) -> Int = x"])
+    let after = revision(["fn other(x: Int) -> Int = x", "",
+      "# a comment, and the blank line above it"])
+    let scope = module_key("lsp-definition", "sample", "sample", "sample.dawn")
+    let old_snapshot = source_snapshot.of(before).expect("recorded snapshot")
+    let next_snapshot = source_snapshot.of(after).expect("candidate snapshot")
+    let next_syntax = source_snapshot.syntax(next_snapshot)
+    let base = cx_new(Some("sample"), Some("sample.dawn"))
+    let no_env: Map[String, ModExports] = map.empty()
+    let old = check_module_headers(base, source_snapshot.syntax(old_snapshot), no_env)
+    let next = check_module_headers(base, next_syntax, no_env)
+    let saved = body_execution.record(scope, old)
+    assert saved.refused == 0
+    let replayed = scalar_replay.replay(scalar_replay.admit(scope, old, old_snapshot, saved),
+      next, next_snapshot)
+    # Both bodies were reused. Without this the test would be asking a cold
+    # check where the declaration is, which it has never got wrong.
+    assert replayed.reused == 2 && replayed.checked == 0
+    let (replayed_cx, replayed_tm) = assemble_module_bodies(replayed.bodies)
+    let replayed_def = probe_local(probe_qcx(std, next_syntax, replayed_cx, replayed_tm), after)
+
+    # The candidate revision's position, and not the recorded one.
+    assert replayed_def == declared_at(after)
+    assert declared_at(after) != declared_at(before)
+    assert replayed_def != declared_at(before)
+    let (dlo, dhi) = replayed_def
+    assert str.slice(after, dlo, dhi) == "let value = 42"
+
+    # And the same position a cold check of the candidate revision gives,
+    # which is the standard the reused product has to meet rather than a
+    # second spelling of the line above.
+    let (cold_cx, cold_tm) = assemble_module_bodies(check_module_body_products(next))
+    assert probe_local(probe_qcx(std, next_syntax, cold_cx, cold_tm), after) == replayed_def
   }))
 }
 
