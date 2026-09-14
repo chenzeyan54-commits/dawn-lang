@@ -44,7 +44,9 @@ def main():
     variants = [
         ("function-read-capture", "semantic_reads.capture(before.function_reads, after.function_reads)?", "Some([])"),
         ("function-read-write", "semantic_reads.append(current.function_reads, product.function_reads)?", "current.function_reads"),
-        ("function-read-domain", "semantic_reads.project_mapped(p.function_reads, read_mapping(v, source_value))",
+        ("function-read-domain", """semantic_reads.project_with_inference(p.function_reads, s => Some(s),
+    t => relocate.ty(v.ids, t), id => Some(id), e => relocate.effect_row(v.ids, e), source_value,
+    id => Some(id), id => Some(id), id => Some(id), id => Some(id))""",
          "Some(p.function_reads)"),
         ("constant-tree", "tree => relocate_tree.constant(v, tree)", "tree => Some(tree)"),
         ("symbol-order", "sort_by(moved_symbols, (a, b) => cmp(a.key, b.key))", "moved_symbols"),

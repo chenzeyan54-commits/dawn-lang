@@ -33,7 +33,7 @@ use check/types.{
 }
 use check/jsig.{Jsig, JClass, JMethod, JCtor, JField, jsig_refused}
 use check/semantic_reads
-use check/semantic_reads.{FunctionRead, Mapping, AliasTypeHeader, ExportDiagnostic, ConstructorHeader}
+use check/semantic_reads.{FunctionRead, AliasTypeHeader, ExportDiagnostic, ConstructorHeader}
 use front/suggest
 
 ## An alias entry: the Kotlin AliasInfo without its mutable resolution slots
@@ -1530,16 +1530,11 @@ fn observe_type_read(cx: Cx, fact: FunctionRead) -> Cx =
 ## Recompute context-owned queries without changing the candidate's log. The
 ## caller supplies the corresponding scope; successful queries alone do not
 ## validate a body. Removed nominal IDs and slots reject rather than panic.
-pub fn revalidate_context_read(candidate: Cx, fact: FunctionRead) -> Option[Bool] =
-  revalidate_context_read_under(semantic_reads.identity_mapping(), candidate, fact)
-
-## The same validator with a fact still in the recording revision's
-## coordinates. A query input is moved because the recomputation reads the
-## candidate's own tables; the recorded answer is not moved at all, because
-## the comparison walks it beside the observed answer and maps one identity
-## at a time. A reference this relocation cannot move refuses the fact, which
-## is what rebuilding it would have done.
-pub fn revalidate_context_read_under(m: Mapping, candidate: Cx, fact: FunctionRead) -> Option[Bool] = {
+##
+## A fact recorded in another revision comes here too. It used to arrive with
+## a relocation beside it; the query inputs below and the recorded answer are
+## the same integers in both revisions, so there is nothing to apply.
+pub fn revalidate_context_read(candidate: Cx, fact: FunctionRead) -> Option[Bool] = {
   let initial = Cx { ..candidate, function_reads: Some([]) }
   match fact {
     semantic_reads.ConstructorCount(id, _) | semantic_reads.ConstructorNames(id, _) |
@@ -1604,7 +1599,7 @@ pub fn revalidate_context_read_under(m: Mapping, candidate: Cx, fact: FunctionRe
       next }
     _ -> return None
   }
-  Some(semantic_reads.observed_equal(m, fact, observed.function_reads))
+  Some(semantic_reads.observed_equal(fact, observed.function_reads))
 }
 
 test "context revalidation recomputes every supported query family" {

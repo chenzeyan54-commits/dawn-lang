@@ -17,7 +17,7 @@ use check/relocate.{Ids}
 use check/semantic_reads
 use check/write_journal
 use check/jsig.{JClass, JMethod, JCtor, JField}
-use check/semantic_reads.{Mapping, UnificationRead, InferenceBindings, FunctionRead, NamedFunctionRead, FunctionAnswer, FunctionCandidates, QualifiedConstant, QualifiedConstructor,
+use check/semantic_reads.{UnificationRead, InferenceBindings, FunctionRead, NamedFunctionRead, FunctionAnswer, FunctionCandidates, QualifiedConstant, QualifiedConstructor,
   AliasTypeHeader, ConstructorHeader, QualifiedAliasHeader, QualifiedAliasTarget, NominalTypeName, NominalTypeShape, LocalTypeDiagnostic, ExportDiagnostic, LocalAliasSource,
   LocalAliasTarget, LocalAliasResolving, LocalAliasHeader, LocalAliasBinders }
 use check/relocate_tree
@@ -306,22 +306,19 @@ pub fn project(v: View, p: Product) -> Option[Product] = {
   project_with_source(v, p, (owner, source) => None)
 }
 
-## The relocation `project` gives the read log, as one record. A caller that
-## revalidates the recorded log in place holds this same relocation, so the
-## rebuilt copy and the in-place comparison cannot drift apart.
-pub fn read_mapping(v: View, source_value: fn(String, TypeRef) -> Option[TypeRef]) -> Mapping =
-  Mapping { signature: s => Some(s),
-    type_value: t => relocate.ty(v.ids, t), nominal: id => Some(id),
-    effect_value: e => relocate.effect_row(v.ids, e), source_value: source_value,
-    trait_value: id => Some(id), binder_value: id => Some(id),
-    local_value: id => Some(id), effect_binder: id => Some(id) }
-
 ## The read log in the candidate's coordinates, on its own. Revalidation does
-## not need it: the same relocation compares the recorded log in place. A
-## caller that installs the log asks for it here.
+## not need it: it compares the recorded log in place. A caller that installs
+## the log asks for it here.
+##
+## Eight of the nine domains are the identity, because a fact names the
+## declaration that owns it and a declaration that was not edited binds the
+## same integers. The ninth is the one a fact can carry that belongs to
+## another declaration's file, and it is the caller's to supply.
 pub fn projected_reads[T](v: View, p: BodyProduct[T],
   source_value: fn(String, TypeRef) -> Option[TypeRef]) -> Option[Option[List[FunctionRead]]] =
-  semantic_reads.project_mapped(p.function_reads, read_mapping(v, source_value))
+  semantic_reads.project_with_inference(p.function_reads, s => Some(s),
+    t => relocate.ty(v.ids, t), id => Some(id), e => relocate.effect_row(v.ids, e), source_value,
+    id => Some(id), id => Some(id), id => Some(id), id => Some(id))
 
 ## `project` for a caller that revalidates the recorded log in place and does
 ## not install the projected one. The product comes back with no log rather
@@ -723,18 +720,6 @@ fn owned_diagnostic() -> Diag =
   Diag { msg: "body", lo: 0, hi: 1, hint: "",
     owner: Some(DiagOwner { module: "pkg/m", decl: "Nf4:body" }) }
 
-## The relocation the two admission paths share. It moves nothing, which is
-## the whole of what a relocation does now; what the pair below still holds
-## down is that the rebuilt log and the in-place comparison refuse on the
-## same facts.
-fn fixture_read_relocation() -> Ids = relocate.new()
-
-fn fixture_read_view(ids: Ids) -> View = {
-  let empty: Map[Int, Int] = map.empty()
-  View { ids: ids, symbols: map.empty(),
-    callee: (owner, name, builtin, tr) => None }
-}
-
 ## One recorded fact per projection arm, spelled in the recording revision's
 ## coordinates. Every arm that names a reference is here, so an arm that
 ## dropped one would be caught by the comparison rather than by the
@@ -809,27 +794,24 @@ fn fixture_read_corpus() -> List[FunctionRead] = {
 }
 
 test "body product read comparison answers for the projection it replaces" {
-  let ids = fixture_read_relocation()
-  let v = fixture_read_view(ids)
+  # A source node is the one reference a recorded fact can carry that is
+  # spelled in another declaration's file, so it is the only thing the rebuild
+  # has to move. Everything else names its own declaration and is the same
+  # integer in both revisions.
   let source: fn(String, TypeRef) -> Option[TypeRef] =
     (owner, node) => match node {
       TNamed(n, args, effs, lo, hi) -> Some(TNamed(n, args, effs, lo + 1000, hi + 1000))
       _ -> None
     }
-  let m = read_mapping(v, source)
   let corpus = fixture_read_corpus()
   var answers: List[FunctionRead] = []
   for fact in corpus {
-    let moved = semantic_reads.project_mapped(Some([fact]), m).expect("projected fact").expect("enabled log")
+    let moved = semantic_reads.project_with_inference(Some([fact]), s => Some(s), t => Some(t),
+      id => Some(id), e => Some(e), source, id => Some(id), id => Some(id), id => Some(id),
+      id => Some(id)).expect("projected fact").expect("enabled log")
     assert len(moved) == 1
     answers = answers ++ moved
   }
-  # One reference domain still moves: a source node is projected against the
-  # revision's own view, and `LocalAliasSource` is the one fact in the corpus
-  # that carries one. Every other reference in the corpus names its own
-  # declaration and is the same integer in both revisions. What the two paths
-  # have to agree about is unchanged: the rebuilt answer is what the in-place
-  # comparison accepts, and nothing else in the corpus is.
   var moved_facts = 0
   var i = 0
   for fact in corpus {
@@ -837,20 +819,20 @@ test "body product read comparison answers for the projection it replaces" {
     i = i + 1
   }
   assert moved_facts == 1
+  # The comparison side, over every ordered pair the corpus and its rebuilt
+  # copies make. It used to walk each fact arm by arm under the same
+  # relocation the rebuild carried; with every domain the identity, what is
+  # left of it is that the recorded fact validates the observed one exactly
+  # when the two are the same value. An observation that is not exactly one
+  # fact is not an observation of this query, whatever the facts in it are.
   let candidates = corpus ++ answers
-  i = 0
   for fact in corpus {
     for other in candidates {
-      assert semantic_reads.equal_under(m, fact, other) == (other == answers[i])
+      assert semantic_reads.observed_equal(fact, Some([other])) == (fact == other)
+      assert not semantic_reads.observed_equal(fact, Some([other, other]))
     }
-    # The relocation applied on one side only. The fact that moves must see
-    # its own projected answer as unequal without it, and its own recorded
-    # spelling as unequal with it.
-    if answers[i] != fact {
-      assert not semantic_reads.equal_under(semantic_reads.identity_mapping(), fact, answers[i])
-      assert not semantic_reads.equal_under(m, fact, fact)
-    }
-    i = i + 1
+    assert not semantic_reads.observed_equal(fact, Some([]))
+    assert not semantic_reads.observed_equal(fact, None)
   }
 }
 
@@ -859,12 +841,10 @@ test "body product read comparison compares normalized rows" {
   # carries the same atoms in the other order is a different value and is
   # refused. Nothing renormalizes it on the way in any more, because nothing
   # renumbers the atoms it is ordered by.
-  let m = read_mapping(fixture_read_view(relocate.new()), (owner, node) => None)
   let recorded = semantic_reads.ScopedEffectVariable("e",
     Some(EUnion([(5, "a"), (7, "b")], [], false)))
   let reordered = semantic_reads.ScopedEffectVariable("e",
     Some(EUnion([(7, "b"), (5, "a")], [], false)))
-  assert semantic_reads.project_mapped(Some([recorded]), m) == Some(Some([recorded]))
-  assert semantic_reads.equal_under(m, recorded, recorded)
-  assert not semantic_reads.equal_under(m, recorded, reordered)
+  assert semantic_reads.observed_equal(recorded, Some([recorded]))
+  assert not semantic_reads.observed_equal(recorded, Some([reordered]))
 }

@@ -313,12 +313,11 @@ fn timed_function(p: Prepared, acc: Acc, cx: Cx, d: FnDecl, sig: Sig,
         Some(view) -> {
           let t4 = System.nanoTime()
           var ok = true
-          let mapping = body_product.read_mapping(view, (owner, source) => None)
           match saved.product.function_reads {
             None -> { ok = false }
             Some(reads) -> {
               for read in reads {
-                if checker.revalidate_read_under(mapping, cx, read) != Some(true) { ok = false }
+                if checker.revalidate_read(cx, read) != Some(true) { ok = false }
               }
             }
           }

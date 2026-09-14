@@ -280,14 +280,13 @@ fn relocation(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[(Prior,
 fn candidate(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[Product] = {
   let (saved, view) = relocation(prepared, cx, d, sig)?
   let p = saved.product
-  # The recorded log is revalidated where it lies. Each fact is walked beside
-  # the answer the candidate revision observes, with this relocation applied
-  # one identity at a time, so nothing is rebuilt in candidate coordinates to
-  # be compared and thrown away. The rebuilt log is only what an observing
-  # caller installs, so it is built only when the caller is observing.
-  let mapping = body_product.read_mapping(view, (owner, source) => None)
+  # The recorded log is revalidated where it lies: each fact is walked beside
+  # the answer the candidate revision observes, and nothing is rebuilt in
+  # candidate coordinates to be compared and thrown away. The rebuilt log is
+  # only what an observing caller installs, so it is built only when the
+  # caller is observing.
   for read in p.function_reads? {
-    if checker.revalidate_read_under(mapping, cx, read) != Some(true) { return None }
+    if checker.revalidate_read(cx, read) != Some(true) { return None }
   }
   let moved = match cx.function_reads {
     None -> body_product.project_without_reads(view, p)?
@@ -457,14 +456,13 @@ test "scalar replay revalidates recorded reads in place and through the projecti
           let sig = map.get(next.cx.fns, d.name).expect("candidate header")
           match relocation(prepared, next.cx, d, sig) {
             Some((prior, view)) -> {
-              let mapping = body_product.read_mapping(view, (owner, source) => None)
               let reads = prior.product.function_reads.expect("recorded log")
               let moved = body_product.projected_reads(view, prior.product, (owner, source) => None)
                 .expect("projected log").expect("enabled log")
               assert len(moved) == len(reads) && len(reads) > 0
               var i = 0
               for read in reads {
-                let in_place = checker.revalidate_read_under(mapping, next.cx, read)
+                let in_place = checker.revalidate_read(next.cx, read)
                 assert in_place == checker.revalidate_read(next.cx, moved[i])
                 assert in_place == Some(true)
                 compared = compared + 1
