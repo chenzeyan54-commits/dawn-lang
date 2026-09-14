@@ -39,8 +39,8 @@
 #
 # Regenerate the skeleton with `check.py --record`. The reasons are not
 # generated.
-check/checker.dawn::alias_binding_evar::aliases | uncovered | backlog | the diagnostic path walks every local alias to name the one that bound an unsolved effect variable; no fact records the walk
-check/checker.dawn::alias_binding_evar::module_exports | uncovered | backlog | the same walk continues into every imported surface, and an alias added to any of them changes the message
+check/checker.dawn::alias_binding_evar::aliases | diagnostic | refused-by=check/scalar_replay.dawn::recorded | the walk names the alias that bound an unsolved effect variable, and it runs only inside the advice string of an effect refusal; the body that reached it raised the refusal, so no admission path installs its product
+check/checker.dawn::alias_binding_evar::module_exports | diagnostic | refused-by=check/scalar_replay.dawn::recorded | the same walk continued into every imported surface, on the same advice path
 check/checker.dawn::assignable_read::function_reads | write |  | the old value of cx.function_reads inside its own Cx update; writer ownership is scripts/incremental-semantics-contract/journal-coverage.py's inventory
 check/checker.dawn::assoc_impl_of::impl_table | logged | ReducedAssociatedType@check/checker.dawn::reduce_assoc_read+ReducedEffect@check/checker.dawn::reduce_eff_read | the two reductions are the only callers a body reaches now that has_index_impl asks implementation_presence_read instead, and each records the whole reduction, which is the answer this lookup decided
 check/checker.dawn::bind_dicts::frame | write |  | the old value of cx.frame inside its own Cx update; writer ownership is scripts/incremental-semantics-contract/journal-coverage.py's inventory
@@ -50,7 +50,6 @@ check/checker.dawn::builtin_visible::is_std_module | logged | FunctionAnswer@che
 check/checker.dawn::capture_witness::frame | product | frame | body_product.assemble reinstalls cx.frame from the product, so this is body-local state and not a question about the module environment
 check/checker.dawn::capture_witness::frame | write |  | the old value of cx.frame inside its own Cx update; writer ownership is scripts/incremental-semantics-contract/journal-coverage.py's inventory
 check/checker.dawn::cell_take_ok::frame | product | frame | body_product.assemble reinstalls cx.frame from the product, so this is body-local state and not a question about the module environment
-check/checker.dawn::check_call::adts | uncovered | backlog | the evidence ADT is opened for its field count to index the environment slot; ConstructorFields covers that shape but is not asked here
 check/checker.dawn::check_fn_inferred_body::fns | uncovered | backlog | sealing an inferred return re-reads the module table to confirm the name still resolves to the entry signature; scalar replay never admits an inferred body, so nothing owes the answer yet
 check/checker.dawn::check_fn_inferred_body::frame | product | frame | body_product.assemble reinstalls cx.frame from the product, so this is body-local state and not a question about the module environment
 check/checker.dawn::check_handle::frame | product | frame | body_product.assemble reinstalls cx.frame from the product, so this is body-local state and not a question about the module environment
@@ -146,7 +145,7 @@ check/checker.dawn::unhandled_effect::frame | product | frame | body_product.ass
 check/checker.dawn::unify_into_read::function_reads | write |  | the old value of cx.function_reads inside its own Cx update; writer ownership is scripts/incremental-semantics-contract/journal-coverage.py's inventory
 check/checker.dawn::useful_check_read::adts | logged | ConstructorHeaderAnswer@check/exhaustive.dawn::constructor_read | the same ReadState hand-off for the usefulness half of the pattern matrix
 check/checker.dawn::useful_check_read::function_reads | product | function_reads | body_product.assemble reinstalls cx.function_reads from the product, so this is body-local state and not a question about the module environment
-check/checker.dawn::verify_effects::adts | uncovered | backlog | the associated-effect advice reads the ADT table to build hint text
+check/checker.dawn::verify_effects::adts | diagnostic | refused-by=check/scalar_replay.dawn::recorded | the ADT table is opened to phrase the associated-effect advice, inside the same refusal impl_method_trait answers for, so a body that reached it raised a diagnostic and is never admitted
 check/checker.dawn::verify_effects::frame | product | frame | body_product.assemble reinstalls cx.frame from the product, so this is body-local state and not a question about the module environment
 check/checker.dawn::visible_builtin_names::bins | logged | FunctionCandidates@check/checker.dawn::fn_pool_read | the builtin half of the did-you-mean pool, recorded as the pool itself
 check/checker.dawn::visible_builtin_names::hidden_bins | logged | FunctionCandidates@check/checker.dawn::fn_pool_read | the hidden set only removes names from that recorded pool
@@ -177,7 +176,7 @@ check/cx.dawn::function_return_display_read::adts | logged | RenderedFunctionRet
 check/cx.dawn::implementation_arity_read::impl_table | logged | ImplementationArity | the answer is recorded as ImplementationArity, so admission can re-ask it on the candidate revision or refuse
 check/cx.dawn::implementation_presence_read::impl_table | logged | ImplementationPresence | the answer is recorded as ImplementationPresence, so admission can re-ask it on the candidate revision or refuse
 check/cx.dawn::implementation_subgoals_read::impl_table | logged | ImplementationSubgoals | the answer is recorded as ImplementationSubgoals, so admission can re-ask it on the candidate revision or refuse
-check/cx.dawn::is_const_serializable::adts | uncovered | backlog | the const serializability walk opens the ADT graph with no fact per node
+check/cx.dawn::is_const_serializable::adts | logged | ConstSerializable@check/cx.dawn::const_serializable_read | the walk opens the ADT graph node by node and no single node is the answer, so the recorded form is the verdict for the whole type; the comptime check asks through it, and a node this revision has lost answers false instead of aborting
 check/cx.dawn::java_assignable_read::jsig | logged | JavaAssignable | the answer is recorded as JavaAssignable, so admission can re-ask it on the candidate revision or refuse
 check/cx.dawn::java_class_info_read::jsig | logged | JavaClassInfo | the answer is recorded as JavaClassInfo, so admission can re-ask it on the candidate revision or refuse
 check/cx.dawn::java_class_name_read::java_classes | logged | JavaClassName | the answer is recorded as JavaClassName, so admission can re-ask it on the candidate revision or refuse
@@ -221,7 +220,7 @@ check/cx.dawn::signature_display_read::traits | logged | RenderedSignature | the
 check/cx.dawn::std_module_mode_read::is_std_module | logged | StdModuleMode | the answer is recorded as StdModuleMode, so admission can re-ask it on the candidate revision or refuse
 check/cx.dawn::trait_associated_members_read::traits | logged | TraitAssociatedMembers | the answer is recorded as TraitAssociatedMembers, so admission can re-ask it on the candidate revision or refuse
 check/cx.dawn::trait_name_read::traits | logged | TraitName | the answer is recorded as TraitName, so admission can re-ask it on the candidate revision or refuse
-check/cx.dawn::ty_span_of::ty_spans | uncovered | backlog | SEM-07 reads the span table the header passes filled, to put a diagnostic on the innermost written token
+check/cx.dawn::ty_span_of::ty_spans | invariant | held-by=check/checker.dawn::check_module_headers | record_span_at is the only caller a body reaches, and it returns before the walk while record_ty_spans is false; header exit clears that flag and empties this table in the same update, so a body pass sees one value here and never gets to this read
 check/cx.dawn::type_display_read::adts | logged | RenderedType | the answer is recorded as RenderedType, so admission can re-ask it on the candidate revision or refuse
 check/cx.dawn::write_alias::alias_resolved | write |  | the old value of cx.alias_resolved inside its own Cx update; writer ownership is scripts/incremental-semantics-contract/journal-coverage.py's inventory
 check/cx.dawn::write_alias::body_writes | write |  | the old value of cx.body_writes inside its own Cx update; writer ownership is scripts/incremental-semantics-contract/journal-coverage.py's inventory

@@ -733,7 +733,7 @@ fn read_vocabulary() -> List[String] =
     "JavaComponent", "LocalConstructor", "LocalConstant", "ConstantVisible", "ConstructorCount",
     "ConstructorArity", "ConstructorHeaderAnswer", "ConstructorFields", "ConstructorNames",
     "DeclaredConstantName", "LocalValueCandidates", "DeclaredEffectInfo", "MovedName",
-    "LocalEffectName",
+    "ConstSerializable", "LocalEffectName",
     "EffectCandidates", "RenderedType", "RenderedFunctionReturn", "RenderedConstructor",
     "RenderedSignature", "ImplementationPresence", "ImplementationSubgoals",
     "ImplementationArity"]
@@ -807,6 +807,7 @@ fn read_tag(r: FunctionRead) -> String =
     semantic_reads.LocalValueCandidates(_, _) -> "LocalValueCandidates"
     semantic_reads.DeclaredEffectInfo(_, _) -> "DeclaredEffectInfo"
     semantic_reads.MovedName(_, _) -> "MovedName"
+    semantic_reads.ConstSerializable(_, _) -> "ConstSerializable"
     semantic_reads.LocalEffectName(_, _) -> "LocalEffectName"
     semantic_reads.EffectCandidates(_) -> "EffectCandidates"
     semantic_reads.RenderedType(_, _) -> "RenderedType"
@@ -904,6 +905,7 @@ fn fixture_read_corpus() -> List[FunctionRead] = {
     semantic_reads.LocalValueCandidates(true, ["a", "b"]),
     semantic_reads.EffectCandidates(["Ask"]),
     semantic_reads.MovedName("print", Some("use `std/io.println`")),
+    semantic_reads.ConstSerializable(subject, false),
     semantic_reads.JavaClassName("String", Some("java.lang.String")),
     semantic_reads.JavaClassInfo("java.lang.String", jclass),
     semantic_reads.JavaMethods("java.lang.String", [jmethod]),
@@ -944,7 +946,7 @@ test "body product read comparison answers for the projection it replaces" {
   # candidate's log has to move. Everything else names its own declaration and
   # is the same integer in both revisions, so it is carried whole. Over the
   # whole read vocabulary, that is what this says: exactly the alias source
-  # arm moves and the other sixty-four constructors come back untouched.
+  # arm moves and the other sixty-five constructors come back untouched.
   let source: fn(String, TypeRef) -> Option[TypeRef] =
     (owner, node) => match node {
       TNamed(n, args, effs, lo, hi) -> Some(TNamed(n, args, effs, lo + 1000, hi + 1000))

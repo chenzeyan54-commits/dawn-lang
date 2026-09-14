@@ -23,8 +23,8 @@ def main():
     owner = 'context revalidation recomputes every supported query family'
     variants = []
     arms = re.findall(r'(semantic_reads\.\w+\([^\n]+ -> \{ let \(next, _\) = ([a-z_]+)\([^\n]+\n      next \})', body)
-    if len(arms) != 21:
-        raise RuntimeError(f'Expected 21 canonical dispatch arms, found {len(arms)}')
+    if len(arms) != 22:
+        raise RuntimeError(f'Expected 22 canonical dispatch arms, found {len(arms)}')
     for anchor, helper in arms:
         variants.append(('discard-' + helper, anchor, anchor.replace('\n      next }', '\n      initial }'), owner))
     variants.extend([

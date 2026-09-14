@@ -87,7 +87,8 @@ use check/cx.{
   enter_decl_owner, leave_decl_owner, mint_cursor, module_pool, alias_shadow, effect_of, resolve_eff_at,
   resolve_type, resolve_return_type, resolve_alias_target, java_class_info_read, java_class_name_read, java_class_names_read,
   java_methods_read, java_constructors_read, java_static_fields_read, java_component_read,
-  java_sam_read, java_assignable_read, is_const_serializable, const_refusal_hint, no_sig,
+  java_sam_read, java_assignable_read, is_const_serializable, const_serializable_read,
+  const_refusal_hint, no_sig,
   local_constructor_read, local_constant_read, constant_visible_read,
   constructor_count_read, constructor_arity_read, constructor_nominal_shape_read,
   constructor_header_read, constructor_fields_read,
@@ -7021,14 +7022,15 @@ fn check_expr_at(cx: Cx, e: Expr, expected: Option[Ty]) -> (Cx, Ty, TExpr) !io =
       let (cx1, frame) = enter_isolated(cx)
       let (cx2, t, bx) = check_expr(cx1, body, expected)
       let cx3 = leave_isolated(cx2, frame, "comptime blocks", e_lo(body), e_hi(body))
-      if not is_const_serializable(cx3, t, set.empty()) && not is_errorish(t) {
-        let (render_cx, text) = type_display_read(cx3, t)
+      let (cx4, serializable) = const_serializable_read(cx3, t)
+      if not serializable && not is_errorish(t) {
+        let (render_cx, text) = type_display_read(cx4, t)
         (cerr_h(render_cx, "a comptime result must be constant-serializable, got " ++
             text, lo, hi,
           "Int/Float/Bool/String/Unit and List/tuple/record/ADT values of them (spec §7.2)"),
           TyError, XError(owner_off(cx, lo), owner_off(cx, hi)))
       } else {
-        (cx3, t, XComptime(bx, owner_off(cx, lo), owner_off(cx, hi), t))
+        (cx4, t, XComptime(bx, owner_off(cx, lo), owner_off(cx, hi), t))
       }
     }
     EUnsafePure(body, lo, hi) -> check_unsafe_pure(cx, body, expected, lo, hi)
@@ -9964,7 +9966,12 @@ fn check_call(
         # frame's environment instead would answer an arm's own raises out of
         # the scope that raised, which is the outer-handler rule backwards
         # (`scripts/spike-native/effect_lexical.dawn`'s `inner_ten`).
-        let env_idx = len(adt_of(cx1.adts, eid).ctors[0].fields) - 1
+        # the record's field count, asked through the recorded form: a
+        # candidate revision that changed the operation list moves the trailing
+        # slot, and nothing else here would notice
+        let (cxa, ev_arity) = constructor_arity_read(cx1, eid, 0)
+        cx1 = cxa
+        let env_idx = ev_arity - 1
         let env = XField(recv, env_idx, owner_off(cx, clo), owner_off(cx, chi), erased_ev_ty())
         XApply(XField(recv, idx, owner_off(cx, clo), owner_off(cx, chi), TyFn(s.param_tys, s.ret, EPure)), txs2,
           [env], owner_off(cx, lo), owner_off(cx, hi), ret)

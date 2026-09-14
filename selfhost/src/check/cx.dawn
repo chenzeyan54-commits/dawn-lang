@@ -1250,6 +1250,12 @@ test "a body pass records no type spans" {
   # And it is the flag doing that, not an empty `kids` list: turn it on and
   # the same call writes the entry.
   assert map.len(record_span_at(Cx { ..cx, record_ty_spans: true }, 3, 6, [ref]).ty_spans) == 1
+  # The table itself is the other half of the same claim: `record_span_at` is
+  # the only writer and the only caller of `ty_span_of` a body reaches, so
+  # with the flag off the table stays exactly as the header exit left it, and
+  # a span asked for answers with the written token and no children.
+  assert map.len(cx.ty_spans) == 0
+  assert ty_span_of(cx, ref) == TySpan { lo: 3, hi: 6, kids: [] }
 }
 
 ## Table mutations report their keys only when a body recorder requests it.
@@ -1642,6 +1648,8 @@ pub fn revalidate_context_read(candidate: Cx, fact: FunctionRead) -> Option[Bool
       next }
     semantic_reads.MovedName(name, _) -> { let (next, _) = moved_name_read(initial, name)
       next }
+    semantic_reads.ConstSerializable(subject, _) -> { let (next, _) = const_serializable_read(initial, subject)
+      next }
     _ -> return None
   }
   Some(semantic_reads.observed_equal(fact, observed.function_reads))
@@ -1679,8 +1687,16 @@ test "context revalidation recomputes every supported query family" {
   let (c19, _) = builtin_type_read(c18, "Int")
   let (c20, _) = std_module_mode_read(c19)
   let (c21, _) = moved_name_read(c20, "print")
-  let facts = c21.function_reads.expect("all context query families")
-  assert len(facts) == 21
+  # a nominal the prelude answers `true` for, so that emptying the ADT table
+  # below flips the answer rather than leaving it where it was
+  var serial = -1
+  for aid in map.keys(base.adts) {
+    if serial < 0 && is_const_serializable(base, TyAdt(aid, []), set.empty()) { serial = aid }
+  }
+  assert serial >= 0
+  let (c22, _) = const_serializable_read(c21, TyAdt(serial, []))
+  let facts = c22.function_reads.expect("all context query families")
+  assert len(facts) == 22
   let changed = Cx { ..initial, adts: map.empty(), adts_by_name: map.empty(), ctors_by_name: map.empty(),
     consts: map.empty(), all_const_names: set.empty(), const_cutoff: Some(set.empty()),
     effects: map.empty(), effect_infos: map.empty(), current_tparams: map.empty(), current_eff_vars: map.empty(),
@@ -2170,7 +2186,11 @@ pub fn is_const_serializable(cx: Cx, t: Ty, visited: Set[Int]) -> Bool =
       # recursive types terminate here
       if set.has(visited, aid) { return true }
       let v2 = set.insert(visited, aid)
-      let a = adt_of(cx.adts, aid)
+      # A type this revision's table does not carry is not serializable rather
+      # than a panic. Nothing well formed reaches that, but revalidation asks
+      # this question of a candidate revision, and one that deleted the
+      # declaration has to answer rather than abort.
+      let a = match map.get(cx.adts, aid) { Some(info) -> info, None -> return false }
       var m: Map[Int, Ty] = map.empty()
       var i = 0
       for tp in a.tparams {
@@ -2197,6 +2217,17 @@ pub fn is_const_serializable(cx: Cx, t: Ty, visited: Set[Int]) -> Bool =
     }
     _ -> false
   }
+
+## The walk above with its answer written down. `is_const_serializable` opens
+## the ADT graph node by node and nothing per node could be compared on its
+## own, so the recorded form is the whole verdict for one type, the way
+## `reduce_assoc_read` records a whole reduction. The subject is a type built
+## out of derived ids, so the candidate revision can be asked the same
+## question and will walk its own tables to answer it.
+pub fn const_serializable_read(cx: Cx, t: Ty) -> (Cx, Bool) = {
+  let answer = is_const_serializable(cx, t, set.empty())
+  (observe_type_read(cx, semantic_reads.ConstSerializable(t, answer)), answer)
+}
 
 # ---- typed absences ----
 
