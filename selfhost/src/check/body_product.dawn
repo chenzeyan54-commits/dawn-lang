@@ -22,8 +22,6 @@ use check/semantic_reads.{Mapping, UnificationRead, InferenceBindings, FunctionR
   LocalAliasTarget, LocalAliasResolving, LocalAliasHeader, LocalAliasBinders }
 use check/relocate_tree
 use check/relocate_tree.{View}
-use check/relocate_header
-use check/relocate_header.{HeaderView}
 
 pub type Change[K, V] = { key: K, value: Option[V] }
 
@@ -431,22 +429,27 @@ test "body product separates alias declaration positions from body positions" {
   let ids = relocate.new()
   let view = View { ids: ids, symbols: after.syms,
     callee: (owner, name, builtin, tr) => Some(f.sig) }
-  let header = HeaderView { ids: ids,
-    position: (owner, path, at) => if owner == Some("provider") { Some(at + 1000) } else { None },
-    end_position: (owner, path, at) => if owner == Some("provider") { Some(at + 2000) } else { None } }
+  # The one reference domain a recorded fact can carry that is spelled in
+  # another declaration's file. Only that declaration's own owner can move
+  # one, which is what the caller below supplies and what the two refusals
+  # around it are about.
+  let provider_source: fn(String, TypeRef) -> Option[TypeRef] =
+    (owner, node) => match node {
+      TNamed(n, args, effs, lo, hi) ->
+        if owner == "provider" { Some(TNamed(n, args, effs, lo + 1000, hi + 2000)) } else { None }
+      _ -> None
+    }
   assert project(view, p) == None
-  let q = project_with_source(view, p,
-    (owner, source) => relocate_header.type_source(header, Some(owner), source)).expect("project owned source")
+  let q = project_with_source(view, p, provider_source).expect("project owned source")
   assert q.tree.body == XUnit(0, 1)
   let cx = assemble(before, q).expect("assemble owned source")
   assert cx.function_reads == Some([semantic_reads.LocalAliasSource("Alias", "provider", Some(TNamed("Int", [], [], 1000, 2001)))])
-  assert project_with_source(view, p,
-    (owner, source) => relocate_header.type_source(header, Some("consumer"), source)) == None
+  assert project_with_source(view, p, (owner, node) => provider_source("consumer", node)) == None
   let constant = TConst { name: "VALUE", ty: TyUnit, init: XUnit(0, 1), lo: 0, hi: 1 }
   let saved_constant = capture_constant(before, after, constant).expect("capture constant source read")
   assert project_constant(view, saved_constant) == None
   let moved_constant = project_constant_with_source(view, saved_constant,
-    (owner, source) => relocate_header.type_source(header, Some(owner), source)).expect("project constant owned source")
+    provider_source).expect("project constant owned source")
   assert moved_constant.tree == TConst { name: "VALUE", ty: TyUnit, init: XUnit(0, 1), lo: 0, hi: 1 }
   let constant_cx = assemble(before, moved_constant).expect("assemble constant owned source")
   assert constant_cx.function_reads == cx.function_reads

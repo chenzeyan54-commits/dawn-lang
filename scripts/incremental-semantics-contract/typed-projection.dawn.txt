@@ -14,8 +14,6 @@ use compiler/check/function_product
 use compiler/check/callee_index
 use compiler/check/relocate
 use compiler/check/relocate_tree
-use compiler/check/relocate_header
-use compiler/check/relocate_header.{HeaderView}
 use compiler/check/relocate_tree.{View}
 use compiler/check/tast_positions
 use compiler/check/body_product
@@ -202,8 +200,13 @@ pub fn source_state(current: Cx, before: Cx, after: Cx, body: TFun, delta: Int) 
 
 pub type HeaderTrial = { relocated: TFun, cold: TFun, replayed_state: Cx, cold_state: Cx }
 
-pub type MetadataTrial = { projected: ModExports, cold: ModExports, assembled: Cx, header_state: Cx,
-  moved_state: Cx, next_state: Cx }
+## The header product a revision's own header passes wrote, captured and put
+## back. What used to sit beside it -- the same tables projected onto a second
+## revision -- is gone with `relocate_header`: a header's references are the
+## same integers in both revisions, and its positions are offsets from the
+## declaration that recorded them, so the projection had nothing left to do
+## and the fixture had to invent the movement it was checking (K7).
+pub type MetadataTrial = { assembled: Cx, header_state: Cx }
 
 pub fn metadata_sample() -> MetadataTrial !io = {
   let text = "pub type Box[T] = { value: T }\n" ++
@@ -231,16 +234,7 @@ pub fn metadata_sample() -> MetadataTrial !io = {
   let next_table = allocation.combine([reserved,
     allocation.table(allocation.local_headers(scope, next_syntax, next.cx).expect("metadata next declarations")).expect("metadata next table"),
     allocation.table(allocation.local_impl_headers(scope, next_syntax, next.cx, next.impl_sigs).expect("metadata next impls")).expect("metadata next impl table")]).expect("metadata next combined")
-  # Header metadata still carries positions in the file, and this edit is one
-  # insertion at the front of it, so every one of them moves by its length.
-  let moved_by = str.len(prefix)
-  let view = HeaderView { ids: allocation.between(old_table, next_table).expect("metadata ids"),
-    position: (owner, path, lo) => if owner == Some("metadata") && (path == None || path == Some("metadata.dawn")) {
-      Some(lo + moved_by)
-    } else { None },
-    end_position: (owner, path, hi) => if owner == Some("metadata") && (path == None || path == Some("metadata.dawn")) {
-      Some(hi + moved_by)
-    } else { None } }
+  if allocation.between(old_table, next_table) == None { panic("metadata header join refused") }
   let old_exports = exports_of(old.cx, syntax, "metadata", "metadata")
   let cold = exports_of(next.cx, next_syntax, "metadata", "metadata")
   # A nominal id derives from the declaration, so shifting the counter under
@@ -256,17 +250,9 @@ pub fn metadata_sample() -> MetadataTrial !io = {
   # the two revisions export the same signatures and the projection's
   # remaining work here is the positional half below.
   if old_exports.fns != cold.fns { panic("metadata binder coverage") }
-  let projected = relocate_header.exports(view, old_exports).expect("metadata projection")
   let product = header_product.capture(initial, old.cx).expect("metadata header capture")
   let assembled = header_product.assemble(initial, product).expect("metadata header assembly")
-  let state_view = HeaderView { ..view,
-    position: (owner, path, lo) => if owner == None && path == None { Some(lo) } else { view.position(owner, path, lo) },
-    end_position: (owner, path, hi) => if owner == None && path == None { Some(hi) } else { view.end_position(owner, path, hi) } }
-  let moved_product = relocate_header.state(state_view, product, initial.owner_class, initial.src_path)
-    .expect("metadata state projection")
-  let moved_state = header_product.assemble(initial, moved_product).expect("metadata moved assembly")
-  MetadataTrial { projected: projected, cold: cold, assembled: assembled, header_state: old.cx,
-    moved_state: moved_state, next_state: next.cx }
+  MetadataTrial { assembled: assembled, header_state: old.cx }
 }
 
 pub type StateTrial = { replayed: Cx, cold: Cx, relocated: TFun, cold_body: TFun, module_body: TFun }

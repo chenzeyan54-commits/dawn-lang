@@ -35,9 +35,13 @@ def main():
                       # `header-adt` went with them: `relocate_header.adt` and the
                       # constructor projection under it relocate nothing but
                       # binders, and a binder does not move, so turning the
-                      # projection off leaves the same exports (K5).
-                      "header-alias", "header-impl",
-                      "header-state-bounds", "header-state-surface", "read-state"]
+                      # projection off leaves the same exports (K5). The four
+                      # remaining `header-*` controls went with the whole module
+                      # in K7: a header product's references are the same
+                      # integers in both revisions and its positions are offsets
+                      # from the declaration that recorded them, so there was
+                      # nothing left for a header projection to project.
+                      "read-state"]
     parser.add_argument("--typed-mutant", choices=typed_variants)
     parser.add_argument("--typed-all", action="store_true", help="run the typed positive and its compiling mutations")
     # `skip-symbol` and `skip-captures` stood at the front of this list and
@@ -93,17 +97,12 @@ def main():
                         ignore=shutil.ignore_patterns("build", ".dawn"))
     if args.typed_mutant and not args.typed_mutant.startswith("module-"):
         target = output / "selfhost/src/check" / ("checker.dawn" if args.typed_mutant in ("default-dictionary", "read-state") else
-                    "relocate_header.dawn" if args.typed_mutant.startswith("header-") else
                     "allocation.dawn" if args.typed_mutant.startswith("impl-") else
                     "body_product.dawn" if args.typed_mutant in ("inferred-write", "test-state", "default-write", "default-diagnostics") else "relocate_tree.dawn")
         tree = target.read_text()
         replacements = {
             "read-state": ("Some(_) -> Cx { ..cx, function_reads: semantic_reads.candidates(cx.function_reads, names) }",
                            "Some(_) -> Cx { ..cx, in_test: not cx.in_test, function_reads: semantic_reads.candidates(cx.function_reads, names) }"),
-            "header-state-bounds": ("current_tparam_bounds: projected_map(p.current_tparam_bounds, same, bounds => Some(bounds))?", "current_tparam_bounds: map.empty()"),
-            "header-state-surface": ("observable_impls: projected_list(p.observable_impls, i => implementation(v, i))?", "observable_impls: p.observable_impls"),
-            "header-alias": ("aliases: projected_map(e.aliases, names, a => alias_info(v, a))?", "aliases: e.aliases"),
-            "header-impl": ("impls: projected_list(e.impls, info => implementation(v, info))?", "impls: e.impls"),
             "default-diagnostics": ("diags: current.diags ++ product.diagnostics",
                                     'diags: if match product.frame.current_sig { Some(s) -> s.name == "sample\\$default\\$0", None -> false } { current.diags } else { current.diags ++ product.diagnostics }'),
             "default-dictionary": ("TDefault { body: dx, dict_syms: dsyms }", "TDefault { body: dx, dict_syms: [] }"),
@@ -269,10 +268,6 @@ def main():
                                 "module-method-boundary": "module assembly: replayed module differs from cold module",
                                 "module-registered-tag": "module assembly: replayed module differs from cold module",
                                 "constant-span": "module assembly: replayed module differs from cold module",
-                                "header-alias": "header metadata: projected exports differ from cold headers",
-                                "header-impl": "header metadata: projected exports differ from cold headers",
-                                "header-state-bounds": "header state: projected context differs from cold headers",
-                                "header-state-surface": "header state: projected context differs from cold headers",
                                 "default-write": "default state: replayed Cx differs from cold body boundary",
                                 "test-state": "test state: replayed Cx differs from cold body boundary"}.get(args.typed_mutant)
                                or "relocated body differs from shifted cold check")

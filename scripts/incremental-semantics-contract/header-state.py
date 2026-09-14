@@ -33,40 +33,12 @@ def audit(cx, product):
             raise RuntimeError("Missing header capture/assembly: " + field)
 
 
-def audit_projection(product, visitor):
-    # A nominal or trait id derives from its declaration, so the four
-    # name-keyed tables whose values are those ids, and the constructor map
-    # keyed by one, are carried rather than projected: their contents are the
-    # same integers in the candidate revision.
-    moved = set("diagnostics adts traits fns aliases alias_resolved local_impls observable_impls impl_table module_fn_sigs consts current_eff_vars current_tparams current_tparam_bounds module_exports ty_spans".split())
-    retained = set("decl_slots identities fn_origin adts_by_name ctors_by_name traits_by_name effects effect_infos alias_resolving local_traits module_aliases imported_names const_order all_const_names java_classes record_ty_spans".split())
-    if fields(product, "HeaderProduct") != moved | retained or moved & retained:
-        raise RuntimeError("Unclassified header projection field")
-    block = visitor.split("Some(HeaderProduct { ..p,", 1)[1].split(" })", 1)[0]
-    assignments = set(re.findall(r"\b([a-z_]+):", block))
-    if assignments != moved:
-        raise RuntimeError("Missing or unexpected header projection assignment")
-
-
 def main():
     started = time.monotonic()
     path = Path("selfhost/src/check/header_product.dawn")
     original = (ROOT / path).read_text()
     cx = (ROOT / "selfhost/src/check/cx.dawn").read_text()
     audit(cx, original)
-    visitor = (ROOT / "selfhost/src/check/relocate_header.dawn").read_text()
-    audit_projection(original, visitor)
-    for product, source in [
-        (original.replace("pub type HeaderProduct = {\n", "pub type HeaderProduct = {\n  unclassified: Int,\n"), visitor),
-        (original, edit(visitor, "    impl_table: impls,\n", "")),
-    ]:
-        try:
-            audit_projection(product, source)
-        except RuntimeError:
-            pass
-        else:
-            raise RuntimeError("Header projection audit accepted its negative control")
-    print("OK: header projection field audit and two negative controls", flush=True)
     for source, product in [
         (cx.replace("pub type Cx = {\n", "pub type Cx = {\n  unclassified: Int,\n"), original),
         (cx, edit(original, "consts: after.consts", "consts: before.consts")),

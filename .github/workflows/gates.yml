@@ -1231,10 +1231,13 @@ jobs:
       # 2*(90+37+57+32+42)+38=554s; no contract or negative control was removed.
       # State products now run independently above after measuring 155.55s.
       # Retain the existing budget for the remaining contracts; none are removed.
+      # 2026-09-14: header-metadata.py went with check/relocate_header (K7).
+      # The declared planning value stays where it is; doing less work breaks
+      # none of check-gate-budgets.py's three rules, and restating it downward
+      # would need a new observation to back it.
       - name: state product and declaration identity contracts
         run: |
           python3 scripts/incremental-semantics-contract/identity.py
-          python3 scripts/incremental-semantics-contract/header-metadata.py
           python3 scripts/incremental-semantics-contract/header-state.py
 
       # was the incremental-state-products job until 2026-09-11.
