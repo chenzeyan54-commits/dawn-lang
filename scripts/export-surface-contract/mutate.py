@@ -164,9 +164,8 @@ MUTATIONS = {
     "surface-after-bodies": (
         CHECKER,
         "  cx1 = pass_export_surface(cx1, m)\n"
-        "  let no_spans: Map[(Int, Int), TySpan] = map.empty()\n"
-        "  cx1 = Cx { ..cx1, record_ty_spans: false, ty_spans: no_spans }\n",
-        "  cx1 = Cx { ..cx1, record_ty_spans: false }\n",
+        "  let no_spans: Map[(Int, Int), TySpan] = map.empty()\n",
+        "  let no_spans: Map[(Int, Int), TySpan] = map.empty()\n",
     ),
     # 17 -- the exporter validates its own surface, the importer does not
     "check-imports-not-exports": (
