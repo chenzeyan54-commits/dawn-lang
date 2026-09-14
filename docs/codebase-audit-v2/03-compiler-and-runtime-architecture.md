@@ -259,11 +259,11 @@
 > （`ir/lower.densify`）把两个域摊回模块级小整数，所以 C 的 `v<id>` 仍是小数字。
 >
 > 当年判不做的三条理由逐条答复：① 「会重命名语言里每一个生成符号，是比它去掉的噪声
-> 更大的 Emit-Change」——实测不是：九个固定语料的 class 文件逐字节相同，唯一改的字节
+> 更大的 Emit-Change」。实测不是：九个固定语料的 class 文件逐字节相同，唯一改的字节
 > 是 `with handle` 安装号作为 `ctl_run` 的 prompt 字面量，只影响装 handler 的程序，
 > 一条 `Emit-Change(emit selfhost)` 具名申报；② 「会毁掉 flat dump 那半边唯一完好的
-> 证明」——Core golden 17 个 dump 只动了一个，正是那个 prompt 字面量；③ 「今天没有增量
-> 编译，收益是空的」——收益已经兑现：body product 不再带取号区间，装配不再要求
+> 证明」。Core golden 17 个 dump 只动了一个，正是那个 prompt 字面量；③ 「今天没有增量
+> 编译，收益是空的」。收益已经兑现：body product 不再带取号区间，装配不再要求
 > 计数器坐标对齐（`check/body_product.assemble` 原前置条件删除）。
 
 - **证据：S。** `Cx.next_id` 同时分配 type var、ADT、effect、trait、local symbol：`selfhost/src/check/cx.dawn:87`、`:313`，以及 `selfhost/src/check/passes.dawn:44`、`:633`、`:1003`、`:1112`、`selfhost/src/check/checker.dawn:109`。
