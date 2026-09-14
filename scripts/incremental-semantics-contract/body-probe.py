@@ -26,9 +26,9 @@ def main():
     # `identity.pack` of its declaration and its slot now, so
     # `relocate.local_id` is deleted and `local_ids` answers with what it is
     # handed: none of the three could be told from the production code (K5).
-    # What the same projection still decides -- that a recorded local names a
-    # symbol this revision has, and spells it the way the symbol table does --
-    # is `relocate_tree`'s own inline test and `relocate.py`'s controls.
+    # What the same walk still decides -- that a recorded local names a symbol
+    # this revision has, and spells it the way the symbol table does -- is
+    # `check/body_admit`'s own inline tests and `relocate.py`'s controls.
     typed_variants = ["inferred-write", "test-state", "default-write", "default-dictionary",
                       "impl-owner", "impl-parameters", "impl-roles", "default-diagnostics",
                       "module-functions", "module-signatures", "module-method-boundary", "module-registered-tag",
@@ -98,7 +98,7 @@ def main():
     if args.typed_mutant and not args.typed_mutant.startswith("module-"):
         target = output / "selfhost/src/check" / ("checker.dawn" if args.typed_mutant in ("default-dictionary", "read-state") else
                     "allocation.dawn" if args.typed_mutant.startswith("impl-") else
-                    "body_product.dawn" if args.typed_mutant in ("inferred-write", "test-state", "default-write", "default-diagnostics") else "relocate_tree.dawn")
+                    "body_product.dawn" if args.typed_mutant in ("inferred-write", "test-state", "default-write", "default-diagnostics") else "body_admit.dawn")
         tree = target.read_text()
         replacements = {
             "read-state": ("Some(_) -> Cx { ..cx, function_reads: semantic_reads.candidates(cx.function_reads, names) }",
@@ -295,7 +295,7 @@ def main():
         "typed_projection": args.typed,
         "body_product_sha256": hashlib.sha256((output / "selfhost/src/check/body_product.dawn").read_bytes()).hexdigest() if args.typed else None,
         "allocation_sha256": hashlib.sha256((output / "selfhost/src/check/allocation.dawn").read_bytes()).hexdigest() if args.typed else None,
-        "typed_tree_sha256": hashlib.sha256((output / "selfhost/src/check/relocate_tree.dawn").read_bytes()).hexdigest() if args.typed else None,
+        "typed_tree_sha256": hashlib.sha256((output / "selfhost/src/check/body_admit.dawn").read_bytes()).hexdigest() if args.typed else None,
         "typed_view_sha256": hashlib.sha256((fixture / "src/typed_projection.dawn").read_bytes()).hexdigest() if args.typed else None,
         "note": "Typed mode: 23 fixed-header bodies with production state capture/assembly, 22 nonuniform source edit replays through production product projection, one reversed effect-header tree case, two inferred body/caller states and one test block state; fixture-only ID/callee views are not production cache validity. Legacy mode: 11 fixed-header bodies and ten uniform-source replays.",
     }, indent=2) + "\n")

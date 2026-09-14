@@ -47,8 +47,8 @@ def main():
         # one lexical sweep so they keep their order among themselves. The
         # inline test below is where the behaviour still has a judgment,
         # because it hands the relocation two type variables that do swap.
-        ("relocate_tree", "tree relocation reconstructs ground packs and associated environment order", [
-            ("pack-order", "let parts = ordered_parts(pack_parts(v, x)?)?", "let parts = pack_parts(v, x)?"),
+        ("body_admit", "body admission lays out ground packs and associated environment order", [
+            ("pack-order", "Some(parts) -> ordered_parts(parts) != None", "Some(parts) -> true"),
             # `evidence-origin` used to turn the projected origin back into
             # the recorded one. Projecting it is the identity now, so what is
             # left at this call site to get wrong is the refusal beside it:
@@ -56,10 +56,10 @@ def main():
             # records of the same slot, and a pair that disagrees is a
             # product this compiler did not write (K5).
             ("crossed-evidence-origin",
-             "    XEvRead(key, origin, lo, hi, ty) -> {\n      if key != evidence_role_key(origin) { return None }",
-             "    XEvRead(key, origin, lo, hi, ty) -> {\n      if false { return None }"),
+             "    XEvRead(key, origin, _, _, _) -> key == evidence_role_key(origin)",
+             "    XEvRead(key, origin, _, _, _) -> true"),
         ]),
-        ("relocate_tree", "tree relocation assembles defaults symbols and entry call evidence", [
+        ("body_admit", "body admission checks defaults symbols and entry call evidence", [
             # `constant-type` stood here, moved from body-probe's typed
             # mutants in K4 because the value sample's constants are declared
             # at types with no binders in them. It is gone for the reason the
@@ -69,8 +69,8 @@ def main():
             # describes -- and that is what the control below turns off. The
             # anchor moved in K6 with the permutation it used to read a length
             # off; the judgment and its owning assertion did not.
-            ("evidence-arity", "if nev(sig_abi_eff(f.sig)) != len(f.ev_syms) { return None }",
-             "if false { return None }"),
+            ("evidence-arity", "if nev(sig_abi_eff(f.sig)) != len(f.ev_syms) { return false }",
+             "if false { return false }"),
         ]),
         ("callee_index", "callee lookup preserves declaring owners across module aliases", [
             # The production lookup is the index, so these three mutate the

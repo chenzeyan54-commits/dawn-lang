@@ -40,13 +40,12 @@ def main():
         ('recorded-binders', 'let names = scalar_shape.binders(prior.body, prior_sig.param_names)?',
          'let names: List[String] = []'),
         # Admission against the recorded header rather than the candidate
-        # one. The relocation the call returns is empty either way now, so
-        # what this turns off is its refusal: a declaration whose own bytes
-        # are unchanged can still have a different signature, because the
-        # types it names are declared elsewhere.
+        # one. What this turns off is the refusal: a declaration whose own
+        # bytes are unchanged can still have a different signature, because
+        # the types it names are declared elsewhere.
         ('header-only-admission',
-         'let ids = allocation.body_relocation(prepared.headers, prior_sig, sig, no_evidence)?',
-         'let ids = allocation.body_relocation(prepared.headers, prior_sig, prior_sig, no_evidence)?'),
+         'if not allocation.body_relocation(prior_sig, sig, no_evidence) { return None }',
+         'if not allocation.body_relocation(prior_sig, prior_sig, no_evidence) { return None }'),
         # The product is retained under a declaration key, so the key the
         # candidate declaration is looked up with has to be the one this
         # revision's own enumeration gives it. Reading the recorded revision's

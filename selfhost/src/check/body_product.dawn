@@ -11,17 +11,15 @@ use check/types.{Sig, Sym, Ty, Eff, CtorI, FieldI, EffectI, AWorld, TyInt, TyUni
 use check/tast.{TFun, TConst, XUnit, XLocal, XInt, XCallBuiltin}
 use front/token.{Diag, DiagOwner}
 use front/ast.{TypeRef, TNamed}
+use check/body_admit
+use check/body_admit.{View}
 use check/evidence_spelling
-use check/relocate
-use check/relocate.{Ids}
 use check/semantic_reads
 use check/write_journal
 use check/jsig.{JClass, JMethod, JCtor, JField}
 use check/semantic_reads.{UnificationRead, InferenceBindings, FunctionRead, NamedFunctionRead, FunctionAnswer, FunctionCandidates, QualifiedConstant, QualifiedConstructor,
   AliasTypeHeader, ConstructorHeader, QualifiedAliasHeader, QualifiedAliasTarget, NominalTypeName, NominalTypeShape, LocalTypeDiagnostic, ExportDiagnostic, LocalAliasSource,
   LocalAliasTarget, LocalAliasResolving, LocalAliasHeader, LocalAliasBinders }
-use check/relocate_tree
-use check/relocate_tree.{View}
 
 pub type Change[K, V] = { key: K, value: Option[V] }
 
@@ -274,10 +272,10 @@ fn projected_frame(v: View, f: Frame) -> Option[Frame] = {
     scopes = scopes ++ [next]
   }
   var used: List[Eff] = []
-  for e in f.used_effects { used = used ++ [relocate.effect_row(v.ids, e)?] }
+  for e in f.used_effects { used = used ++ [e] }
   var witnesses: Map[Eff, (Int, Int, String)] = map.empty()
   for (e, span) in map.entries(f.eff_witness) {
-    let moved = relocate.effect_row(v.ids, e)?
+    let moved = e
     if map.has(witnesses, moved) { return None }
     # The witness span is an offset from the declaration that recorded it,
     # like everything else a body records, so only the effect it is keyed by
@@ -317,7 +315,7 @@ pub fn project(v: View, p: Product) -> Option[Product] = {
 pub fn projected_reads[T](v: View, p: BodyProduct[T],
   source_value: fn(String, TypeRef) -> Option[TypeRef]) -> Option[Option[List[FunctionRead]]] =
   semantic_reads.project_with_inference(p.function_reads, s => Some(s),
-    t => relocate.ty(v.ids, t), id => Some(id), e => relocate.effect_row(v.ids, e), source_value,
+    t => Some(t), id => Some(id), e => Some(e), source_value,
     id => Some(id), id => Some(id), id => Some(id), id => Some(id))
 
 ## `project` for a caller that revalidates the recorded log in place and does
@@ -326,7 +324,7 @@ pub fn projected_reads[T](v: View, p: BodyProduct[T],
 ## rebuild would map is mapped by the comparison, and both refuse on the same
 ## missing mapping, so skipping the rebuild admits nothing extra.
 pub fn project_without_reads(v: View, p: Product) -> Option[Product] =
-  project_body(v, p, tree => relocate_tree.function(v, tree), (owner, source) => None, false)
+  project_body(v, p, tree => body_admit.function(v, tree), (owner, source) => None, false)
 
 pub fn project_constant(v: View, p: ConstantProduct) -> Option[ConstantProduct] = {
   project_constant_with_source(v, p, (owner, source) => None)
@@ -334,17 +332,18 @@ pub fn project_constant(v: View, p: ConstantProduct) -> Option[ConstantProduct] 
 
 pub fn project_with_source(v: View, p: Product,
   source_value: fn(String, TypeRef) -> Option[TypeRef]) -> Option[Product] = {
-  project_body(v, p, tree => relocate_tree.function(v, tree), source_value, true)
+  project_body(v, p, tree => body_admit.function(v, tree), source_value, true)
 }
 
 pub fn project_constant_with_source(v: View, p: ConstantProduct,
   source_value: fn(String, TypeRef) -> Option[TypeRef]) -> Option[ConstantProduct] = {
-  project_body(v, p, tree => relocate_tree.constant(v, tree), source_value, true)
+  project_body(v, p, tree => body_admit.constant(v, tree), source_value, true)
 }
 
 fn project_body[T](v: View, p: BodyProduct[T],
-  project_tree: fn(T) -> Option[T], source_value: fn(String, TypeRef) -> Option[TypeRef],
+  admit_tree: fn(T) -> Bool, source_value: fn(String, TypeRef) -> Option[TypeRef],
   keep_reads: Bool) -> Option[BodyProduct[T]] = {
+  if not admit_tree(p.tree) { return None }
   let moved_symbols = projected_changes(p.symbols, id => Some(id), s => projected_symbol(v, s))?
   # The change list is put in key order rather than in the order the two
   # tables were walked. It used to be here because an evidence ABI
@@ -353,7 +352,7 @@ fn project_body[T](v: View, p: BodyProduct[T],
   # maps, and a product should not carry that.
   let symbols = sort_by(moved_symbols, (a, b) => cmp(a.key, b.key))
   let signatures = projected_changes(p.signatures, name => Some(name), s => Some(s))?
-  let aliases = projected_changes(p.aliases, name => Some(name), t => relocate.ty(v.ids, t))?
+  let aliases = projected_changes(p.aliases, name => Some(name), t => Some(t))?
   let bounds = projected_changes(p.bounds, id => Some(id), bs => Some(bs))?
   # Diagnostics travel whole. An owned one is measured from the declaration
   # that raised it and the render sites add that declaration's start in the
@@ -362,10 +361,10 @@ fn project_body[T](v: View, p: BodyProduct[T],
   # there is nothing inside it that moved either.
   let diagnostics = p.diagnostics
   var tparams: Map[String, Ty] = map.empty()
-  for (name, t) in map.entries(p.tparams) { tparams = map.insert(tparams, name, relocate.ty(v.ids, t)?) }
+  for (name, t) in map.entries(p.tparams) { tparams = map.insert(tparams, name, t) }
   var effect_vars: Map[String, Eff] = map.empty()
-  for (name, e) in map.entries(p.effect_vars) { effect_vars = map.insert(effect_vars, name, relocate.effect_row(v.ids, e)?) }
-  Some(BodyProduct { ..p, tree: project_tree(p.tree)?,
+  for (name, e) in map.entries(p.effect_vars) { effect_vars = map.insert(effect_vars, name, e) }
+  Some(BodyProduct { ..p,
     symbols: symbols, signatures: signatures, aliases: aliases, bounds: bounds, diagnostics: diagnostics,
     frame: projected_frame(v, p.frame)?, tparams: tparams, effect_vars: effect_vars,
     body_writes: write_journal.project(p.body_writes, id => Some(id), id => Some(id))?,
@@ -391,7 +390,7 @@ test "body product constants project their real tree and share state admission" 
     body_writes: Some([write_journal.SymbolKey(10), write_journal.BoundsKey(1)]),
     current_tparams: map.from([("T", ty)]) }
   let saved = capture_constant(before, after, constant).expect("constant capture")
-  let v = View { ids: relocate.new(), symbols: after.syms,
+  let v = View { symbols: after.syms,
     callee: (owner, name, builtin, tr) => None }
   let moved = project_constant(v, saved).expect("constant projection")
   # every reference the constant names is the same integer in the candidate
@@ -423,8 +422,7 @@ test "body product separates alias declaration positions from body positions" {
   let after = Cx { ..before, function_reads: Some([semantic_reads.LocalAliasSource("Alias", "provider", Some(target))]) }
   let f = fixture_function(before)
   let p = capture(before, after, f).expect("capture source read")
-  let ids = relocate.new()
-  let view = View { ids: ids, symbols: after.syms,
+  let view = View { symbols: after.syms,
     callee: (owner, name, builtin, tr) => Some(f.sig) }
   # The one reference domain a recorded fact can carry that is spelled in
   # another declaration's file. Only that declaration's own owner can move
@@ -561,7 +559,7 @@ test "body product hands its symbol changes over in key order" {
   # the order a product hands over
   let after = Cx { ..before, syms: map.from([(11, y), (10, x)]) }
   let p = capture(before, after, f).expect("capture two symbols")
-  let view = View { ids: relocate.new(), symbols: after.syms,
+  let view = View { symbols: after.syms,
     callee: (owner, name, builtin, tr) => Some(f.sig) }
   let projected = project(view, p).expect("project two symbols")
   var keys: List[Int] = []
@@ -585,7 +583,7 @@ test "body product carries an allocation that never becomes a symbol" {
     dict_of: None, ev_of: None, cell_of: Some((11, TyInt)) }
   let after = Cx { ..before, syms: map.from([(10, x)]) }
   let p = capture(before, after, f).expect("capture installation")
-  let view = View { ids: relocate.new(), symbols: after.syms,
+  let view = View { symbols: after.syms,
     callee: (owner, name, builtin, tr) => Some(f.sig) }
   let projected = project(view, p).expect("project installation")
   assert projected.tree.body == prompt
@@ -670,7 +668,7 @@ test "body product projects every state reference and the whole allocation inter
       dict_syms: map.from([((1, 2), 10)]), used_effects: [EffVar("e", 3)],
       eff_witness: map.from([(EffVar("e", 3), (0, 1, "callee"))]) } }
   let p = capture(before, after, f).expect("capture projected fixture")
-  let view = View { ids: relocate.new(), symbols: after.syms,
+  let view = View { symbols: after.syms,
     callee: (owner, name, builtin, tr) => Some(f.sig) }
   let q = project(view, p).expect("project product")
   let cx = assemble(before, q).expect("assemble projected product")

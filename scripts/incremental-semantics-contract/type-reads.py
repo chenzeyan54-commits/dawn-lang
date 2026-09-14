@@ -21,10 +21,10 @@ def main():
         # a control that replaced the callback with `Some` could not be told
         # from the production code (K5). The alias and constant source
         # callbacks below still decide something and stay.
-        ("body_product", "alias-source-callback", "e => relocate.effect_row(v.ids, e), source_value,",
-         "e => relocate.effect_row(v.ids, e), (owner, source) => Some(source),"),
-        ("body_product", "constant-source-callback", "tree => relocate_tree.constant(v, tree), source_value, true)",
-         "tree => relocate_tree.constant(v, tree), (owner, source) => Some(source), true)"),
+        ("body_product", "alias-source-callback", "e => Some(e), source_value,",
+         "e => Some(e), (owner, source) => Some(source),"),
+        ("body_product", "constant-source-callback", "tree => body_admit.constant(v, tree), source_value, true)",
+         "tree => body_admit.constant(v, tree), (owner, source) => Some(source), true)"),
         ("cx", "observation", "semantic_reads.observe(cx.function_reads, fact)", "cx.function_reads"),
         ("cx", "alias-header", "semantic_reads.QualifiedAliasHeader(q, name, header_answer)", "semantic_reads.QualifiedAliasHeader(q, name, None)"),
         ("cx", "alias-type-binders", "tparams: al.tparams, eparams: al.eparams,", "tparams: [], eparams: al.eparams,"),

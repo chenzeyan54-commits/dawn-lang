@@ -27,7 +27,6 @@ use check/checker.{check_module, check_module_headers, check_module_bodies, asse
 use check/body_execution
 use check/allocation
 use check/allocation.{TypeParameter}
-use check/relocate
 use check/identity
 use check/identity.{module_key, Minted, DeclKey, Named, FunctionDecl}
 use ir/interp.{eval_comptime, CtOut, CtOpts, ct_default}
@@ -1953,15 +1952,15 @@ test "module provenance carry keeps exporting owners across header reorder" {
       # it binds. There is nothing for a join to look up, which is why the
       # join went with this knife.
       assert not allocation.published(local, TypeParameter, binder)
-      assert allocation.between(local, local) != None
-      assert allocation.between(table, local) != None
+      assert allocation.between(local, local)
+      assert allocation.between(table, local)
     }
     # The two revisions declare the same two blocks in the opposite order.
     # Nothing in either moved: a nominal id derives from its declaration, and
     # a binder is a slot of the declaration that binds it.
     assert ids[0] == ids[1]
     assert binders[0] == binders[1]
-    assert allocation.between(tables[0], tables[1]) != None
+    assert allocation.between(tables[0], tables[1])
 
     # The same slot under a renamed declaration is a different identity, so
     # its key is a different integer and the old ledger does not name it.
@@ -1978,7 +1977,7 @@ test "module provenance carry keeps exporting owners across header reorder" {
     let renamed_table = map.get(renamed_step.after.provenance.expect("renamed provenance").modules, "library")
       .expect("renamed record").expect("renamed table")
     assert not allocation.published(renamed_table, TypeParameter, binders[0])
-    assert allocation.between(tables[0], renamed_table) != None
+    assert allocation.between(tables[0], renamed_table)
     for text in ["fn broken(", "fn broken(x: Missing) -> Unit = ()\n"] {
       let (syntax, pd) = parser.parse_module(text)
       let input = LoadedModule { mod_path: "broken", class_name: "broken", path: "/provenance/broken.dawn",

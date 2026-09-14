@@ -17,11 +17,11 @@ def main():
     started = time.monotonic()
     original = (ROOT / "selfhost/src/check/allocation.dawn").read_text()
     variants = [
-        ("constant-type", "if old_ty != next_ty { return None }", ""),
+        ("constant-type", "if old_ty != next_ty { return false }", ""),
         ("binding-conflict", "if id != e.id", "if false"),
         ("owner-conflict", "if binding != e.binding", "if false"),
-        ("target-identity", "Some(target) -> if target != id { return None }",
-         "Some(target) -> if false { return None }"),
+        ("target-identity", "Some(target) -> if target != id { return false }",
+         "Some(target) -> if false { return false }"),
         ("effect-domain", "if held == id && binding.domain == domain", "if held == id"),
         ("compiler-trait-binders", "entries = entries ++ binders(key, [tr.tvar], [])?", "entries = entries"),
         ("negative-slot", "HeaderSlot(index) -> if index < 0", "HeaderSlot(index) -> if false"),
@@ -29,8 +29,8 @@ def main():
         # slots, in ABI order. It was an interval inside one counter, and the
         # control that owned its extent went with the interval; what is left
         # to get wrong is the run itself and the header it is admitted under.
-        ("entry-pack-not-a-run", "if id != evidence[0] + index { return None }", "if false { return None }"),
-        ("reserved-signature", "if old_sig != next_sig { return None }", "if false { return None }"),
+        ("entry-pack-not-a-run", "if id != evidence[0] + index { return false }", "if false { return false }"),
+        ("reserved-signature", "if old_sig != next_sig { return false }", "if false { return false }"),
         ("module-combine", "  table(entries)\n}\n\n## Rebind", "  table([])\n}\n\n## Rebind"),
         ("world-owner", "if declaration.scope.world != from", "if false"),
         ("source-wildcard", 'None -> scope.source == ""', "None -> true"),

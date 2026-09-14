@@ -17,15 +17,14 @@ use check/body_product.{Product, BodyProduct}
 use check/identity
 use check/identity.{ModuleKey, DeclKey}
 use check/allocation
-use check/relocate.{Ids}
 use check/scalar_shape
 use check/write_journal.{SymbolKey}
 use check/source_projection
 use check/source_snapshot
 use check/source_snapshot.{Snapshot}
 use check/callee_index
-use check/relocate_tree
-use check/relocate_tree.{View}
+use check/body_admit
+use check/body_admit.{View}
 use check/semantic_reads.{AssignableType}
 use front/ast.{FnDecl, DFn}
 
@@ -47,7 +46,7 @@ type AdmittedData = { scope: ModuleKey, ready: Option[Ready] }
 ## headers produced these products, and no caller can substitute another.
 pub opaque type Admitted = AdmittedData
 
-type Prepared = { scope: ModuleKey, ready: Ready, headers: Ids,
+type Prepared = { scope: ModuleKey, ready: Ready,
   candidates: Map[Int, (DeclKey, Int)], callees: callee_index.CalleeIndex,
   old_tokens: source_projection.Tokens, tokens: source_projection.Tokens }
 
@@ -193,7 +192,7 @@ fn prepare(admitted: AdmittedData, next: ModuleHeaders, source: Snapshot) -> Opt
   let scope = admitted.scope
   let settled = admitted.ready?
   let next_headers = table(scope, next)?
-  let headers = allocation.between(settled.headers, next_headers)?
+  if not allocation.between(settled.headers, next_headers) { return None }
   # The candidate revision's own declaration keys, addressed by where each
   # declaration starts. A body reaches the executor as syntax, and this is
   # what turns that syntax back into the identity the enumeration gave it,
@@ -216,7 +215,7 @@ fn prepare(admitted: AdmittedData, next: ModuleHeaders, source: Snapshot) -> Opt
   # body, and a table built per body would cost a module-sized pass per body.
   # It is built from the header revision's `cx`, which is the revision these
   # products are relocated onto.
-  Some(Prepared { scope: scope, ready: settled, headers: headers, candidates: candidates,
+  Some(Prepared { scope: scope, ready: settled, candidates: candidates,
     callees: callee_index.of(next.cx),
     old_tokens: source_snapshot.tokens(settled.source), tokens: source_snapshot.tokens(source) })
 }
@@ -242,15 +241,15 @@ fn relocation(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[(Prior,
   let p = saved.product
   # `parameters` proved the candidate declaration binds exactly `sig`'s
   # parameter names, so equal names make the recorded binder list describe
-  # this body too. The rest of the header is relocated field for field by the
-  # interval below, which refuses unless the recorded signature carries onto
-  # this one, and the declaration's own bytes are required further down.
+  # this body too. The rest of the header is compared field for field below,
+  # which refuses unless the recorded signature carries onto this one, and the
+  # declaration's own bytes are required further down.
   if prior_sig.param_names != sig.param_names { return None }
   for name in saved.binders {
     if map.has(cx.module_aliases, name) { return None }
   }
   let no_evidence: List[Int] = []
-  let ids = allocation.body_relocation(prepared.headers, prior_sig, sig, no_evidence)?
+  if not allocation.body_relocation(prior_sig, sig, no_evidence) { return None }
   # Both revisions lexed their own declarations once, and pairing them is two
   # list comparisons over kinds and spellings. That is the snapshot's own
   # equality, and it says the recorded coordinates address this declaration in
@@ -267,12 +266,11 @@ fn relocation(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[(Prior,
   # rule.
   if not source_projection.same_text(prepared.old_tokens, prepared.tokens,
     prior.lo, prior.hi, d.lo, d.hi) { return None }
-  let view = View { ids: ids,
-    symbols: saved.symbols,
+  let view = View { symbols: saved.symbols,
     # Admission is closed to named calls: `scalar_shape.binders` pairs no
     # call node and `recorded` accepts no read but `AssignableType`, so no
     # admitted body has a callee to resolve. Widening this class consumes
-    # `prepared.callees`; until then the relocation refuses every call node.
+    # `prepared.callees`; until then admission refuses every call node.
     callee: (owner, name, builtin, trait_id) => None }
   Some((saved, view))
 }

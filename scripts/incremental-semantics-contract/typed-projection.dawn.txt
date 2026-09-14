@@ -12,9 +12,8 @@ use compiler/front/token.{Diag}
 use compiler/check/checker.{headers_for_body_probe, headers_with_impls_for_body_probe, check_fn, check_fn_body, check_param_default, default_sig, check_fn_inferred, check_fn_inferred_body, check_test, check_const_init, check_module, check_module_headers, exports_of, ModuleBodies, assemble_module_bodies, impl_body_key, check_trait_default, strip_param_defaults}
 use compiler/check/function_product
 use compiler/check/callee_index
-use compiler/check/relocate
-use compiler/check/relocate_tree
-use compiler/check/relocate_tree.{View}
+use compiler/check/body_admit
+use compiler/check/body_admit.{View}
 use compiler/check/tast_positions
 use compiler/check/body_product
 use compiler/check/header_product
@@ -172,26 +171,39 @@ fn shifted_syms_minted(before: Cx, after: Cx, from: Int, to: Int, delta: Int, wi
 }
 
 fn local_view(before: Cx, after: Cx, delta: Int) -> View = {
-  View { ids: relocate.new(), symbols: after.syms,
+  View { symbols: after.syms,
     callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
 }
 
-pub fn body(f: TFun, before: Cx, after: Cx, delta: Int) -> TFun =
-  relocate_tree.function(local_view(before, after, delta), f)
-    .expect("typed projection failed: " ++ f.name)
+fn admitted_body(v: View, f: TFun) -> TFun = {
+  if not body_admit.function(v, f) { panic("test body admission failed: " ++ f.name) }
+  f
+}
+
+## The tree a body recorded, once the candidate revision has said it can
+## install it. Nothing in it moves any more, so what used to be a rebuild is
+## the admission walk and the recorded tree itself.
+pub fn body(f: TFun, before: Cx, after: Cx, delta: Int) -> TFun = {
+  if not body_admit.function(local_view(before, after, delta), f) {
+    panic("typed admission failed: " ++ f.name)
+  }
+  f
+}
 
 ## The same projection onto a declaration that moved. Nothing positional
 ## happens here: the spans are measured from the declaration, so the move is
 ## in where the tree is resolved, and that is the fixture's own last step.
-pub fn body_in_source(f: TFun, before: Cx, after: Cx, delta: Int, cx: Cx, m: Module, d: FnDecl) -> TFun =
-  resolved_body(cx, m, d,
-    relocate_tree.function(local_view(before, after, delta), f)
-      .expect("source-aware typed projection failed: " ++ f.name))
+pub fn body_in_source(f: TFun, before: Cx, after: Cx, delta: Int, cx: Cx, m: Module, d: FnDecl) -> TFun = {
+  if not body_admit.function(local_view(before, after, delta), f) {
+    panic("source-aware typed admission failed: " ++ f.name)
+  }
+  resolved_body(cx, m, d, f)
+}
 
 # The fixture still supplies allocation/provenance tables, but the complete
 # write product and its source/ID projection now belong to production code.
 pub fn source_state(current: Cx, before: Cx, after: Cx, body: TFun, delta: Int) -> Cx = {
-  let view = View { ids: relocate.new(), symbols: after.syms,
+  let view = View { symbols: after.syms,
     callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
   let saved = body_product.capture(before, after, body).expect("state capture: " ++ body.name)
   let projected = body_product.project(view, saved).expect("state projection: " ++ body.name)
@@ -234,7 +246,7 @@ pub fn metadata_sample() -> MetadataTrial !io = {
   let next_table = allocation.combine([reserved,
     allocation.table(allocation.local_headers(scope, next_syntax, next.cx).expect("metadata next declarations")).expect("metadata next table"),
     allocation.table(allocation.local_impl_headers(scope, next_syntax, next.cx, next.impl_sigs).expect("metadata next impls")).expect("metadata next impl table")]).expect("metadata next combined")
-  if allocation.between(old_table, next_table) == None { panic("metadata header join refused") }
+  if not allocation.between(old_table, next_table) { panic("metadata header join refused") }
   let old_exports = exports_of(old.cx, syntax, "metadata", "metadata")
   let cold = exports_of(next.cx, next_syntax, "metadata", "metadata")
   # A nominal id derives from the declaration, so shifting the counter under
@@ -592,7 +604,7 @@ fn value_module_sample() -> ModuleTrial !io = {
     allocation.table(allocation.local_headers(scope, syntax, old_headers.cx).expect("old value origins")).expect("old value table")]).expect("old value combined")
   let next_table = allocation.combine([reserved,
     allocation.table(allocation.local_headers(scope, next_syntax, next_headers.cx).expect("new value origins")).expect("new value table")]).expect("new value combined")
-  let header_ids = allocation.between(old_table, next_table).expect("value header IDs")
+  if not allocation.between(old_table, next_table) { panic("value header join refused") }
   var replayed = next_headers.cx
   var moved_constants: List[TConst] = []
   var moved_tests: List[TFun] = []
@@ -601,8 +613,8 @@ fn value_module_sample() -> ModuleTrial !io = {
       function_product.ConstantHeader(_, d, ty, _) -> {
         let saved = map.get(constants, key).expect("saved constant")
         let p = saved.product
-        let ids = allocation.constant_relocation(header_ids, p.tree.ty, ty).expect("constant allocation")
-        let view = View { ids: ids, symbols: saved.after.syms,
+        if not allocation.constant_relocation(p.tree.ty, ty) { panic("constant allocation") }
+        let view = View { symbols: saved.after.syms,
           callee: (owner, name, builtin, tr) => checked_callee(saved.before, owner, name, builtin, tr) }
         let projected = body_product.project_constant(view, p).expect("constant projection")
         let resolver = path_resolver(replayed, next_syntax, key.path)
@@ -621,12 +633,12 @@ fn value_module_sample() -> ModuleTrial !io = {
         let p = saved.product
         # Test signatures have only fixed Unit/io metadata, no header binders.
         let no_evidence: List[Int] = []
-        let ids = allocation.body_relocation(header_ids, p.tree.sig, p.tree.sig, no_evidence).expect("test allocation")
+        if not allocation.body_relocation(p.tree.sig, p.tree.sig, no_evidence) { panic("test allocation") }
         let prior = match function_product.value(old_named, key).expect("prior test") {
           function_product.TestHeader(_, old) -> old
           _ -> panic("prior test role")
         }
-        let view = View { ids: ids, symbols: saved.after.syms,
+        let view = View { symbols: saved.after.syms,
           callee: (owner, name, builtin, tr) => checked_callee(saved.before, owner, name, builtin, tr) }
         let projected = body_product.project(view, p).expect("test projection")
         let resolver = path_resolver(replayed, next_syntax, key.path)
@@ -696,7 +708,7 @@ fn method_module_sample() -> ModuleTrial !io = {
     allocation.local_impl_headers(scope, next_syntax, next_headers.cx, next_headers.impl_sigs).expect("next impl headers")
   let old_table = allocation.combine([reserved, allocation.table(old_entries).expect("old method table")]).expect("old combined methods")
   let next_table = allocation.combine([reserved, allocation.table(next_entries).expect("next method table")]).expect("next combined methods")
-  let header_ids = allocation.between(old_table, next_table).expect("method header IDs")
+  if not allocation.between(old_table, next_table) { panic("method header join refused") }
   var replayed = next_headers.cx
   var impls: List[TFun] = []
   var defaults: List[TFun] = []
@@ -717,11 +729,11 @@ fn method_module_sample() -> ModuleTrial !io = {
     let entry = function_product.method(next_methods, key).expect("next method")
     let prior = function_product.method(old_methods, key).expect("prior method")
     let body = map.get(saved, key).expect("method body by key")
-    let ids = allocation.body_relocation(header_ids, method_signature(prior), method_signature(entry),
-      body.product.tree.ev_syms).expect("method allocation")
+    if not allocation.body_relocation(method_signature(prior), method_signature(entry),
+      body.product.tree.ev_syms) { panic("method allocation") }
     let (old_lo, old_hi) = method_span(prior)
     let (next_lo, next_hi) = method_span(entry)
-    let view = View { ids: ids, symbols: body.after.syms,
+    let view = View { symbols: body.after.syms,
       callee: (owner, name, builtin, tr) => checked_callee(body.before, owner, name, builtin, tr) }
     let projected = body_product.project(view, body.product).expect("method projection")
     let resolver = path_resolver(replayed, next_syntax, key.path)
@@ -787,16 +799,16 @@ fn reordered_module_sample() -> ModuleTrial !io = {
     allocation.table(allocation.local_headers(scope, syntax, old_headers.cx).expect("old named origins")).expect("old table")]).expect("old combined")
   let next_table = allocation.combine([reserved,
     allocation.table(allocation.local_headers(scope, next_syntax, next_headers.cx).expect("next named origins")).expect("next table")]).expect("next combined")
-  let header_ids = allocation.between(old_table, next_table).expect("named header IDs")
+  if not allocation.between(old_table, next_table) { panic("named header join refused") }
   var replayed = next_headers.cx
   var functions: List[TFun] = []
   for key in next_keys {
     let entry = function_product.get(next_named, key).expect("next declaration")
     let prior = function_product.get(old_named, key).expect("prior declaration")
     let body = map.get(saved, key).expect("named body lookup")
-    let ids = allocation.body_relocation(header_ids, prior.signature, entry.signature,
-      body.product.tree.ev_syms).expect("named allocation")
-    let view = View { ids: ids, symbols: body.after.syms,
+    if not allocation.body_relocation(prior.signature, entry.signature,
+      body.product.tree.ev_syms) { panic("named allocation") }
+    let view = View { symbols: body.after.syms,
       callee: (owner, name, builtin, tr) => checked_callee(body.before, owner, name, builtin, tr) }
     let projected = body_product.project(view, body.product).expect("named projection")
     let resolver = path_resolver(replayed, next_syntax, [Named(FunctionDecl, entry.syntax.name)])
@@ -863,16 +875,16 @@ fn import_sample(kind: Int) -> StateTrial !io = {
   # the reference the consumer holds is the same integer and no ledger entry
   # has to say so. The join still has to exist for the binder domains.
   if old_ask != new_ask { panic("provider identity moved under a reorder") }
-  if allocation.between(old_table, new_table) == None { panic("program join refused") }
-  if allocation.between(old_local, new_local) == None { panic("consumer join refused") }
+  if not allocation.between(old_table, new_table) { panic("program join refused") }
+  if not allocation.between(old_local, new_local) { panic("consumer join refused") }
   let decl = module_fns(syntax)[0]
   let entered_old = owned_decl(before, syntax, decl)
   let entered_new = owned_decl(next, syntax, decl)
   let resolver = path_resolver(next, syntax, [Named(FunctionDecl, decl.name)])
   let (after, body) = check_fn(entered_old, decl, sigs[0])
-  let ids = allocation.body_relocation(allocation.between(old_table, new_table).expect("import header IDs"),
-    body.sig, nsigs[0], body.ev_syms).expect("import body plan")
-  let view = View { ids: ids, symbols: after.syms,
+  if not allocation.between(old_table, new_table) { panic("import header join refused") }
+  if not allocation.body_relocation(body.sig, nsigs[0], body.ev_syms) { panic("import body plan") }
+  let view = View { symbols: after.syms,
     callee: (owner, name, builtin, tr) => checked_callee(entered_old, owner, name, builtin, tr) }
   let saved = body_product.capture(entered_old, after, body).expect("import body capture")
   let projected = body_product.project(view, saved).expect("import body projection")
@@ -918,7 +930,7 @@ fn default_sample(inferred: Bool, generic: Bool, invalid: Bool) -> ModuleTrial !
   # declaration. Each was an interval the next one's relocation had to carry;
   # they are runs of the declaration's own slots now, so each boundary is
   # admitted on its own header and nothing accumulates.
-  let header_ids = allocation.between(old_table, new_table).expect("default header IDs")
+  if not allocation.between(old_table, new_table) { panic("default header join refused") }
   # One declaration, two boundaries: the parameter defaults and the body that
   # follows them are checked inside the same open declaration, so the fixture
   # opens it once and leaves it once, the way the scheduler does.
@@ -937,8 +949,8 @@ fn default_sample(inferred: Bool, generic: Bool, invalid: Bool) -> ModuleTrial !
     let fn_value = TFun { name: sig.name, sig: sig, param_syms: [], dict_syms: value.dict_syms,
       defaults: [], ev_syms: [], body: value.body, is_test: false, impl_of: None, default_of: None }
     let no_evidence: List[Int] = []
-    let ids = allocation.body_relocation(header_ids, sig, new_sig, no_evidence).expect("default allocation")
-    let view = View { ids: ids, symbols: after.syms,
+    if not allocation.body_relocation(sig, new_sig, no_evidence) { panic("default allocation") }
+    let view = View { symbols: after.syms,
       callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
     let saved = body_product.capture(old_cx, after, fn_value).expect("default capture")
     let projected = body_product.project(view, saved).expect("default projection")
@@ -952,9 +964,8 @@ fn default_sample(inferred: Bool, generic: Bool, invalid: Bool) -> ModuleTrial !
     let (cx, _, value) = check_fn_inferred_body(old_cx, decl, sigs[0], old_defaults)
     (cx, value)
   } else { check_fn_body(old_cx, decl, sigs[0], old_defaults) }
-  let main_ids = allocation.body_segment_relocation(header_ids, sigs[0], nsigs[0], old_body.ev_syms)
-    .expect("main allocation")
-  let main_view = View { ids: main_ids, symbols: old_after.syms,
+  if not allocation.body_segment_relocation(sigs[0], nsigs[0], old_body.ev_syms) { panic("main allocation") }
+  let main_view = View { symbols: old_after.syms,
     callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
   let main_saved = body_product.capture(old_cx, old_after, old_body).expect("main capture")
   let main_projected = body_product.project(main_view, main_saved).expect("main projection")
@@ -1011,7 +1022,7 @@ fn inferred_module_sample() -> ModuleTrial !io = {
   let reserved = allocation.compiler_headers("inferred-world").expect("inferred intrinsics")
   old_table = allocation.combine([old_table, reserved]).expect("old inferred provenance")
   new_table = allocation.combine([new_table, reserved]).expect("new inferred provenance")
-  let header_ids = allocation.between(old_table, new_table).expect("inferred header IDs")
+  if not allocation.between(old_table, new_table) { panic("inferred header join refused") }
   var old = old_header
   var cold = new_header
   var replayed = new_header
@@ -1034,9 +1045,8 @@ fn inferred_module_sample() -> ModuleTrial !io = {
       functions = functions ++ [cold_body]
     } else {
       let delta = 0
-      let ids = allocation.body_relocation(header_ids, old_sigs[i], new_sigs[i], body.ev_syms)
-        .expect("inferred allocation")
-      let view = View { ids: ids, symbols: after.syms,
+      if not allocation.body_relocation(old_sigs[i], new_sigs[i], body.ev_syms) { panic("inferred allocation") }
+      let view = View { symbols: after.syms,
         callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
       let saved = body_product.capture(before, after, body).expect("inferred capture")
       let projected = body_product.project(view, saved).expect("inferred projection: " ++ body.name)
@@ -1100,7 +1110,7 @@ pub fn test_samples() -> List[StateTrial] !io = {
   let replayed = left_decl(source_state(entered_new, entered_old, after, body, delta), resolver,
     mint_cursor(entered_old), mint_cursor(after))
   let moved = tast_positions.function(resolver,
-    relocate_tree.function(local_view(entered_old, after, delta), body).expect("test body projection"))
+    admitted_body(local_view(entered_old, after, delta), body))
   [StateTrial { replayed: replayed, cold: cold, relocated: moved, cold_body: cold_body, module_body: whole.tests[1] }]
 }
 
@@ -1173,8 +1183,8 @@ pub fn header_sample() -> HeaderTrial !io = {
   let reserved = allocation.compiler_headers("header-world").expect("header intrinsics")
   let old_table = allocation.combine([allocation.table(old_entries).expect("old local table"), reserved]).expect("old header table")
   let new_table = allocation.combine([allocation.table(new_entries).expect("new local table"), reserved]).expect("new header table")
-  let ids = allocation.body_relocation(allocation.between(old_table, new_table).expect("header body IDs"),
-    saved.sig, nsigs[1], saved.ev_syms).expect("body allocation plan")
+  if not allocation.between(old_table, new_table) { panic("header body join refused") }
+  if not allocation.body_relocation(saved.sig, nsigs[1], saved.ev_syms) { panic("body allocation plan") }
   let old_methods = function_product.methods(scope, old_headers).expect("old named methods")
   let new_methods = function_product.methods(scope, new_headers).expect("new named methods")
   if len(function_product.impl_keys(old_methods)) != 2 || len(function_product.default_keys(old_methods)) != 2 {
@@ -1239,7 +1249,7 @@ pub fn header_sample() -> HeaderTrial !io = {
     if old_sig != new_sig { panic("impl method provenance mismatch") }
     impl_index = impl_index + 1
   }
-  let v = View { ids: ids, symbols: after.syms,
+  let v = View { symbols: after.syms,
     callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
   let product = body_product.capture(before, after, saved).expect("header body capture")
   let projected = body_product.project(v, product).expect("header body projection")

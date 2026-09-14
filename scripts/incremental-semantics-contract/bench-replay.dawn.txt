@@ -28,11 +28,10 @@ use compiler/check/write_journal.{SymbolKey}
 use compiler/check/identity
 use compiler/check/identity.{ModuleKey, DeclKey, Named, FunctionDecl}
 use compiler/check/allocation
-use compiler/check/relocate
 use compiler/check/source_projection
 use compiler/check/source_snapshot
 use compiler/check/source_snapshot.{Snapshot}
-use compiler/check/relocate_tree.{View}
+use compiler/check/body_admit.{View}
 use compiler/check/semantic_reads.{AssignableType}
 use compiler/check/tast.{TFun}
 use compiler/check/types.{Ty, TyInt, TyFloat, TyBool, TyUnit, Sig, Sym, EPure}
@@ -159,7 +158,7 @@ type Acc = { checked: Int, reused: Int, shape: Int, reval: Int, proj: Int, asm: 
 type Prior = { syntax: FnDecl, signature: Sig, product: Product, declaration: Int,
   binders: List[String], symbols: Map[Int, Sym] }
 type Prepared = { scope: ModuleKey, entries: Map[DeclKey, Prior],
-  candidates: Map[Int, (DeclKey, Int)], headers: relocate.Ids,
+  candidates: Map[Int, (DeclKey, Int)],
   old_tokens: source_projection.Tokens, tokens: source_projection.Tokens }
 
 fn primitive(t: Ty) -> Bool = match t {
@@ -262,9 +261,9 @@ fn admitted_entries(scope: ModuleKey, old: ModuleHeaders, saved: Recorded) -> Ma
 }
 
 ## Per-body admission guard, split out so its cost can be read separately.
-## Returns the reserved relocation and the recorded local symbols only when
-## every structural precondition of replay holds.
-type Shaped = { prior: FnDecl, product: Product, symbols: Map[Int, Sym], ids: relocate.Ids,
+## Returns the recorded local symbols only when every structural precondition
+## of replay holds.
+type Shaped = { prior: FnDecl, product: Product, symbols: Map[Int, Sym],
   prior_declaration: Int, declaration_new: Int }
 
 fn shape_ok(p: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[Shaped] = {
@@ -279,8 +278,8 @@ fn shape_ok(p: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[Shaped] = {
     if map.has(cx.module_aliases, name) { return None }
   }
   let no_evidence: List[Int] = []
-  let ids = allocation.body_relocation(p.headers, prior_sig, sig, no_evidence)?
-  Some(Shaped { prior: prior, product: saved.product, symbols: saved.symbols, ids: ids,
+  if not allocation.body_relocation(prior_sig, sig, no_evidence) { return None }
+  Some(Shaped { prior: prior, product: saved.product, symbols: saved.symbols,
     prior_declaration: saved.declaration, declaration_new: declaration })
 }
 
@@ -303,7 +302,7 @@ fn timed_function(p: Prepared, acc: Acc, cx: Cx, d: FnDecl, sig: Sig,
         source_projection.same_text(p.old_tokens, p.tokens, prior.lo, prior.hi, d.lo, d.hi)
       let absent: Option[View] = None
       let relocated = if paired {
-        Some(View { ids: saved.ids, symbols: saved.symbols,
+        Some(View { symbols: saved.symbols,
           callee: (owner, name, builtin, trait_id) => None })
       } else { absent }
       let t3 = System.nanoTime()
@@ -369,12 +368,12 @@ fn instrumented_replay(scope: ModuleKey, old_headers: allocation.Table,
   if not ok { panic("instrumented replay: source snapshots did not match") }
   let a0 = System.nanoTime()
   let next_table = table(scope, next)
-  let headers = match next_table {
+  let joined = match next_table {
     Some(b) -> allocation.between(old_headers, b)
-    None -> None
+    None -> false
   }
   let a1 = System.nanoTime()
-  let prepared_headers = match headers { Some(v) -> v, None -> panic("instrumented replay: no allocation plan") }
+  if not joined { panic("instrumented replay: no allocation plan") }
   let q0 = System.nanoTime()
   var candidates: Map[Int, (DeclKey, Int)] = map.empty()
   for located in identity.located(scope, next.syntax) {
@@ -387,7 +386,6 @@ fn instrumented_replay(scope: ModuleKey, old_headers: allocation.Table,
   }
   let q1 = System.nanoTime()
   let prepared = Prepared { scope: scope, entries: entries, candidates: candidates,
-    headers: prepared_headers,
     old_tokens: source_snapshot.tokens(old_source), tokens: source_snapshot.tokens(source) }
   let cold: BodyExecutor[Acc] = checker.cold_body_executor()
   let executor: BodyExecutor[Acc] = BodyExecutor {
