@@ -635,3 +635,155 @@ test "scalar replay refuses re-parsed statement boundaries with equal tokens" {
   assert actual.bodies.cx.syms == expected.cx.syms
   assert actual.bodies.cx.decl_slots == expected.cx.decl_slots
 }
+
+test "scalar replay assembles the candidate revision's declarations in its own order" {
+  # The assembly boundary, stated as one sentence: what comes out is the
+  # candidate revision's declarations, in the order that revision writes them,
+  # whichever of them were reused and whichever were checked cold. Reuse does
+  # not move a declaration, does not drop one, and does not append one at the
+  # end. The order is the scheduler's rather than this module's: `replay`
+  # hands its executor to `checker.execute_module_bodies`, the same one the
+  # cold path runs. So what is pinned here is the literal order and not only
+  # its agreement with cold, which would survive the scheduler reversing both
+  # paths at once.
+  let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
+  let before = "fn one() -> Int = 1\nfn two(s: String) -> String = s\n" ++
+    "fn three() -> Int = 3\nfn four(s: String) -> String = s\n"
+  let after = "type Added = { n: Int }\n" ++ before
+  let old_snapshot = source_snapshot.of(before).expect("recorded snapshot")
+  let next_snapshot = source_snapshot.of(after).expect("candidate snapshot")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(old_snapshot), map.empty())
+  let next = checker.check_module_headers(base, source_snapshot.syntax(next_snapshot), map.empty())
+  assert old.cx.diags == [] && next.cx.diags == []
+  let saved = body_execution.record(scope, old)
+  let actual = replay(admit(scope, old, old_snapshot, saved), next, next_snapshot)
+  let expected = checker.check_module_body_products(next)
+  # `one` and `three` are admitted, `two` and `four` are not (a String is not
+  # a primitive), so the two verdicts alternate down the declaration list.
+  assert actual.reused == 2 && actual.checked == 2
+  assert map(actual.bodies.functions, f => f.name) == ["one", "two", "three", "four"]
+  assert actual.bodies.functions == expected.functions
+  assert actual.bodies.cx.syms == expected.cx.syms
+  assert actual.bodies.cx.decl_slots == expected.cx.decl_slots
+  assert actual.bodies.cx.diags == expected.cx.diags
+}
+
+test "scalar replay raises the diagnostics of a mixed assembly in cold order" {
+  # The other half of the boundary. A diagnostic is appended to `cx.diags` as
+  # it is raised, so the diagnostic order is the order the scheduler visited
+  # the declarations in, and a replay that interleaved a reused body with a
+  # cold one has to produce the cold list item for item.
+  #
+  # Reuse stops at the first diagnostic: `relocation` refuses a candidate
+  # context that already carries one, so `three` is checked cold here although
+  # its own bytes did not change and the diagnostic-free revision above reuses
+  # the same body. That is the shape of a mixed assembly today, and it is
+  # asserted rather than assumed.
+  let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
+  let before = "fn one() -> Int = 1\nfn two() -> Int = missing_a\n" ++
+    "fn three() -> Int = 3\nfn four() -> Int = missing_b\n"
+  let after = "type Added = { n: Int }\n" ++ before
+  let old_snapshot = source_snapshot.of(before).expect("recorded snapshot")
+  let next_snapshot = source_snapshot.of(after).expect("candidate snapshot")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(old_snapshot), map.empty())
+  let next = checker.check_module_headers(base, source_snapshot.syntax(next_snapshot), map.empty())
+  assert old.cx.diags == [] && next.cx.diags == []
+  let saved = body_execution.record(scope, old)
+  let actual = replay(admit(scope, old, old_snapshot, saved), next, next_snapshot)
+  let expected = checker.check_module_body_products(next)
+  assert actual.reused == 1 && actual.checked == 3
+  assert map(actual.bodies.functions, f => f.name) == ["one", "two", "three", "four"]
+  assert map(actual.bodies.cx.diags, d => d.msg) ==
+    ["undefined variable: missing_a", "undefined variable: missing_b"]
+  assert actual.bodies.cx.diags == expected.cx.diags
+  assert actual.bodies.functions == expected.functions
+  assert actual.bodies.cx.syms == expected.cx.syms
+  assert actual.bodies.cx.decl_slots == expected.cx.decl_slots
+}
+
+test "scalar replay leaves every category but an admitted function to the cold path" {
+  # The cold remainder, counted by declaration category rather than in total.
+  # `replay` routes five of the executor's six roles straight to the cold
+  # executor and the sixth only when admission refuses, so the remainder is
+  # every declaration of the other five categories plus the functions that
+  # were not admitted. A census of what the scheduler dispatches on this very
+  # revision says how many of each there are, and the count `replay` reports
+  # has to be exactly that sum. A category that stopped being counted, or one
+  # that started being reused without a product, breaks the identity.
+  let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
+  let before = "const K: Int = 7\n" ++
+    "fn reused() -> Int = 1\n" ++
+    "fn cold_one(s: String) -> String = s\n" ++
+    "fn inferred() = 2\n" ++
+    "trait Greet[T] {\n fn greet(x: T) -> Int = 5\n}\n" ++
+    "trait Named[T] { fn describe(x: T) -> Int }\n" ++
+    "type Box[T] = { item: T }\n" ++
+    "impl[T] Named[Box[T]] { fn describe(x: Box[T]) -> Int = 1 }\n" ++
+    "test \"probe\" { assert true }\n"
+  let after = "type Added = { n: Int }\n" ++ before
+  let old_snapshot = source_snapshot.of(before).expect("recorded snapshot")
+  let next_snapshot = source_snapshot.of(after).expect("candidate snapshot")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(old_snapshot), map.empty())
+  let next = checker.check_module_headers(base, source_snapshot.syntax(next_snapshot), map.empty())
+  assert old.cx.diags == [] && next.cx.diags == []
+  # One cold pass over the candidate revision that answers only "which role
+  # was this declaration dispatched under". It is the cold executor with a
+  # tally beside it, so the census cannot disagree with what cold checking
+  # does; `replay`'s own counter is the thing being measured against it.
+  let cold: BodyExecutor[Map[String, Int]] = checker.cold_body_executor()
+  let bump = (seen: Map[String, Int], role: String) => map.insert(seen, role,
+    match map.get(seen, role) { Some(n) -> n + 1, None -> 1 })
+  let census: BodyExecutor[Map[String, Int]] = BodyExecutor {
+    function: (s, cx, d, sig) => {
+      let (_, c, t) = cold.function(s, cx, d, sig)
+      (bump(s, "function"), c, t)
+    },
+    inferred_body: (s, cx, d, sig) => {
+      let (_, c, t) = cold.inferred_body(s, cx, d, sig)
+      (bump(s, "inferred_body"), c, t)
+    },
+    constant: (s, cx, d, ty, visible) => {
+      let (_, c, t) = cold.constant(s, cx, d, ty, visible)
+      (bump(s, "constant"), c, t)
+    },
+    method: (s, cx, tr, subject, d, sig) => {
+      let (_, c, t) = cold.method(s, cx, tr, subject, d, sig)
+      (bump(s, "method"), c, t)
+    },
+    default_body: (s, cx, tr, d, sig, b) => {
+      let (_, c, t) = cold.default_body(s, cx, tr, d, sig, b)
+      (bump(s, "default_body"), c, t)
+    },
+    test_body: (s, cx, name, b) => {
+      let (_, c, t) = cold.test_body(s, cx, name, b)
+      (bump(s, "test_body"), c, t)
+    }
+  }
+  let (roles, _) = checker.execute_module_bodies(next, map.empty(), census)
+  # Every category the executor has is present, so no row of the identity
+  # below is vacuous.
+  assert roles == map.from([("function", 2), ("inferred_body", 1), ("constant", 1),
+    ("method", 1), ("default_body", 1), ("test_body", 1)])
+  let saved = body_execution.record(scope, old)
+  let actual = replay(admit(scope, old, old_snapshot, saved), next, next_snapshot)
+  let expected = checker.check_module_body_products(next)
+  let function_census = map.get(roles, "function").expect("function census")
+  assert actual.checked == function_census - actual.reused +
+    map.get(roles, "inferred_body").expect("inferred body census") +
+    map.get(roles, "constant").expect("constant census") +
+    map.get(roles, "method").expect("method census") +
+    map.get(roles, "default_body").expect("default body census") +
+    map.get(roles, "test_body").expect("test body census")
+  assert actual.reused == 1 && actual.checked == 6
+  assert actual.bodies.functions == expected.functions
+  assert actual.bodies.constants == expected.constants
+  assert actual.bodies.impl_methods == expected.impl_methods
+  assert actual.bodies.trait_defaults == expected.trait_defaults
+  assert actual.bodies.tests == expected.tests
+  assert actual.bodies.cx.syms == expected.cx.syms
+  assert actual.bodies.cx.decl_slots == expected.cx.decl_slots
+  assert actual.bodies.cx.diags == expected.cx.diags
+}

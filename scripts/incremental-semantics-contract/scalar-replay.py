@@ -3,6 +3,12 @@
 
 Unsupported bodies remain cold. These controls must reach the replay assertions;
 parser, type-checker and JVM linkage failures do not establish their coverage.
+
+Most controls mutate the replay module itself. Two mutate the scheduler and the
+diagnostic sink it shares with the cold path, because the assembly order and the
+diagnostic order are the shared scheduler's and cannot be broken from inside the
+replay module: a control for either one has to reach where the order is made,
+and the assertion it reddens is still a replay assertion.
 """
 import re
 import shutil
@@ -13,11 +19,14 @@ from pathlib import Path
 from cold import ROOT, edit, run
 
 
+SUBJECT = 'selfhost/src/check/scalar_replay.dawn'
+SCHEDULER = 'selfhost/src/check/checker.dawn'
+CONTEXT = 'selfhost/src/check/cx.dawn'
+
+
 def main():
     started = time.monotonic()
-    path = 'selfhost/src/check/scalar_replay.dawn'
-    original = (ROOT / path).read_text()
-    variants = [
+    own = [
         ('disable-replay', 'Some(p) -> candidate(p, cx, d, sig)', 'Some(p) -> None'),
         ('source-owner', 'not snapshot_matches(old, old_source)', 'false'),
         ('observer-mode', 'Some(_) -> moved.function_reads', 'Some(_) -> None'),
@@ -60,17 +69,58 @@ def main():
         ('candidate-key-ignored',
          'let (key, declaration) = map.get(prepared.candidates, d.lo)?',
          'let (key, declaration) = map.values(prepared.candidates)[0]'),
+        # The cold remainder, one control per declaration category. Five of
+        # the executor's six roles go straight to the cold executor and the
+        # sixth goes there when admission refuses, so a category that stops
+        # being counted is a category that left the remainder silently.
+        ('cold-remainder-function',
+         '        }\n'
+         '        None -> cold.function(Counts { ..count, checked: count.checked + 1 }, cx, d, sig)',
+         '        }\n        None -> cold.function(count, cx, d, sig)'),
+        ('cold-remainder-inferred-body',
+         'inferred_body: (n, cx, d, sig) => cold.inferred_body(Counts { ..n, checked: n.checked + 1 }, cx, d, sig),',
+         'inferred_body: (n, cx, d, sig) => cold.inferred_body(n, cx, d, sig),'),
+        ('cold-remainder-constant',
+         'constant: (n, cx, d, ty, visible) => cold.constant(Counts { ..n, checked: n.checked + 1 }, cx, d, ty, visible),',
+         'constant: (n, cx, d, ty, visible) => cold.constant(n, cx, d, ty, visible),'),
+        ('cold-remainder-method',
+         'method: (n, cx, tr, subject, d, sig) => cold.method(Counts { ..n, checked: n.checked + 1 }, cx, tr, subject, d, sig),',
+         'method: (n, cx, tr, subject, d, sig) => cold.method(n, cx, tr, subject, d, sig),'),
+        ('cold-remainder-default-body',
+         'default_body: (n, cx, tr, d, sig, body) => cold.default_body(Counts { ..n, checked: n.checked + 1 }, cx, tr, d, sig, body),',
+         'default_body: (n, cx, tr, d, sig, body) => cold.default_body(n, cx, tr, d, sig, body),'),
+        ('cold-remainder-test-body',
+         'test_body: (n, cx, name, body) => cold.test_body(Counts { ..n, checked: n.checked + 1 }, cx, name, body)',
+         'test_body: (n, cx, name, body) => cold.test_body(n, cx, name, body)'),
     ]
+    # The assembly boundary is not this module's to break: the order the
+    # declarations come out in and the order their diagnostics come out in are
+    # both the shared scheduler's, which is the whole reason replay reuses it
+    # rather than assembling a module of its own. A control for either one has
+    # to mutate the scheduler, and the assertion it has to redden is here.
+    shared = [
+        ('assembly-order', SCHEDULER,
+         '      tfuns = tfuns ++ [Some(tast_positions.function(owner.resolver, tf))]',
+         '      tfuns = [Some(tast_positions.function(owner.resolver, tf))] ++ tfuns'),
+        ('diagnostic-order', CONTEXT,
+         '  Cx { ..cx, diags: cx.diags ++ [raised(cx, msg, lo, hi, "")] }',
+         '  Cx { ..cx, diags: [raised(cx, msg, lo, hi, "")] ++ cx.diags }'),
+    ]
+    variants = [(name, SUBJECT, old, new) for name, old, new in own] + shared
+    originals = {p: (ROOT / p).read_text() for p in {v[1] for v in variants}}
     with tempfile.TemporaryDirectory(prefix='dawn-scalar-replay-') as temp:
         root = Path(temp)
         for directory in ('selfhost', 'compiler-plan'):
             shutil.copytree(ROOT / directory, root / directory,
                             ignore=shutil.ignore_patterns('build', '.dawn'))
         (root / 'packages').symlink_to(ROOT / 'packages', target_is_directory=True)
-        for name, source in [('positive', original)] + [
-                (name, edit(original, old, new)) for name, old, new in variants]:
-            (root / path).write_text(source)
-            status, output = run('test', root / path)
+        for name, target, source in [('positive', SUBJECT, originals[SUBJECT])] + [
+                (name, target, edit(originals[target], old, new))
+                for name, target, old, new in variants]:
+            for other, text in originals.items():
+                (root / other).write_text(text)
+            (root / target).write_text(source)
+            status, output = run('test', root / SUBJECT)
             if name == 'positive':
                 if status or 'test(s) passed' not in output:
                     raise RuntimeError('Positive failed\n' + output)
