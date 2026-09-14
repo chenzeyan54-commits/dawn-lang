@@ -8,8 +8,8 @@ use check/relocate
 use check/relocate.{Ids}
 use check/types.{Sig, Sym, EV_PACK_ID, evidence_role_key, EvidenceRole,
   LabelSlot, VariableSlot, AssociatedSlot, Eff, EPure, ELabeled, EffVar, EffAssoc,
-  eff_union, eff_labels, eff_vars, eff_assocs, ev_pack_ty, erased_ev_ty, key_is_label,
-  key_effect_id, TyInt, TyUnit, TyVar }
+  eff_union, eff_labels, eff_vars, eff_assocs, nev, sig_abi_eff, ev_pack_ty, erased_ev_ty,
+  key_is_label, key_effect_id, TyInt, TyUnit, TyVar }
 use check/tast.{
   TExpr, TStmt, TPat, TFun, TDefault, TJavaCall, TStrPart, TArm, TListElem, TListIfArm, TModule, TConst,
   WitRef, TSPText, TSPInterp, TLEExpr, TLESpread, TLEIf,
@@ -184,13 +184,15 @@ fn opt_expr(v: View, x: Option[TExpr]) -> Option[Option[TExpr]] =
     Some(e) -> Some(Some(expression(v, e)?))
   }
 
+## A call's evidence operands, in the order the callee's ABI row lays out.
+## That order is a pure function of the effect ids in the row, and an id
+## derives from its declaration, so the recorded order is already the
+## candidate revision's order. What is left to ask is whether the recorded
+## call carries one operand per ABI slot: a recorded call that does not is a
+## product of some other signature, and relocating it would truncate or pad.
 fn evidence(v: View, s: Sig, xs: List[TExpr]) -> Option[List[TExpr]] = {
-  let order = relocate.evidence_permutation(v.ids, s)?
-  if len(order) != len(xs) { return None }
-  let moved = expressions(v, xs)?
-  var out: List[TExpr] = []
-  for i in order { out = out ++ [moved[i]] }
-  Some(out)
+  if nev(sig_abi_eff(s)) != len(xs) { return None }
+  expressions(v, xs)
 }
 
 pub fn pattern(v: View, p: TPat) -> Option[TPat] =
@@ -252,7 +254,7 @@ fn pack_parts(v: View, x: TExpr) -> Option[List[PackPart]] =
       if not key_is_label(key) { return None }
       let label = key_effect_id(key)
       let rest = pack_parts(v, args[2])?
-      Some(rest ++ [PackPart { role: relocate.evidence_slot(v.ids, LabelSlot(label))?, value: expression(v, args[1])? }])
+      Some(rest ++ [PackPart { role: LabelSlot(label), value: expression(v, args[1])? }])
     }
     XCallBuiltin(name, args, ws, evs, _, _, _) -> {
       if name != "ev_append" || len(args) != 2 || len(ws) != 0 || len(evs) != 0 { return None }
@@ -263,12 +265,20 @@ fn pack_parts(v: View, x: TExpr) -> Option[List[PackPart]] =
       match role { LabelSlot(_) -> { return None }
         _ -> ()
       }
-      Some([PackPart { role: relocate.evidence_slot(v.ids, role)?, value: expression(v, x)? }])
+      Some([PackPart { role: role, value: expression(v, x)? }])
     }
   }
 
 # Reuse effect normalization as the authoritative ordering of the three axes.
 # A pack has one value per full atom, even when erased associated keys collide.
+#
+# The label atoms below are built with an empty name on purpose, and that is
+# sound only while the label axis is ordered by id alone: `types.by_id`
+# compares the integer and never the spelling, so a name the role does not
+# carry cannot change where the atom lands. An ordering that consulted the
+# spelling would read "" for every label here and silently sort them into
+# whatever order the list happened to arrive in, which is why the premise is
+# written down rather than left to be rediscovered.
 fn ordered_parts(parts: List[PackPart]) -> Option[List[PackPart]] = {
   var rows: List[Eff] = []
   for p in parts {
@@ -351,8 +361,7 @@ pub fn expression(v: View, x: TExpr) -> Option[TExpr] =
       local_name(v, id, name)?, lo, hi, relocate.ty(v.ids, ty)?))
     XEvRead(key, origin, lo, hi, ty) -> {
       if key != evidence_role_key(origin) { return None }
-      let moved = relocate.evidence_slot(v.ids, origin)?
-      Some(XEvRead(relocate.evidence_key(v.ids, key)?, moved,
+      Some(XEvRead(relocate.evidence_key(v.ids, key)?, origin,
         lo, hi, relocate.ty(v.ids, ty)?))
     }
     XFnValue(owner, name, builtin, ty, lo, hi) ->
@@ -473,16 +482,15 @@ pub fn function(v: View, f: TFun) -> Option[TFun] = {
     }
     defaults = defaults ++ [moved]
   }
-  let order = relocate.evidence_permutation(v.ids, f.sig)?
-  if len(order) != len(f.ev_syms) { return None }
-  var evs: List[Int] = []
-  for i in order { evs = evs ++ [f.ev_syms[i]] }
+  # same question as a call site's operands, asked of the entry symbols: one
+  # per ABI slot, in the order the row already fixes
+  if nev(sig_abi_eff(f.sig)) != len(f.ev_syms) { return None }
   let impl_ref = match f.impl_of {
     None -> None
     Some((tr, ty)) -> Some((tr, relocate.ty(v.ids, ty)?))
   }
   Some(TFun { ..f, sig: f.sig, param_syms: local_ids(v, f.param_syms)?,
-    dict_syms: local_ids(v, f.dict_syms)?, defaults: defaults, ev_syms: evs, body: expression(v, f.body)?,
+    dict_syms: local_ids(v, f.dict_syms)?, defaults: defaults, ev_syms: f.ev_syms, body: expression(v, f.body)?,
     impl_of: impl_ref, default_of: f.default_of })
 }
 
@@ -645,7 +653,7 @@ test "tree relocation reconstructs ground packs and associated environment order
   assert expression(v, XEvRead(12, AssociatedSlot(1, 3, "E"), 10, 11, erased_ev_ty())) == None
 }
 
-test "tree relocation assembles defaults symbols and permuted call evidence" {
+test "tree relocation assembles defaults symbols and entry call evidence" {
   let base = fixture_view()
   let sig = Sig { ..fixture_signature(), eparams: [EffVar("a", 1), EffVar("b", 2)] }
   let v = View { ..base, callee: (owner, name, builtin, tr) => Some(sig) }
@@ -656,10 +664,10 @@ test "tree relocation assembles defaults symbols and permuted call evidence" {
   let m = TModule { fns: [f], tests: [TFun { ..f, is_test: true }],
     consts: [TConst { name: "C", ty: TyVar("T", 1), init: XInt(6, 10, 11), lo: 10, hi: 11 }], syms: v.symbols }
   let moved = module(v, m).expect("complete typed module")
-  # The entry pack keeps the order the ABI gives it, which is now the order
-  # it was recorded in: nothing renumbers the effect variables it is ordered
-  # by. The permutation is still computed and still refuses a signature whose
-  # ABI row does not correspond, which is the `unknown` view below.
+  # The entry pack keeps the order the ABI gives it, which is the order it
+  # was recorded in: nothing renumbers the effect variables it is ordered by.
+  # The count is still checked, and still refuses a recorded function whose
+  # evidence does not correspond to its signature's ABI row.
   assert moved.fns[0] == f
   assert moved.tests[0].is_test
   assert moved.consts[0] == m.consts[0]

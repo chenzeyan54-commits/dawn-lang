@@ -16,7 +16,7 @@ use front/parser
 use check/relocate
 use check/types as builtin_types
 use check/relocate.{Ids}
-use check/types.{Sig, ImplI, Ty, Eff, TyVar, EffVar, TyUnit, EPure, ELabeled}
+use check/types.{Sig, ImplI, Ty, Eff, TyVar, EffVar, TyUnit, EPure, ELabeled, nev, sig_abi_eff}
 use front/ast.{Module, DType, DImpl, module_impls}
 
 ## A body's own allocations are not bindings. They are an interval the
@@ -196,14 +196,14 @@ pub fn body_relocation(header_ids: Ids, old_sig: Sig, next_sig: Sig,
 ## onto this one, is the entry evidence pack the interval it claims to be,
 ## and what permutation does the ABI order impose on it. The pack's slots are
 ## packed keys now and consecutive because they are slots of one declaration,
-## and the permutation is the identity whenever the two headers are the same
-## header, which the first question already required. What is left is the
-## first question and the shape of the pack.
+## and the ABI order is a function of the effect ids in the row, which derive
+## from declarations the first question already required to be identical.
+## What is left is the first question, the width of the row, and the shape of
+## the pack.
 pub fn body_segment_relocation(header_ids: Ids, old_sig: Sig, next_sig: Sig,
   evidence: List[Int]) -> Option[Ids] = {
   if old_sig != next_sig { return None }
-  let order = relocate.evidence_order(header_ids, old_sig, next_sig)?
-  if len(evidence) != len(order) { return None }
+  if len(evidence) != nev(sig_abi_eff(next_sig)) { return None }
   var index = 0
   for id in evidence {
     if id != evidence[0] + index { return None }

@@ -162,14 +162,53 @@ executor 语义；它按函数体类别（字面量标量、原语参数算术�
 header来自生产check_module_headers的ModuleHeaders，不再按源码锚点复制header前缀。
 它不是已上线的函数缓存，也不代替下列生产前缀门禁。
 
-`relocate.py` 验证生产 `check/relocate` 还在判断的两件事。这一层已经没有映射了：
+`relocate.py` 验证生产 `check/relocate` 还在判断的那件事。这一层已经没有映射了：
 类型变量、效果变量和局部符号都是 `identity.pack(声明, 槽位)`，nominal 与 trait 由
 声明派生，没有被编辑的声明在候选修订里绑定同样的整数，所以 `ty`/`effect_row`/
-`witness`/`evidence_key`/`evidence_slot` 都答以收到的值，表、区间和平移全部删除。
-剩下的两个判断各有自己的负控：**evidence key 的 band 从 key 本身读回**（label 名字的
-前缀、associated 的 trait、variable 的拼法，以及 `checked_symbol` 对生成名的校验，共六个），
-和**两个签名的 ABI 行是否逐槽对应**（参数绑定的效果变量、行长不符的拒绝、
-associated 槽的主体与成员，共四个）。10个成功编译负控必须命中具名断言。
+`witness`/`evidence_key` 都答以收到的值，表、区间和平移全部删除。剩下的判断是
+**evidence key 的 band 从 key 本身读回**（label 名字的前缀、associated 的 trait、
+variable 的拼法，以及 `checked_symbol` 对生成名的校验，共六个）：6个成功编译负控
+必须命中具名断言。曾经与它并列的「两个签名的 ABI 行是否逐槽对应」在 K6 连同置换
+一起删了，见下。
+
+### Controls retired with the ABI permutation (K6)
+
+An evidence row is ordered by effect id, an id derives from its declaration,
+and a declaration that was not edited derives the same id. So the permutation
+`check/relocate` computed between a recorded signature's ABI row and the
+candidate revision's was the identity in every case a caller could reach, and
+`evidence_slots` / `evidence_slot` / `evidence_permutation` / `evidence_order`
+went with it. What the computation was really buying was a refusal, and the
+refusal survives as a width comparison against `types.nev` at both call sites.
+The dispositions are K4's three, as above.
+
+- Four controls in `relocate.py` mutated the deleted code and are gone:
+  `missing-parameter-evidence` and `mismatched-row-length` turned off the
+  refusal of two signatures whose ABI rows do not correspond;
+  `lost-associated-subject` and `lost-associated-member` dropped half of a
+  projection slot's identity while building that correspondence. The refusal
+  they reached for is now owned by `evidence-arity` in `projection.py`, which
+  turns off `relocate_tree.function`'s width check and is held by the same
+  inline assertion as before, and by `relocate_tree`'s own
+  `function(v, TFun { ..f, ev_syms: [1, 2, 3] }) == None`. The two halves of a
+  projection slot's identity are held by `lost-associated-subject`'s surviving
+  neighbours in the band family: `associated-band-trait` reads the trait out of
+  the key, and `unminted-associated-spelling` refuses a name the subject and
+  member did not mint.
+- `evidence-arity` in `projection.py` was re-anchored, not retired. It used to
+  read a length off the permutation; it now reads it off
+  `nev(sig_abi_eff(f.sig))`. Same judgment, same owning assertion.
+- "The ABI row's label axis is laid out by effect id" had no owner of its own
+  before this knife. The four controls above all ran on a row that was already
+  sorted and would have stayed red under any other total order both sides
+  agreed on, and the assertions that do notice `types.by_id` being reversed
+  (`effect union normalizes`, `a signature's effect variables land in eparams
+  once each, in mint order`) are about the variable axis, not the label one.
+  It has an inline owner now, `check/types :: a signature's ABI row lays its
+  labels out by effect id`, built on three labels whose names are the same
+  length and whose alphabetical order is the reverse of their id order, so
+  that neither a spelling sort nor a length-prefixed one can be mistaken for
+  it.
 
 ### Controls retired with packed binders (K5)
 

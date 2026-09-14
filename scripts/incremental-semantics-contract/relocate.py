@@ -25,16 +25,19 @@ def main():
     assert not owning_assertion("FAIL  elsewhere :: relocation control\n  assertion failed: expected\n")
     original = (ROOT / "selfhost/src/check/relocate.dawn").read_text()
     variants = [
-        # What is left of this module is two questions it answers from the
-        # value in hand, and the controls follow them. A binder does not move
+        # What is left of this module is one question it answers from the
+        # value in hand, and the controls follow it. A binder does not move
         # between revisions any more -- it is `identity.pack` of its
         # declaration and its slot -- so the tables, the intervals and every
         # control that turned one of them off went with the production code
-        # they mutated (K5).
+        # they mutated (K5). The ABI permutation followed in K6: a row is
+        # ordered by effect id and an id derives from its declaration, so the
+        # permutation could only be the identity, and the refusal it carried
+        # is a width comparison in `check/relocate_tree` now.
         #
-        # First question: which band is this evidence key in, and does the
-        # name beside it spell the same thing. Each band is read back by
-        # arithmetic on the key, and each reading owns a control.
+        # The question: which band is this evidence key in, and does the name
+        # beside it spell the same thing. Each band is read back by arithmetic
+        # on the key, and each reading owns a control.
         ("label-band-effect", 'let prefix = ev_label_name(key_effect_id(key), "")',
          'let prefix = ev_label_name(key, "")'),
         ("role-band-label", "if key_is_label(key) { return Some(LabelSlot(key_effect_id(key))) }",
@@ -49,17 +52,6 @@ def main():
         ("unchecked-symbol-spelling",
          "    Some(key) -> {\n      let _ = evidence_name(s.name, key)?\n      Some(s)\n    }",
          "    Some(key) -> Some(s)"),
-        # Second question: do two signatures correspond slot for slot in ABI
-        # order. The answer is the identity whenever they are the same
-        # signature, which is the only case production reaches, so what the
-        # controls reach for is the refusal rather than the permutation.
-        ("missing-parameter-evidence", "let abi = sig_abi_eff(s)", "let abi = s.eff"),
-        ("mismatched-row-length", "if len(source) != len(target) { return None }",
-         "if false { return None }"),
-        ("lost-associated-subject", "out ++ [AssociatedSlot(tv, tr, name)]",
-         "out ++ [AssociatedSlot(0, tr, name)]"),
-        ("lost-associated-member", "out ++ [AssociatedSlot(tv, tr, name)]",
-         'out ++ [AssociatedSlot(tv, tr, "")]'),
     ]
     subjects = [("positive", original)] + [(name, edit(original, old, new)) for name, old, new in variants]
     with tempfile.TemporaryDirectory(prefix="dawn-typed-relocation-") as temp:

@@ -59,15 +59,17 @@ def main():
              "    XEvRead(key, origin, lo, hi, ty) -> {\n      if key != evidence_role_key(origin) { return None }",
              "    XEvRead(key, origin, lo, hi, ty) -> {\n      if false { return None }"),
         ]),
-        ("relocate_tree", "tree relocation assembles defaults symbols and permuted call evidence", [
+        ("relocate_tree", "tree relocation assembles defaults symbols and entry call evidence", [
             # `constant-type` stood here, moved from body-probe's typed
             # mutants in K4 because the value sample's constants are declared
             # at types with no binders in them. It is gone for the reason the
             # whole table went: `relocate.ty` answers with what it is handed
             # (K5). What this assembly still decides is arity -- a recorded
-            # function's evidence slots against the ABI row its signature
-            # describes -- and that is what the control below turns off.
-            ("evidence-arity", "if len(order) != len(f.ev_syms) { return None }",
+            # function's evidence symbols against the ABI row its signature
+            # describes -- and that is what the control below turns off. The
+            # anchor moved in K6 with the permutation it used to read a length
+            # off; the judgment and its owning assertion did not.
+            ("evidence-arity", "if nev(sig_abi_eff(f.sig)) != len(f.ev_syms) { return None }",
              "if false { return None }"),
         ]),
         ("relocate_tree", "tree callee lookup preserves declaring owners across module aliases", [

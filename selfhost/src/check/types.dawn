@@ -1723,6 +1723,40 @@ pub fn sig_abi_eff(s: Sig) -> Eff = {
   eff_with_labels(EUnion(by_id(vs), atoms, io), eff_labels(s.eff))
 }
 
+## The ABI row's label axis is laid out by effect id, and by nothing else. An
+## id derives from its declaration (`check/identity.derive`), so the layout is
+## stable across revisions without a table: that is what lets
+## `check/relocate_tree.ordered_parts` rebuild a pack out of atoms carrying no
+## name at all, and what `docs/spec.md` promises in one sentence.
+##
+## Deliberately not the spelling order. `eff_ctl_labels` sorts by name because
+## a diagnostic has to name one of two effects and a reader must be able to
+## predict which; a calling convention has no reader to predict for and three
+## separate emitters have to agree on it, so it takes the key that is already
+## a pure function of the declaration.
+test "a signature's ABI row lays its labels out by effect id" {
+  # Three names of equal length whose alphabetical order is the exact reverse
+  # of their id order, so neither a spelling sort nor a length-prefixed one
+  # can be mistaken for the id sort asserted here. Same construction as
+  # `scripts/checker-corpus/cases/ctl_two_labels.dawn`, which holds down the
+  # one place that does sort by name.
+  let s = Sig { name: "f", param_tys: [], param_names: [], param_defaults: [], ret: TyUnit,
+    eff: ELabeled(EPure, [(59, "Alpha"), (23, "Zulus"), (41, "Mimas")]),
+    is_builtin: false, tparams: [], constraints: [], eparams: [],
+    owner: None, trait_id: None, op_of: None, inferring: false }
+  assert eff_labels(sig_abi_eff(s)) == [(23, "Zulus"), (41, "Mimas"), (59, "Alpha")]
+  # and the row is written in whatever order the source wrote it, which the
+  # layout does not inherit
+  let rewritten = Sig { ..s, eff: ELabeled(EPure, [(41, "Mimas"), (59, "Alpha"), (23, "Zulus")]) }
+  assert eff_labels(sig_abi_eff(rewritten)) == eff_labels(sig_abi_eff(s))
+  # folding in the variables a signature binds leaves the labels alone, and
+  # the variable axis behind them takes the same id order
+  let bound = Sig { ..s, eparams: [EffVar("z", 8), EffVar("a", 4)] }
+  assert eff_labels(sig_abi_eff(bound)) == eff_labels(sig_abi_eff(s))
+  assert eff_vars(sig_abi_eff(bound)) == [(4, "a"), (8, "z")]
+  assert nev(sig_abi_eff(bound)) == 5
+}
+
 ## The evidence pack's ADT id. Reserved and negative, like `DICT_ADT_ID` and
 ## `CHAR_OPAQUE_ID`, because this record has no declaration site to mint an id
 ## for it and `first_minted_id` must not move when it is added.
