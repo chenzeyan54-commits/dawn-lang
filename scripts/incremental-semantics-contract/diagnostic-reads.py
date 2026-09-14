@@ -54,23 +54,20 @@ def main():
     variants = [
         ('cx', 'signature-input', 'semantic_reads.RenderedSignature(sig, answer)', 'semantic_reads.RenderedSignature(Sig { ..sig, param_defaults: [] }, answer)'),
         ('cx', 'signature-answer', 'semantic_reads.RenderedSignature(sig, answer)', 'semantic_reads.RenderedSignature(sig, "wrong")'),
-        ('semantic_reads', 'signature-projection', 'RenderedSignature(signature(sig)?, answer)', 'RenderedSignature(sig, answer)'),
-        ('semantic_reads', 'signature-answer-projection', 'RenderedSignature(signature(sig)?, answer)', 'RenderedSignature(signature(sig)?, "wrong")'),
+        # Ten projection controls stood here and are gone with the read-log
+        # projection they mutated (K7b): `signature-projection`,
+        # `signature-answer-projection`, `constructor-owner-projection`,
+        # `constructor-field-projection`, `constructor-answer-projection`,
+        # `return-type-projection`, `return-effect-projection`,
+        # `return-answer-projection`, `type-projection` and
+        # `answer-projection`. A rendered fact is carried whole now.
         ('cx', 'constructor-input', 'semantic_reads.RenderedConstructor(ctor, answer)', 'semantic_reads.RenderedConstructor(CtorI { ..ctor, fields: [] }, answer)'),
         ('cx', 'constructor-answer', 'semantic_reads.RenderedConstructor(ctor, answer)', 'semantic_reads.RenderedConstructor(ctor, "wrong")'),
-        ('semantic_reads', 'constructor-owner-projection', 'RenderedConstructor(CtorI { ..ctor, adt: nominal(ctor.adt)?, fields: fields }, answer)', 'RenderedConstructor(CtorI { ..ctor, adt: ctor.adt, fields: fields }, answer)'),
-        ('semantic_reads', 'constructor-field-projection', 'RenderedConstructor(CtorI { ..ctor, adt: nominal(ctor.adt)?, fields: fields }, answer)', 'RenderedConstructor(CtorI { ..ctor, adt: nominal(ctor.adt)?, fields: ctor.fields }, answer)'),
-        ('semantic_reads', 'constructor-answer-projection', 'RenderedConstructor(CtorI { ..ctor, adt: nominal(ctor.adt)?, fields: fields }, answer)', 'RenderedConstructor(CtorI { ..ctor, adt: nominal(ctor.adt)?, fields: fields }, "wrong")'),
         ('cx', 'return-input', 'semantic_reads.RenderedFunctionReturn(ret, outer_eff, answer)', 'semantic_reads.RenderedFunctionReturn(TyError, outer_eff, answer)'),
         ('cx', 'return-effect', 'semantic_reads.RenderedFunctionReturn(ret, outer_eff, answer)', 'semantic_reads.RenderedFunctionReturn(ret, EPure, answer)'),
         ('cx', 'return-answer', 'semantic_reads.RenderedFunctionReturn(ret, outer_eff, answer)', 'semantic_reads.RenderedFunctionReturn(ret, outer_eff, "wrong")'),
-        ('semantic_reads', 'return-type-projection', 'RenderedFunctionReturn(type_value(ret)?, effect_value(outer_eff)?, answer)', 'RenderedFunctionReturn(ret, effect_value(outer_eff)?, answer)'),
-        ('semantic_reads', 'return-effect-projection', 'RenderedFunctionReturn(type_value(ret)?, effect_value(outer_eff)?, answer)', 'RenderedFunctionReturn(type_value(ret)?, outer_eff, answer)'),
-        ('semantic_reads', 'return-answer-projection', 'RenderedFunctionReturn(type_value(ret)?, effect_value(outer_eff)?, answer)', 'RenderedFunctionReturn(type_value(ret)?, effect_value(outer_eff)?, "wrong")'),
         ('cx', 'query-input', 'semantic_reads.RenderedType(ty, answer)', 'semantic_reads.RenderedType(TyError, answer)'),
         ('cx', 'query-answer', 'semantic_reads.RenderedType(ty, answer)', 'semantic_reads.RenderedType(ty, "wrong")'),
-        ('semantic_reads', 'type-projection', 'RenderedType(type_value(ty)?, answer)', 'RenderedType(ty, answer)'),
-        ('semantic_reads', 'answer-projection', 'RenderedType(type_value(ty)?, answer)', 'RenderedType(type_value(ty)?, "wrong")'),
     ]
     subjects = [(module, 'positive', source) for module, source in sources.items()]
     subjects += [(module, name, edit(sources[module], old, new)) for module, name, old, new in variants]

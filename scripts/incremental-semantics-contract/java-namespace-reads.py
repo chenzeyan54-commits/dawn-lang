@@ -30,11 +30,10 @@ def main():
         ("checker", "refusal-consumer", "cerr_h(message_cx, message,", "cerr_h(cx, message,"),
         ("checker", "enumeration-consumer", "let (names_cx, java_names) = java_class_names_read(cx1)\n    cx1 = names_cx", "let (names_cx, java_names) = java_class_names_read(cx1)\n    cx1 = cx1"),
         ("checker", "value-consumer", "(java_cx, java_name != None)", "(shadow_cx, java_name != None)"),
-        ("semantic_reads", "enabled-projection", "JavaEnabled(enabled) -> JavaEnabled(enabled)", "JavaEnabled(enabled) -> JavaEnabled(false)"),
-        ("semantic_reads", "find-key-projection", "JavaFindClass(name, answer) -> JavaFindClass(name, answer)", 'JavaFindClass(name, answer) -> JavaFindClass("wrong", answer)'),
-        ("semantic_reads", "find-answer-projection", "JavaFindClass(name, answer) -> JavaFindClass(name, answer)", "JavaFindClass(name, answer) -> JavaFindClass(name, None)"),
-        ("semantic_reads", "names-projection", "JavaClassNames(names) -> JavaClassNames(names)", "JavaClassNames(names) -> JavaClassNames([])"),
-        ("semantic_reads", "names-order", "JavaClassNames(names) -> JavaClassNames(names)", "JavaClassNames(names) -> JavaClassNames(list.reverse(names))"),
+        # `enabled-projection`, `find-key-projection`, `find-answer-projection`,
+        # `names-projection` and `names-order` stood here and are gone with the
+        # read-log projection they mutated (K7b). A Java namespace fact names
+        # nothing the compiler renumbers, so it is carried whole.
         ("body_product", "capture", "semantic_reads.capture(before.function_reads, after.function_reads)?", "before.function_reads"),
     ]
     for kind in ("effect", "trait"):

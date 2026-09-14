@@ -25,13 +25,11 @@ def main():
         ("cx", "parameter-consumer", "cx = parameter_cx", "cx = cx"),
         ("cx", "return-mode-consumer", "cx = mode_cx\n        if builtin_type_visible_at_return", "cx = cx\n        if builtin_type_visible_at_return"),
         ("cx", "ordinary-mode-consumer", "cx = mode_cx\n      if builtin_type_visible", "cx = cx\n      if builtin_type_visible"),
-        ("semantic_reads", "builtin-leaf-domain", "BtLeaf(ty) -> BtLeaf(type_value(ty)?)", "BtLeaf(ty) -> BtLeaf(ty)"),
-        ("semantic_reads", "builtin-projection", "BuiltinTypeAnswer(name, moved_builtin)", "BuiltinTypeAnswer(name, answer)"),
-        ("semantic_reads", "builtin-display", "Some(BuiltinTypeI { ..info, build: build })", 'Some(BuiltinTypeI { ..info, name: "wrong", build: build })'),
-        ("semantic_reads", "builtin-parameters", "Some(BuiltinTypeI { ..info, build: build })", "Some(BuiltinTypeI { ..info, params: [], build: build })"),
-        ("semantic_reads", "builtin-access", "Some(BuiltinTypeI { ..info, build: build })", "Some(BuiltinTypeI { ..info, access: BtPublic, build: build })"),
-        ("semantic_reads", "builtin-build", "Some(BuiltinTypeI { ..info, build: build })", "Some(BuiltinTypeI { ..info, build: BtList })"),
-        ("semantic_reads", "projected-mode", "StdModuleMode(is_std) -> StdModuleMode(is_std)", "StdModuleMode(is_std) -> StdModuleMode(false)"),
+        # Seven projection controls stood here and are gone with the read-log
+        # projection they mutated (K7b): `builtin-leaf-domain`,
+        # `builtin-projection`, `builtin-display`, `builtin-parameters`,
+        # `builtin-access`, `builtin-build` and `projected-mode`. A builtin
+        # answer and the std-mode flag are carried whole now.
         # `type-callback` went the way of `effect-callback` in the two reads
         # harnesses beside this one: `relocate.ty` answers with what it is
         # handed, so the control it turned off is the identity (K5).

@@ -26,10 +26,9 @@ def main():
         ("cx", "variable-name", "semantic_reads.ScopedEffectVariable(name, answer)", 'semantic_reads.ScopedEffectVariable("wrong", answer)'),
         ("cx", "variable-consumer", "cx1 = variable_cx", "cx1 = cx1"),
         ("cx", "scope-write", "cx1 = Cx { ..cx2, current_eff_vars: map.insert(cx2.current_eff_vars, a, v) }", "cx1 = cx2"),
-        ("semantic_reads", "declared-domain", "DeclaredEffect(name, moved_effect)", "DeclaredEffect(name, answer)"),
-        ("semantic_reads", "variable-domain", "ScopedEffectVariable(name, moved_variable)", "ScopedEffectVariable(name, answer)"),
-        ("semantic_reads", "declared-projected-name", "DeclaredEffect(name, moved_effect)", 'DeclaredEffect("wrong", moved_effect)'),
-        ("semantic_reads", "variable-projected-name", "ScopedEffectVariable(name, moved_variable)", 'ScopedEffectVariable("wrong", moved_variable)'),
+        # `declared-domain`, `variable-domain`, `declared-projected-name` and
+        # `variable-projected-name` stood here and are gone with the read-log
+        # projection they mutated (K7b). An effect fact is carried whole now.
         # The `body_product` effect callback went with `relocate.effect_row`'s
         # decision: an effect row carries onto the candidate revision
         # unchanged now, so turning the callback off is the identity (K5).

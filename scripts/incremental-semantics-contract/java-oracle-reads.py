@@ -23,12 +23,10 @@ def main():
         ('cx', 'sam-answer', 'semantic_reads.JavaSam(name, answer)', 'semantic_reads.JavaSam(name, None)'),
         ('cx', 'component-key', 'semantic_reads.JavaComponent(name, answer)', 'semantic_reads.JavaComponent("wrong", answer)'),
         ('cx', 'component-answer', 'semantic_reads.JavaComponent(name, answer)', 'semantic_reads.JavaComponent(name, None)'),
-        ('semantic_reads', 'assign-direction', 'JavaAssignable(superclass, subclass, answer) -> JavaAssignable(superclass, subclass, answer)', 'JavaAssignable(superclass, subclass, answer) -> JavaAssignable(subclass, superclass, answer)'),
-        ('semantic_reads', 'assign-answer', 'JavaAssignable(superclass, subclass, answer) -> JavaAssignable(superclass, subclass, answer)', 'JavaAssignable(superclass, subclass, answer) -> JavaAssignable(superclass, subclass, not answer)'),
-        ('semantic_reads', 'sam-key', 'JavaSam(name, answer) -> JavaSam(name, answer)', 'JavaSam(name, answer) -> JavaSam("wrong", answer)'),
-        ('semantic_reads', 'sam-answer', 'JavaSam(name, answer) -> JavaSam(name, answer)', 'JavaSam(name, answer) -> JavaSam(name, None)'),
-        ('semantic_reads', 'component-key', 'JavaComponent(name, answer) -> JavaComponent(name, answer)', 'JavaComponent(name, answer) -> JavaComponent("wrong", answer)'),
-        ('semantic_reads', 'component-answer', 'JavaComponent(name, answer) -> JavaComponent(name, answer)', 'JavaComponent(name, answer) -> JavaComponent(name, None)'),
+        # `assign-direction`, `assign-answer`, `sam-key`, `sam-answer`,
+        # `component-key` and `component-answer` stood here and are gone with
+        # the read-log projection they mutated (K7b). A Java oracle fact is
+        # carried whole now.
         ('checker', 'packed-success', '(packed_cx, Some((0, sc)))', '(fixed_cx, Some((0, sc)))'),
         ('checker', 'packed-refusal', '(packed_cx, None)', '(fixed_cx, None)'),
         ('body_product', 'capture', 'semantic_reads.capture(before.function_reads, after.function_reads)?', 'before.function_reads'),

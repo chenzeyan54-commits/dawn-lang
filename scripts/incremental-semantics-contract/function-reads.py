@@ -26,9 +26,10 @@ def main():
         ("checker", "qualified-call", "let (next, answer) = module_fn_read(cx1, al, name)\n  cx1 = next", "let (next, answer) = module_fn_read(cx1, al, name)\n  cx1 = cx1"),
         ("checker", "qualified-apply", "let (next, is_alias) = module_alias_receiver_read(cx, recv)\n          cx = next", "let (next, is_alias) = module_alias_receiver_read(cx, recv)\n          cx = cx"),
         ("checker", "alias-shadow", "if lookup(cx, alias_name) != None { return (cx, false) }", "if false { return (cx, false) }"),
-        ("semantic_reads", "qualified-reference", "Some(sig) -> Some(signature(sig)?)", "Some(sig) -> Some(sig)"),
-        ("semantic_reads", "qualified-identity", "QualifiedFunction(qualifier, NamedFunctionRead { name: read.name, answer: answer })", "QualifiedFunction(\"wrong\", NamedFunctionRead { name: read.name, answer: answer })"),
-        ("semantic_reads", "alias-path", "ModuleAlias(qualifier, path) -> ModuleAlias(qualifier, path)", "ModuleAlias(qualifier, path) -> ModuleAlias(qualifier, None)"),
+        # `qualified-reference`, `qualified-identity`, `alias-path`,
+        # `candidate-projection` and `read-reference` stood here and are gone
+        # with the read-log projection they mutated (K7b). A function fact is
+        # carried whole now; the recording controls above still decide it.
         ("checker", "qualifier-alternative", "let (next, answer) = lookup_fn_sig_read(cx, q)", "let next = cx\n  let answer = lookup_fn_sig(cx, q)"),
         ("checker", "expectation-value", "let (next, answer) = lookup_fn_sig_read(cx, name)", "let next = cx\n      let answer = lookup_fn_sig(cx, name)"),
         ("checker", "expectation-call", "let (next, answer) = lookup_fn_sig_read(cx, callee)", "let next = cx\n          let answer = lookup_fn_sig(cx, callee)"),
@@ -45,9 +46,7 @@ def main():
         ("checker", "candidate-call", "let (cxb, pool) = fn_pool_read(cxa)", "let cxb = cxa\n      let pool = fn_pool(cxa)"),
         ("semantic_reads", "candidate-answer", "Some(entries) -> Some(entries ++ [FunctionCandidates(names)])", "Some(entries) -> Some(entries)"),
         ("semantic_reads", "candidate-order", "Some(entries) -> Some(entries ++ [FunctionCandidates(names)])", "Some(entries) -> Some(entries ++ [FunctionCandidates(list.reverse(names))])"),
-        ("semantic_reads", "candidate-projection", "FunctionCandidates(names) -> FunctionCandidates(names)", "FunctionCandidates(names) -> FunctionCandidates([])"),
         ("semantic_reads", "read-suffix", "Some(Some(list.drop(entries, len(prefix))))", "Some(Some(entries))"),
-        ("semantic_reads", "read-reference", "Some(s) -> Some(signature(s)?)", "Some(s) -> Some(s)"),
         ("header_product", "header-invariant", "a.function_reads == b.function_reads", "true"),
     ]
     sources = {name: (ROOT / "selfhost/src/check" / (name + ".dawn")).read_text()

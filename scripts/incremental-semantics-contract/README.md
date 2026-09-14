@@ -173,6 +173,59 @@ variable 的拼法，以及 `checked_symbol` 对生成名的校验，共六个�
 必须命中具名断言。曾经与它并列的「两个签名的 ABI 行是否逐槽对应」在 K6 连同置换
 一起删了，见下。
 
+### Controls retired with the read-log projection (K7b)
+
+`semantic_reads.project_with_inference` rebuilt a recorded read log fact by
+fact for a caller that installs the log, under nine projection callbacks. Every
+one of those callbacks was the identity at both production call sites: a fact
+names the declaration that owns it, and a declaration that was not edited binds
+the same integers in the candidate revision. The measurement is inline, over
+the whole read vocabulary: `check/body_product :: body product read comparison
+answers for the projection it replaces` walks one fact of each of the sixty
+four `FunctionRead` constructors past the projection and requires sixty three
+of them to come back untouched.
+
+The sixty fourth is `LocalAliasSource`. The source node it carries is a span in
+the file of the declaration that owns the alias, not in the file of the body
+that read it, so only that owner can move it, and a caller without that
+provenance has to reject rather than keep a stale span. That arm is all that is
+left: `semantic_reads.project(reads, source_value)` carries every other fact
+whole. The dispositions below are K4's three.
+
+- **Eighty eight controls are deleted** across twelve harnesses. Each one
+  replaced one projection callback with another domain's callback, or dropped a
+  rebuilt field, and each is K4's third disposition: the judgment goes with the
+  production code that made it. There is no per-arm rebuild left to confuse a
+  trait id with a nominal id, or to drop a constructor's fields, because
+  nothing rebuilds a fact. The counts, with the retired names listed at the
+  place each stood in its harness:
+  `witness-revalidation.py` 20 (its whole `project-*` family, and with it the
+  `semantic_reads` subject and its positive control, 31 controls to 11),
+  `type-reads.py` 14, `diagnostic-reads.py` 10, `local-value-reads.py` 8,
+  `environment-reads.py` 7, `java-oracle-reads.py` 6, `function-reads.py` 5,
+  `java-namespace-reads.py` 5, `effect-reads.py` 4, `associated-reads.py` 3,
+  `export-reads.py` 3, `java-reads.py` 3.
+- **No harness is deleted and none is left empty.** Every one of the twelve
+  keeps its recording side, which is the half that still decides something:
+  which fact the checker observes, what the fact says, and whether a consumer
+  reads the context the observation returned. `witness-revalidation.py` keeps
+  its eleven checker controls, `type-reads.py` its twenty six `cx` controls,
+  and so on down.
+- `state-product.py`'s `function-read-domain` and `type-reads.py`'s
+  `alias-source-callback` are **re-anchored, not retired** (K4's first
+  disposition): both mutate `body_product.projected_reads`, whose call is now
+  `semantic_reads.project(p.function_reads, source_value)`, and both are held
+  by the same inline assertion as before.
+- `type-reads.py`'s `alias-source-projection` and `alias-source-owner` are
+  **untouched**. They mutate the one arm that survives, and they are the only
+  two controls the read log's projection still has.
+- Thirty one inline assertions in `check/semantic_reads` went with the arms
+  they exercised, replaced by one: `semantic reads carry every fact but move an
+  alias source with its owner`. The vocabulary-wide statement they used to make
+  between them is made by `body_product`'s corpus, which was extended from
+  fifty facts to sixty six so that it names every constructor rather than only
+  the arms that used to rebuild a reference.
+
 ### Controls retired with the translation layer (K7)
 
 `equal_under` walked a recorded fact beside an observed one under a relocation,
@@ -225,9 +278,10 @@ dispositions are K4's three.
   `target-identity`, `entry-pack-not-a-run` and `reserved-signature` are all
   re-anchored: seventeen controls whose judgments did not change and whose
   owning assertions did not move.
-- `witness-revalidation.py`'s nineteen `project-*` controls are **untouched**.
-  They mutate `semantic_reads.project_with_inference`, which still rebuilds a
-  read log for a caller that installs one. Shrinking that is a separate knife.
+- `witness-revalidation.py`'s `project-*` controls were **untouched** by this
+  knife. They mutate `semantic_reads.project_with_inference`, which still
+  rebuilt a read log for a caller that installs one. Shrinking that was the
+  separate knife recorded above as K7b, which retired all twenty of them.
 
 ### Controls retired with the ABI permutation (K6)
 

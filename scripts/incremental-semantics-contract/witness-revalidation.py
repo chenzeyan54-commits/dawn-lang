@@ -50,70 +50,19 @@ def main():
     subjects = [('positive', 'checker', source, None)] + [
         (name, 'checker', edit(source, old, new), test) for name, old, new, test in variants
     ]
-    projection = (ROOT / 'selfhost/src/check/semantic_reads.dawn').read_text()
-    projection_variants = []
-    # Mutate production arms only. A retained numeric identity must not pass for
-    # a projected identity, even when both domains use the same integer type.
-    for constructor, old, new, owner_suffix in [
-        ('ImplementationPresence', 'trait_value(trait_id)?', 'nominal(trait_id)?',
-         'relocate implementation presence in separate domains'),
-        ('ImplementationArity', 'parameters)', 'None)',
-         'relocate implementation arity without mapping counts'),
-        ('ImplementationSubgoals', 'moved)', 'goals)',
-         'relocate ordered implementation subgoals'),
-        ('TraitName', 'trait_value(id)?', 'nominal(id)?',
-         'project trait names without changing their answers'),
-        ('DictionarySymbol', 'binder_value(binder)?', 'nominal(binder)?',
-         'project dictionary binders traits and locals independently'),
-        ('DictionarySymbol', 'trait_value(trait_id)?', 'nominal(trait_id)?',
-         'project dictionary binders traits and locals independently'),
-        ('ReducedAssociatedType', 'type_value(input)?', 'input',
-         'require both reduction input and answer mappings'),
-        ('ReducedAssociatedType', 'type_value(answer)?', 'answer',
-         'require both reduction input and answer mappings'),
-        ('ConcreteType', 'type_value(input)?', 'input',
-         'relocate concreteness inputs and retain verdicts'),
-        ('AssignableType', 'type_value(target)?', 'target',
-         'relocate both assignability operands'),
-        ('ReducedEffect', 'effect_value(answer)?', 'answer',
-         'relocate effect reduction rows and ordered bindings'),
-        ('ReducedEffect', 'moved,', 'bindings,',
-         'relocate effect reduction rows and ordered bindings'),
-        ('ReducedTypeEffects', 'type_value(answer)?', 'answer',
-         'relocate type effect reduction inputs bindings and answers'),
-        ('ReducedTypeEffects', 'moved,', 'bindings,',
-         'relocate type effect reduction inputs bindings and answers'),
-    ]:
-        # The constructor's output expression is on one production line, even
-        # for arms that first assemble a list. Exclude fixtures by indentation.
-        lines = [line for line in projection.splitlines()
-                 if line.startswith('          ') and constructor + '(' in line and old in line]
-        if len(lines) != 1:
-            raise RuntimeError(f'Ambiguous projection anchor: {constructor} / {old}')
-        anchor = lines[0]
-        projection_variants.append((f'project-{constructor}-{len(projection_variants)}',
-                                   anchor, new.join(anchor.rsplit(old, 1)),
-                                   'semantic reads ' + owner_suffix))
-    inference_owner = 'semantic reads project unification bindings in independent domains'
-    projection_variants.extend([
-        ('project-dictionary-local', 'Some(local_value(id)?)', 'Some(nominal(id)?)',
-         'semantic reads project dictionary binders traits and locals independently'),
-        ('project-inference-type-key', '[(binder(id)?, type_value(ty)?)]',
-         '[(id, type_value(ty)?)]', inference_owner),
-        ('project-inference-effect-key', '[(effect_binder(id)?, effect_value(row)?)]',
-         '[(binder(id)?, effect_value(row)?)]', inference_owner),
-        ('project-inference-type-answer', '[(binder(id)?, type_value(ty)?)]',
-         '[(binder(id)?, ty)]', inference_owner),
-        ('project-inference-effect-answer', '[(effect_binder(id)?, effect_value(row)?)]',
-         '[(effect_binder(id)?, row)]', inference_owner),
-        ('project-unification-after',
-         'after: project_inference(q.after, type_value, effect_value, binder_value, effect_binder)?',
-         'after: project_inference(q.before, type_value, effect_value, binder_value, effect_binder)?',
-         inference_owner),
-    ])
-    subjects.append(('projection-positive', 'semantic_reads', projection, None))
-    subjects.extend((name, 'semantic_reads', edit(projection, old, new), test)
-                    for name, old, new, test in projection_variants)
+    # Twenty projection controls stood here and are gone with the read-log
+    # projection they mutated (K7b). Fourteen were generated per constructor
+    # arm of `project_with_inference` (`project-ImplementationPresence-0`
+    # through `project-ReducedTypeEffects-13`) and six were written out:
+    # `project-dictionary-local`, `project-inference-type-key`,
+    # `project-inference-effect-key`, `project-inference-type-answer`,
+    # `project-inference-effect-answer` and `project-unification-after`.
+    # Each replaced one domain's callback with another domain's, which is a
+    # mutation only while there is a per-arm rebuild to confuse. A recorded
+    # fact is carried whole now, and the one reference that still moves is the
+    # alias source, whose controls live in `type-reads.py`. What the checker
+    # still has to get right is above: which facts it recomputes and how it
+    # compares them.
     with tempfile.TemporaryDirectory(prefix='dawn-witness-revalidation-') as temp:
         root = Path(temp)
         for directory in ('selfhost', 'compiler-plan'):
@@ -121,9 +70,8 @@ def main():
                             ignore=shutil.ignore_patterns('build', '.dawn'))
         (root / 'packages').symlink_to(ROOT / 'packages', target_is_directory=True)
         for name, module, text, test in subjects:
-            # Restore both modules so each negative has exactly one mutation.
+            # Restore the module so each negative has exactly one mutation.
             (root / 'selfhost/src/check/checker.dawn').write_text(source)
-            (root / 'selfhost/src/check/semantic_reads.dawn').write_text(projection)
             target = root / f'selfhost/src/check/{module}.dawn'
             target.write_text(text)
             status, output = run('test', target)
@@ -136,7 +84,7 @@ def main():
                 if not status or not failure.search(output) or re.search(r'^error:', output, re.M):
                     raise RuntimeError(name + ' did not compile and reach its owner\n' + output)
             print('OK: witness revalidation ' + name, flush=True)
-    print(f'OK: {len(variants) + len(projection_variants)} compiling witness controls, '
+    print(f'OK: {len(variants)} compiling witness controls, '
           f'{time.monotonic() - started:.2f}s')
 
 

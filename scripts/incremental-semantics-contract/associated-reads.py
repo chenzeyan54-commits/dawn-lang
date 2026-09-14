@@ -25,9 +25,11 @@ def main():
         ("cx", "members-axis", "semantic_reads.TraitAssociatedMembers(id, kind, names)", "semantic_reads.TraitAssociatedMembers(id, semantic_reads.AssociatedType, names)"),
         ("cx", "type-members-consumer", "trait_associated_members_read(cx, tid, semantic_reads.AssociatedType)\n        cx = members_cx", "trait_associated_members_read(cx, tid, semantic_reads.AssociatedType)\n        cx = cx"),
         ("cx", "effect-members-consumer", "trait_associated_members_read(cx, tid, semantic_reads.AssociatedEffect)\n        cx = members_cx", "trait_associated_members_read(cx, tid, semantic_reads.AssociatedEffect)\n        cx = cx"),
-        ("semantic_reads", "subject-domain", "let moved_parameter = match answer { None -> None, Some(ty) -> Some(type_value(ty)?) }", "let moved_parameter = answer"),
-        ("semantic_reads", "bound-subject-domain", "ParameterBounds(type_value(subject)?, moved_bounds)", "ParameterBounds(subject, moved_bounds)"),
-        ("semantic_reads", "projected-axis", "TraitAssociatedMembers(trait_value(id)?, kind, names)", "TraitAssociatedMembers(trait_value(id)?, AssociatedType, names)"),
+        # `subject-domain`, `bound-subject-domain` and `projected-axis` stood
+        # here and are gone with the read-log projection they mutated (K7b).
+        # A recorded fact is carried whole now, so there is no per-arm rebuild
+        # to drop a subject, a bound or an axis from. The recording side above
+        # is what still decides what a fact says.
     ]
     sources = {name: (ROOT / "selfhost/src/check" / (name + ".dawn")).read_text()
                for name in ("cx", "semantic_reads", "body_product")}

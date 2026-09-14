@@ -30,9 +30,9 @@ def main():
         # rendering fact so the original Java-metadata owner remains decisive.
         ("checker", "sam-diagnostic-consumer", 'type_display_read(info_cx, TyFn(sps, sret, EIo))', 'type_display_read(cx1, TyFn(sps, sret, EIo))'),
         ("checker", "list-diagnostic-consumer", 'type_display_read(info_cx, t)', 'type_display_read(cx1, t)'),
-        ("semantic_reads", "project-name-key", "JavaClassName(name, answer) -> JavaClassName(name, answer)", 'JavaClassName(name, answer) -> JavaClassName("wrong", answer)'),
-        ("semantic_reads", "project-name-answer", "JavaClassName(name, answer) -> JavaClassName(name, answer)", "JavaClassName(name, answer) -> JavaClassName(name, None)"),
-        ("semantic_reads", "project-info-key", "JavaClassInfo(fqcn, answer) -> JavaClassInfo(fqcn, answer)", "JavaClassInfo(fqcn, answer) -> JavaClassInfo(answer.fqcn, answer)"),
+        # `project-name-key`, `project-name-answer` and `project-info-key`
+        # stood here and are gone with the read-log projection they mutated
+        # (K7b). A Java class fact is carried whole now.
         ("body_product", "capture-reads", "semantic_reads.capture(before.function_reads, after.function_reads)?", "before.function_reads"),
     ]
     for field in ("fqcn", "simple", "display", "is_interface", "is_primitive", "is_array"):

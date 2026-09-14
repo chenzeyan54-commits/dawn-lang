@@ -21,8 +21,8 @@ def main():
         # a control that replaced the callback with `Some` could not be told
         # from the production code (K5). The alias and constant source
         # callbacks below still decide something and stay.
-        ("body_product", "alias-source-callback", "e => Some(e), source_value,",
-         "e => Some(e), (owner, source) => Some(source),"),
+        ("body_product", "alias-source-callback", "semantic_reads.project(p.function_reads, source_value)",
+         "semantic_reads.project(p.function_reads, (owner, source) => Some(source))"),
         ("body_product", "constant-source-callback", "tree => body_admit.constant(v, tree), source_value, true)",
          "tree => body_admit.constant(v, tree), (owner, source) => Some(source), true)"),
         ("cx", "observation", "semantic_reads.observe(cx.function_reads, fact)", "cx.function_reads"),
@@ -51,22 +51,18 @@ def main():
         ("cx", "nominal-shape-consumer", "refuse_nominal_earg(shape_cx, info.name,", "refuse_nominal_earg(cx, info.name,"),
         ("cx", "diagnostic-kind", "semantic_reads.ExportDiagnosticAnswer(semantic_reads.TypeDiagnostic,", "semantic_reads.ExportDiagnosticAnswer(semantic_reads.ValueDiagnostic,"),
         ("cx", "diagnostic-consumer", "cerr_h(diagnostic_cx, message, lo, hi, hint)", "cerr_h(cx, message, lo, hi, hint)"),
-        ("semantic_reads", "type-binder-domain", "types = types ++ [type_value(ty)?]", "types = types ++ [ty]"),
-        ("semantic_reads", "effect-binder-domain", "effects = effects ++ [effect_value(eff)?]", "effects = effects ++ [eff]"),
-        ("semantic_reads", "opaque-domain", "let opaque = match header.opaque_id { None -> None, Some(id) -> Some(nominal(id)?) }", "let opaque = header.opaque_id"),
-        ("semantic_reads", "transparent-sentinel", "let opaque = match header.opaque_id { None -> None, Some(id) -> Some(nominal(id)?) }", "let opaque = match header.opaque_id { None -> Some(nominal(-1)?), Some(id) -> Some(nominal(id)?) }"),
-        ("semantic_reads", "alias-target-domain", "let moved_answer = match answer { None -> None, Some(ty) -> Some(type_value(ty)?) }", "let moved_answer = answer"),
-        ("semantic_reads", "nominal-name-domain", "let moved_answer = match answer { None -> None, Some(id) -> Some(nominal(id)?) }", "let moved_answer = answer"),
-        ("semantic_reads", "nominal-shape-domain", "NominalTypeShape(nominal(id)?, name, arity, eparams, is_record)", "NominalTypeShape(id, name, arity, eparams, is_record)"),
-        ("semantic_reads", "local-diagnostic-message", "LocalTypeDiagnostic(name, answer) -> LocalTypeDiagnostic(name, answer)", "LocalTypeDiagnostic(name, answer) -> LocalTypeDiagnostic(name, ExportDiagnostic { ..answer, message: \"changed message\" })"),
-        ("semantic_reads", "local-diagnostic-hint", "LocalTypeDiagnostic(name, answer) -> LocalTypeDiagnostic(name, answer)", "LocalTypeDiagnostic(name, answer) -> LocalTypeDiagnostic(name, ExportDiagnostic { ..answer, hint: None })"),
-        ("semantic_reads", "local-alias-target-domain", "let moved_target = match answer { None -> None, Some(ty) -> Some(type_value(ty)?) }", "let moved_target = answer"),
-        ("semantic_reads", "local-alias-cycle-projection", "LocalAliasResolving(name, active) -> LocalAliasResolving(name, active)", "LocalAliasResolving(name, active) -> LocalAliasResolving(name, false)"),
+        # Fourteen projection controls stood here and are gone with the
+        # read-log projection they mutated (K7b): `type-binder-domain`,
+        # `effect-binder-domain`, `opaque-domain`, `transparent-sentinel`,
+        # `alias-target-domain`, `nominal-name-domain`, `nominal-shape-domain`,
+        # `local-diagnostic-message`, `local-diagnostic-hint`,
+        # `local-alias-target-domain`, `local-alias-cycle-projection`,
+        # `local-alias-header-projection`, `local-alias-type-projection` and
+        # `local-alias-effect-projection`. The alias source below is the one
+        # reference a fact carries that is spelled in another declaration's
+        # file, so it is the only one left to move.
         ("semantic_reads", "alias-source-projection", "Some(source_value(owner, source)?)", "Some(source)"),
         ("semantic_reads", "alias-source-owner", "Some(source_value(owner, source)?)", "Some(source_value(name, source)?)"),
-        ("semantic_reads", "local-alias-header-projection", "LocalAliasHeader(name, answer) -> LocalAliasHeader(name, project_alias_header(answer, type_value, nominal, effect_value)?)", "LocalAliasHeader(name, answer) -> LocalAliasHeader(name, answer)"),
-        ("semantic_reads", "local-alias-type-projection", "LocalAliasBinders(name, types, effects)", "LocalAliasBinders(name, tparams, effects)"),
-        ("semantic_reads", "local-alias-effect-projection", "LocalAliasBinders(name, types, effects)", "LocalAliasBinders(name, types, eparams)"),
     ]
     sources = {name: (ROOT / "selfhost/src/check" / (name + ".dawn")).read_text()
                for name in ("cx", "semantic_reads", "body_product")}

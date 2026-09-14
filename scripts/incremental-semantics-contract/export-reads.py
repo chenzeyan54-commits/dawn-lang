@@ -35,9 +35,9 @@ def main():
         ("checker", "value-hint-answer", "semantic_reads.ExportDiagnosticAnswer(semantic_reads.ValueDiagnostic, q, name, answer)", "semantic_reads.ExportDiagnosticAnswer(semantic_reads.ValueDiagnostic, q, name, None)"),
         ("checker", "function-hint-answer", "semantic_reads.ExportDiagnosticAnswer(semantic_reads.FunctionDiagnostic, q, name, answer)", "semantic_reads.ExportDiagnosticAnswer(semantic_reads.FunctionDiagnostic, q, name, None)"),
         ("semantic_reads", "observation", "Some(entries) -> Some(entries ++ [fact])", "Some(entries) -> Some(entries)"),
-        ("semantic_reads", "constant-type", "Some((owner, type_value(ty)?))", "Some((owner, ty))"),
-        ("semantic_reads", "presence-answer", "ExportPresence(qualifier, present) -> ExportPresence(qualifier, present)", "ExportPresence(qualifier, present) -> ExportPresence(qualifier, not present)"),
-        ("semantic_reads", "diagnostic-kind", "ExportDiagnosticAnswer(kind, qualifier, name, answer) -> ExportDiagnosticAnswer(kind, qualifier, name, answer)", "ExportDiagnosticAnswer(kind, qualifier, name, answer) -> ExportDiagnosticAnswer(FunctionDiagnostic, qualifier, name, answer)"),
+        # `constant-type`, `presence-answer` and `diagnostic-kind` stood here
+        # and are gone with the read-log projection they mutated (K7b). An
+        # export fact is carried whole now.
         # `constant-domain` went with `relocate.ty`'s decision (K5): a
         # constant's declared type carries onto the candidate revision
         # unchanged, so replacing the callback with `Some` is the identity.
