@@ -39,10 +39,11 @@ This is the mechanical version of that walk, so the next widening of admission
 5. Holds the whole set to `ledger.txt` in both directions: a read that is not
    in the ledger fails, and a ledger row whose read has gone fails.
 
-`ledger.txt` gives every read one of four verdicts (`logged`, `product`,
-`write`, `uncovered`) and a reason in the author's own words. The header of
-that file is the format. `--uncovered` prints just the holes, which is the
-wiring backlog.
+`ledger.txt` gives every read one of six verdicts (`logged`, `product`,
+`write`, `scheduler`, `invariant`, `uncovered`) and a reason in the author's
+own words. The header of that file is the format. `--uncovered` prints just
+the holes, which is the wiring backlog: a row an admission-side guard already
+compensates for is accounted for and is not printed.
 
 ## What each verdict is actually checked against
 
@@ -54,6 +55,24 @@ wiring backlog.
 * `product` names the `Cx` field `body_product.assemble` reinstalls from the
   product. The gate checks `assemble` still writes it.
 * `write` needs nothing further: the read is syntactically inside the update.
+* `scheduler` names a coordinate this revision's scheduler set on the way
+  into the declaration rather than a table the candidate revision answers:
+  `cx.owner`, `cx.owner_lo` and `cx.owner_decl`. A body's identifiers are
+  numbered inside the declaration it sits in and its diagnostics and tree
+  offsets are measured from where that declaration starts, so the value never
+  leaves the revision that produced it and there is no candidate answer to
+  compare against. Recording a fact for one would be recording the product's
+  own key. `set-by=<site>` names the function that installs the coordinate
+  (`cx.owned_by`, `cx.enter_decl_owner`), and the gate checks that function
+  still writes that field.
+* `invariant` names a field that holds one value for the whole of every body
+  pass, so the read has a single answer and admission has nothing to compare.
+  `held-by=<site>` names the function that establishes it, and the gate checks
+  that function still writes that field. The one row today is
+  `cx.record_span_at::record_ty_spans`: only the header passes ask for the
+  span table, and `checker.check_module_headers` clears the flag on its way
+  out. The judgment behind that claim is `check/cx` "a body pass records no
+  type spans".
 * `uncovered` must say `backlog`, or `compensated-by=<site>` naming the
   admission-side guard that re-asks the question. The gate checks that guard
   still reads that field. Reverting the `module_aliases` guard in
@@ -102,8 +121,10 @@ python3 scripts/journal-reads/check.py --src <dir>  # scan a tree somewhere else
 ```
 
 `--self-test` runs a five-module synthetic tree: one positive control that must
-stay clean, six negative controls (an unledgered read, a reason-free exemption,
-a reverted compensating guard, a read accessor that stopped recording its fact,
-a `product` claim `assemble` does not back, and a stale row), and three lexical
+stay clean, eight negative controls (an unledgered read, a reason-free
+exemption, a reverted compensating guard, a read accessor that stopped
+recording its fact, a `product` claim `assemble` does not back, a stale row, a
+`scheduler` row whose named site stopped setting the coordinate, and an
+`invariant` row whose named site stopped establishing it), and three lexical
 controls (a `test` block, a comment and a string literal, each spelling a table
 read that must not count).

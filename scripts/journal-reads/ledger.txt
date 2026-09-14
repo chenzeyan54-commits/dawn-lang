@@ -15,6 +15,15 @@
 #              gate checks assemble still writes it.
 #   write      the read is the old value inside that same field's own
 #              `Cx { .. }` update. <detail> is empty.
+#   scheduler  the value read is a coordinate this revision's scheduler set on
+#              the way into the declaration, not a table the candidate
+#              revision answers. <detail> is `set-by=<site>` naming the
+#              function that installs it; the gate checks that function still
+#              writes the field.
+#   invariant  the field holds one value for the whole of every body pass, so
+#              the read has one answer. <detail> is `held-by=<site>` naming
+#              the function that establishes it; the gate checks that function
+#              still writes the field.
 #   uncovered  a real hole. <detail> is `backlog`, or
 #              `compensated-by=<site>` naming the admission-side guard that
 #              re-asks the question; the gate checks that guard still reads
@@ -160,10 +169,10 @@ check/cx.dawn::eff_witness_at::frame | product | frame | body_product.assemble r
 check/cx.dawn::effect_candidates_read::effects | logged | EffectCandidates | the answer is recorded as EffectCandidates, so admission can re-ask it on the candidate revision or refuse
 check/cx.dawn::effect_of::effect_infos | uncovered | backlog | reached with a fact from declared_effect_info_read and without one from label_eff, so the table is read on a path that records nothing
 check/cx.dawn::fresh::decl_slots | write |  | the old table inside its own Cx update; writer ownership is scripts/incremental-semantics-contract/journal-coverage.py's inventory
-check/cx.dawn::fresh::owner_decl | uncovered | backlog | which declaration the scheduler entered, which is what the identifier being minted is numbered inside; it is the product's own key rather than a table the candidate revision answers, so there is nothing to compare against, and body_product.capture refuses a transition that changed it
-check/cx.dawn::fresh::owner_lo | uncovered | backlog | where that declaration starts, read only to place the diagnostic for a declaration that binds more names than a slot can hold; the same read `owner_off` makes, and the same reason it has no candidate-revision answer
+check/cx.dawn::fresh::owner_decl | scheduler | set-by=check/cx.dawn::enter_decl_owner | which declaration the scheduler entered, which is what the identifier being minted is numbered inside; it is the product's own key rather than a table the candidate revision answers, so there is nothing to compare against, and body_product.capture refuses a transition that changed it
+check/cx.dawn::fresh::owner_lo | scheduler | set-by=check/cx.dawn::owned_by | where that declaration starts, read only to place the diagnostic for a declaration that binds more names than a slot can hold; the same read `owner_off` makes, and the same reason it has no candidate-revision answer
 check/cx.dawn::slot_of::decl_slots | product | decl_slots | the row `fresh` writes, read back to find the next slot; body_product.assemble puts that row back from the product
-check/cx.dawn::slot_of::owner_decl | uncovered | backlog | the same field `fresh` reads, for the same reason
+check/cx.dawn::slot_of::owner_decl | scheduler | set-by=check/cx.dawn::enter_decl_owner | the same field `fresh` reads, for the same reason
 check/cx.dawn::function_return_display_read::adts | logged | RenderedFunctionReturn | the answer is recorded as RenderedFunctionReturn, so admission can re-ask it on the candidate revision or refuse
 check/cx.dawn::implementation_arity_read::impl_table | logged | ImplementationArity | the answer is recorded as ImplementationArity, so admission can re-ask it on the candidate revision or refuse
 check/cx.dawn::implementation_presence_read::impl_table | logged | ImplementationPresence | the answer is recorded as ImplementationPresence, so admission can re-ask it on the candidate revision or refuse
@@ -185,12 +194,12 @@ check/cx.dawn::local_value_candidates_read::consts | logged | LocalValueCandidat
 check/cx.dawn::local_value_candidates_read::ctors_by_name | logged | LocalValueCandidates | the answer is recorded as LocalValueCandidates, so admission can re-ask it on the candidate revision or refuse
 check/cx.dawn::observe_type_read::function_reads | product | function_reads | body_product.assemble reinstalls cx.function_reads from the product, so this is body-local state and not a question about the module environment
 check/cx.dawn::observe_type_read::function_reads | write |  | the old value of cx.function_reads inside its own Cx update; writer ownership is scripts/incremental-semantics-contract/journal-coverage.py's inventory
-check/cx.dawn::owner_at::owner_lo | uncovered | backlog | where the declaration the scheduler entered starts in the revision being checked, added back to a span the body already recorded against it so a diagnostic site can blame a position; the value never leaves this revision, so there is no candidate-revision answer to compare against
-check/cx.dawn::owner_off::owner_lo | uncovered | backlog | the same declaration start, subtracted from every span on its way into the typed tree; what the tree keeps is the difference, and the declaration's exit resolves it again in whichever revision the tree is being placed in
+check/cx.dawn::owner_at::owner_lo | scheduler | set-by=check/cx.dawn::owned_by | where the declaration the scheduler entered starts in the revision being checked, added back to a span the body already recorded against it so a diagnostic site can blame a position; the value never leaves this revision, so there is no candidate-revision answer to compare against
+check/cx.dawn::owner_off::owner_lo | scheduler | set-by=check/cx.dawn::owned_by | the same declaration start, subtracted from every span on its way into the typed tree; what the tree keeps is the difference, and the declaration's exit resolves it again in whichever revision the tree is being placed in
 check/cx.dawn::parameter_bounds_read::current_tparam_bounds | logged | ParameterBounds | the answer is recorded as ParameterBounds, so admission can re-ask it on the candidate revision or refuse
-check/cx.dawn::raised::owner | uncovered | backlog | the declaration the scheduler entered before this body, so the diagnostic is measured from it rather than from the file; no admitted class replays a body that raised one (check/scalar_replay.admit refuses a product whose diagnostics are not empty, and body_product.project_body refuses a diagnostic with no owner), so nothing installs one without entering its declaration first
-check/cx.dawn::raised::owner_lo | uncovered | backlog | where that declaration starts in the revision being checked; what the diagnostic keeps is the difference against it, which the render sites resolve again in the revision they are rendering, so this read has no candidate-revision answer to compare against
-check/cx.dawn::record_span_at::record_ty_spans | uncovered | backlog | the flag is false for body passes, so a body records no spans; header exit clears it and the design calls that an explicit override rather than an input invariant
+check/cx.dawn::raised::owner | scheduler | set-by=check/cx.dawn::owned_by | the declaration the scheduler entered before this body, so the diagnostic is measured from it rather than from the file; it is the product's own key rather than a table the candidate revision answers, and no admitted class replays a body that raised one (check/scalar_replay.admit refuses a product whose diagnostics are not empty, and body_product.project_body refuses a diagnostic with no owner)
+check/cx.dawn::raised::owner_lo | scheduler | set-by=check/cx.dawn::owned_by | where that declaration starts in the revision being checked; what the diagnostic keeps is the difference against it, which the render sites resolve again in the revision they are rendering, so this read has no candidate-revision answer to compare against
+check/cx.dawn::record_span_at::record_ty_spans | invariant | held-by=check/checker.dawn::check_module_headers | the header passes are the only ones that ask for the span table; their exit clears the flag, so it is false for the whole of every body pass and this read has one answer. The judgment is `check/cx.dawn` "a body pass records no type spans"
 check/cx.dawn::record_span_at::ty_spans | write |  | the old value of cx.ty_spans inside its own Cx update; writer ownership is scripts/incremental-semantics-contract/journal-coverage.py's inventory
 check/cx.dawn::resolve_alias_target::alias_resolved | logged | LocalAliasTarget | the answer is recorded as LocalAliasTarget, so admission can re-ask it on the candidate revision or refuse
 check/cx.dawn::resolve_alias_target::alias_resolving | logged | LocalAliasResolving | the in-flight set is asked once per alias and the answer is recorded before the cycle report

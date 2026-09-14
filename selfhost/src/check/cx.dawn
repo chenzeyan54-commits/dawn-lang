@@ -1209,6 +1209,22 @@ fn record_span_at(cx: Cx, lo: Int, hi: Int, kids: List[TypeRef]) -> Cx =
     }
   }
 
+test "a body pass records no type spans" {
+  # The header passes are the only ones that ask for the span table, and
+  # `check_module_headers` clears the flag on its way out, so the flag is off
+  # for the whole of every body pass. scripts/journal-reads/ledger.txt calls
+  # the read in `record_span_at` an invariant on that ground; this is what the
+  # claim rests on. A fresh context starts with it off, and with it off the
+  # recorder is the identity on the table.
+  let cx = test_cx()
+  assert not cx.record_ty_spans
+  let ref = TNamed("Int", [], [], 3, 6)
+  assert map.len(record_span_at(cx, 3, 6, [ref]).ty_spans) == 0
+  # And it is the flag doing that, not an empty `kids` list: turn it on and
+  # the same call writes the entry.
+  assert map.len(record_span_at(Cx { ..cx, record_ty_spans: true }, 3, 6, [ref]).ty_spans) == 1
+}
+
 ## Table mutations report their keys only when a body recorder requests it.
 pub fn write_symbol(cx: Cx, id: Int, value: Sym) -> Cx = Cx {
   ..cx, syms: map.insert(cx.syms, id, value),

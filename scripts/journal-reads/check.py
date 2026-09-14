@@ -31,7 +31,7 @@ generics, methods). This is the mechanical version of that walk.
 It scans the Dawn sources textually, builds a conservative call graph from the
 seven body-checking entry points in `check/checker`, collects every read of a
 `Cx` field reachable from them, and holds the whole set to a checked-in ledger
-(`ledger.txt`) that gives each read site one of four verdicts:
+(`ledger.txt`) that gives each read site one of six verdicts:
 
   logged     the read happens inside a function that records a
              `semantic_reads` fact, so admission has something to revalidate.
@@ -41,10 +41,20 @@ seven body-checking entry points in `check/checker`, collects every read of a
   write      the read is the old value inside that same field's own `Cx { .. }`
              update. Table writer ownership is a separate inventory, held by
              scripts/incremental-semantics-contract/journal-coverage.py.
-  uncovered  neither. Every one of these is a real hole and carries a reason,
-             plus either `compensated-by=<site>` naming the admission-side
-             guard that re-asks the question, or `backlog` saying the hole is
-             open and the class that may admit such a body is not open yet.
+  scheduler  the value read is a coordinate this revision's scheduler set on
+             the way into the declaration, not a table the candidate revision
+             answers. There is no candidate answer to compare against, so a
+             fact would have nothing to say. `set-by=<site>` names the
+             function that installs it, and the gate checks that function
+             still writes that field.
+  invariant  the field holds one value for the whole of every body pass, so
+             the read has a single answer and admission has nothing to
+             compare. `held-by=<site>` names the function that establishes it,
+             and the gate checks that function still writes that field.
+  uncovered  none of those. Every one of these carries a reason, plus either
+             `compensated-by=<site>` naming the admission-side guard that
+             re-asks the question, or `backlog` saying the hole is open and
+             the class that may admit such a body is not open yet.
 
 A read site that is not in the ledger fails the gate. A ledger row whose site
 has disappeared fails it too, so the inventory cannot rot in either direction.
@@ -80,7 +90,11 @@ ROOTS = [
     ('check/checker', 'check_const_init'),
 ]
 
-VERDICTS = ('logged', 'product', 'write', 'uncovered')
+VERDICTS = ('logged', 'product', 'write', 'scheduler', 'invariant', 'uncovered')
+
+# A verdict that stands on a named site elsewhere in the tree, and the prefix
+# its detail column must carry to name it.
+NAMED_SITE = {'scheduler': 'set-by=', 'invariant': 'held-by='}
 
 TOKEN = re.compile(r'#[^\n]*|"(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z_0-9]*|[^\s]')
 IDENT = re.compile(r'^[A-Za-z_]')
@@ -407,6 +421,11 @@ def parse_ledger(text, name='ledger.txt'):
         if verdict == 'logged' and not detail:
             problems.append(f'{name}:{number}: {target} is logged but names no semantic_reads fact')
             continue
+        if verdict in NAMED_SITE and not detail.startswith(NAMED_SITE[verdict]):
+            problems.append(
+                f'{name}:{number}: {target} is {verdict}, so detail must be '
+                f'`{NAMED_SITE[verdict]}<site>` naming the function that puts the value there')
+            continue
         rows.append(Row(site, field, verdict, detail, reason, number))
     return rows, problems
 
@@ -485,6 +504,15 @@ def audit(sources, ledger=None):
                 problems.append(
                     f'ledger.txt:{row.line}: body_product.assemble does not reinstall cx.{row.detail}, '
                     f'so cx.{row.field} is not body-local state')
+        elif row.verdict in NAMED_SITE:
+            owner = row.detail[len(NAMED_SITE[row.verdict]):]
+            target = next((k for k, f in fns.items() if f.site == owner), None)
+            if target is None:
+                problems.append(f'ledger.txt:{row.line}: no function named {owner}')
+            elif not writes_field(fns[target], row.field):
+                problems.append(
+                    f'ledger.txt:{row.line}: {owner} no longer writes cx.{row.field}, so the read in '
+                    f'{row.site} is not {row.verdict} by anyone')
         elif row.verdict == 'uncovered' and row.detail.startswith('compensated-by='):
             guard = row.detail[len('compensated-by='):]
             target = next((k for k, f in fns.items() if f.site == guard), None)
@@ -526,6 +554,11 @@ def reads_field(fn, field):
     return any(ts[i][0] == '.' and ts[i + 1][0] == field for i in range(len(ts) - 1))
 
 
+def writes_field(fn, field):
+    """The function puts a value in that field of a `Cx { .. }` it builds."""
+    return field in set(fn.wkey)
+
+
 # ------------------------------------------------------------------ controls
 
 CONTROL_TREE = {
@@ -543,8 +576,14 @@ pub type Cx = {
   module_aliases: Map[String, String],
   effects: Map[String, Int],
   is_std_module: Bool,
+  owner_lo: Int,
+  record_ty_spans: Bool,
   function_reads: Option[List[FunctionRead]]
 }
+pub fn owned_by(cx: Cx, start: Int) -> Cx = Cx { ..cx, owner_lo: start }
+pub fn owner_off(cx: Cx, pos: Int) -> Int = pos - cx.owner_lo
+pub fn clear_spans(cx: Cx) -> Cx = Cx { ..cx, record_ty_spans: false }
+pub fn record_span_at(cx: Cx, lo: Int) -> Cx = if not cx.record_ty_spans { cx } else { cx }
 pub fn cerr(cx: Cx, msg: String) -> Cx = Cx { ..cx, diags: cx.diags ++ [msg] }
 pub fn alias_shadow(cx: Cx, name: String) -> Cx =
   match map.get(cx.module_aliases, name) { None -> cx, Some(_) -> cerr(cx, name) }
@@ -577,8 +616,9 @@ pub fn check_test(cx: Cx) -> Cx = check_fn(cx)
 pub fn check_const_init(cx: Cx) -> Cx = check_fn(cx)
 pub fn declare(cx: Cx, name: String) -> Cx = {
   let seed = cx.next_id
+  let here = owner_off(cx, seed)
   let (cx1, answer) = cx.effect_slot_read(name)
-  alias_shadow(cx1, name)
+  alias_shadow(record_span_at(cx1, here), name)
 }
 pub fn unreached(cx: Cx) -> Int = cx.next_id
 ''',
@@ -596,6 +636,8 @@ check/cx.dawn::effect_slot_read::function_reads | write | | the old log inside i
 check/cx.dawn::alias_shadow::module_aliases | uncovered | compensated-by=check/scalar_replay.dawn::candidate | the shadowing report leaves no fact
 check/cx.dawn::effect_slot_read::effects | logged | EffectSlot | the lookup is the fact's answer
 check/checker.dawn::declare::next_id | product | next_id | the allocator is body-local
+check/cx.dawn::owner_off::owner_lo | scheduler | set-by=check/cx.dawn::owned_by | the coordinate the scheduler set on the way in
+check/cx.dawn::record_span_at::record_ty_spans | invariant | held-by=check/cx.dawn::clear_spans | false for the whole of a body pass
 '''
 
 
@@ -616,8 +658,9 @@ def self_test():
     # 1. An unjournaled read that nobody has ledgered.
     injected = dict(CONTROL_TREE)
     injected['check/checker'] = CONTROL_TREE['check/checker'].replace(
-        '  alias_shadow(cx1, name)\n',
-        '  if map.has(cx1.effects, name) { return cx1 }\n  alias_shadow(cx1, name)\n')
+        '  alias_shadow(record_span_at(cx1, here), name)\n',
+        '  if map.has(cx1.effects, name) { return cx1 }\n'
+        '  alias_shadow(record_span_at(cx1, here), name)\n')
     run(injected, CONTROL_LEDGER, 'injected unjournaled read', 'unledgered read of cx.effects')
 
     # 2. A ledger row with no reason at all.
@@ -648,7 +691,23 @@ pub fn candidate(cx: Cx, name: String) -> Option[Int] = Some(1)
     run(CONTROL_TREE, CONTROL_LEDGER + 'check/cx.dawn::cerr::next_id | write | | stale\n',
         'stale ledger row', 'is no longer read there')
 
-    # 7. Lexical controls: the test block, the comment and the string literal
+    # 7. A `scheduler` row whose named site stopped setting the coordinate.
+    adrift = dict(CONTROL_TREE)
+    adrift['check/cx'] = CONTROL_TREE['check/cx'].replace(
+        'pub fn owned_by(cx: Cx, start: Int) -> Cx = Cx { ..cx, owner_lo: start }',
+        'pub fn owned_by(cx: Cx, start: Int) -> Cx = cx')
+    run(adrift, CONTROL_LEDGER, 'scheduler coordinate nobody sets',
+        'owned_by no longer writes cx.owner_lo')
+
+    # 8. An `invariant` row whose named site stopped establishing it.
+    unheld = dict(CONTROL_TREE)
+    unheld['check/cx'] = CONTROL_TREE['check/cx'].replace(
+        'pub fn clear_spans(cx: Cx) -> Cx = Cx { ..cx, record_ty_spans: false }',
+        'pub fn clear_spans(cx: Cx) -> Cx = cx')
+    run(unheld, CONTROL_LEDGER, 'invariant nobody holds',
+        'clear_spans no longer writes cx.record_ty_spans')
+
+    # 9. Lexical controls: the test block, the comment and the string literal
     #    in the control tree all spell cx.module_aliases and none may count.
     _, _, found, _, _ = scan(CONTROL_TREE)
     sites = {site for site, _, _ in found}
@@ -662,7 +721,7 @@ pub fn candidate(cx: Cx, name: String) -> Option[Int] = Some(1)
         for line in failures:
             print('FAIL: ' + line, file=sys.stderr)
         return 1
-    print(f'OK: {len(CONTROL_TREE)}-module control tree, 1 positive and 6 negative controls, '
+    print(f'OK: {len(CONTROL_TREE)}-module control tree, 1 positive and 8 negative controls, '
           f'3 lexical controls')
     return 0
 
@@ -697,7 +756,7 @@ def main():
     parser.add_argument('--record', action='store_true',
                         help='print a draft ledger for the tree; reasons still have to be written')
     parser.add_argument('--uncovered', action='store_true',
-                        help='print the uncovered reads and nothing else')
+                        help='print the wiring backlog and nothing else')
     args = parser.parse_args()
 
     if args.self_test:
@@ -710,7 +769,10 @@ def main():
 
     found, rows, problems = audit(sources)
     if args.uncovered:
-        for row in sorted((r for r in rows if r.verdict == 'uncovered'), key=lambda r: (r.field, r.site)):
+        # The wiring backlog only: a row whose hole an admission-side guard
+        # already re-asks is accounted for, and is not work anyone owes.
+        backlog = (r for r in rows if r.verdict == 'uncovered' and r.detail == 'backlog')
+        for row in sorted(backlog, key=lambda r: (r.field, r.site)):
             print(f'{row.site}::{row.field} | {row.detail} | {row.reason}')
     if problems:
         for line in problems:
@@ -720,7 +782,8 @@ def main():
     sites = sum(len(v) for v in found.values())
     print(f'OK: {sites} Cx table read(s) at {len(found)} site(s) reachable from {len(ROOTS)} body entry '
           f'points; {counts["logged"]} logged, {counts["product"]} body-local, {counts["write"]} in their '
-          f'own write, {counts["uncovered"]} uncovered and named')
+          f'own write, {counts["scheduler"]} scheduler coordinates, {counts["invariant"]} invariant, '
+          f'{counts["uncovered"]} uncovered and named')
     return 0
 
 
