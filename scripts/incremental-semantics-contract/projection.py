@@ -49,15 +49,26 @@ def main():
         # because it hands the relocation two type variables that do swap.
         ("relocate_tree", "tree relocation reconstructs ground packs and associated environment order", [
             ("pack-order", "let parts = ordered_parts(pack_parts(v, x)?)?", "let parts = pack_parts(v, x)?"),
-            ("evidence-origin", "Some(XEvRead(relocate.evidence_key(v.ids, key)?, moved,",
-             "Some(XEvRead(relocate.evidence_key(v.ids, key)?, origin,"),
+            # `evidence-origin` used to turn the projected origin back into
+            # the recorded one. Projecting it is the identity now, so what is
+            # left at this call site to get wrong is the refusal beside it:
+            # the key a read carries and the origin it carries are two
+            # records of the same slot, and a pair that disagrees is a
+            # product this compiler did not write (K5).
+            ("crossed-evidence-origin",
+             "    XEvRead(key, origin, lo, hi, ty) -> {\n      if key != evidence_role_key(origin) { return None }",
+             "    XEvRead(key, origin, lo, hi, ty) -> {\n      if false { return None }"),
         ]),
         ("relocate_tree", "tree relocation assembles defaults symbols and permuted call evidence", [
-            # Also moved from body-probe's typed mutants: the value sample's
-            # constants are declared at types with no binders in them, so a
-            # derived-id world leaves `relocate.ty` nothing to do there.
-            ("constant-type", "ty: relocate.ty(v.ids, c.ty)?, init: expression(v, c.init)?",
-             "ty: c.ty, init: expression(v, c.init)?"),
+            # `constant-type` stood here, moved from body-probe's typed
+            # mutants in K4 because the value sample's constants are declared
+            # at types with no binders in them. It is gone for the reason the
+            # whole table went: `relocate.ty` answers with what it is handed
+            # (K5). What this assembly still decides is arity -- a recorded
+            # function's evidence slots against the ABI row its signature
+            # describes -- and that is what the control below turns off.
+            ("evidence-arity", "if len(order) != len(f.ev_syms) { return None }",
+             "if false { return None }"),
         ]),
         ("relocate_tree", "tree callee lookup preserves declaring owners across module aliases", [
             # The production lookup is the index, so these three mutate the

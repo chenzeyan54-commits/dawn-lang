@@ -3,7 +3,7 @@
 # This is not the final nominal/type/effect/source-view relocation protocol.
 use std/map
 use std/list
-use compiler/check/cx.{Cx, Frame}
+use compiler/check/cx.{Cx, Frame, slots_of, installed_slots}
 use compiler/check/types.{Sym}
 use compiler/front/token.{Diag}
 use compiler/check/tast.{
@@ -148,7 +148,14 @@ pub fn replay(cx: Cx, before: Cx, after: Cx, m: Move) -> Cx = {
   }
   let diagnostics = map(list.drop(after.diags, len(before.diags)), d =>
     Diag { ..d, lo: position(d.lo, m), hi: position(d.hi, m) })
-  Cx { ..cx, syms: syms, decl_slots: after.decl_slots,
+  # The declaration the saved body was checked inside is the same
+  # declaration in the candidate revision, and the row this body allocated is
+  # its own. Only that row is put back: the whole table would carry the
+  # recorded revision's count for every *other* declaration, and an edit
+  # inside one of those is exactly what this replay is for.
+  let owner = after.owner_decl
+  Cx { ..cx, syms: syms, owner_decl: owner,
+    decl_slots: installed_slots(cx, owner, slots_of(after, owner)),
     frame: Frame { ..frame, scopes: scopes, dict_syms: dictionaries, eff_witness: evidence },
     diags: cx.diags ++ diagnostics,
     current_tparams: after.current_tparams, current_eff_vars: after.current_eff_vars,

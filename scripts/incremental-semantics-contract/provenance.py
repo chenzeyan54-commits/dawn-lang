@@ -17,9 +17,7 @@ def main():
     started = time.monotonic()
     driver_path = "selfhost/src/driver/analyze.dawn"
     std_path = "selfhost/src/driver/stdlib.dawn"
-    allocation_path = "selfhost/src/check/allocation.dawn"
-    identity_path = "selfhost/src/check/identity.dawn"
-    paths = (driver_path, std_path, allocation_path, identity_path)
+    paths = (driver_path, std_path)
     originals = {path: (ROOT / path).read_text() for path in paths}
     variants = [
         ("drop-local-origin", driver_path, "local_provenance = allocation.table(entries ++ methods)", "local_provenance = None"),
@@ -36,15 +34,20 @@ def main():
         ("drop-std-identity-carry", std_path, "identities: interned,\n    mods: mods,",
          "identities: map.empty(),\n    mods: mods,"),
         ("drop-std-identity-step", std_path, "interned = cx1.identities", "interned = interned"),
-        # The consumer side of the same carry. Each of these four is a way a
-        # consumer could acquire a binder it was never handed: drop the
-        # provider ledger and resolve the reference anyway, mint the provider's
-        # own binding, let a consumer declaration take an allocation the
-        # provider already owns, or match a renamed declaration by position.
-        ("drop-provider-reference", driver_path, "Some(Some(provider)) -> { tables = tables ++ [provider] }", "Some(Some(_)) -> ()"),
-        ("mint-provider-identity", allocation_path, "if id != e.id", "if false"),
-        ("collide-same-domain", allocation_path, "if binding != e.binding", "if false"),
-        ("rename-blind-identity", identity_path, "let path = [Named(FunctionDecl, f.name)]", 'let path = [Named(FunctionDecl, "${i}")]'),
+        # Four consumer-side controls stood here and are gone with the
+        # production code they mutated (K5). `module_references` and
+        # `ModuleStep.references` were the ledger a consumer resolved a
+        # provider's binder through; a binder is `identity.pack` of the
+        # declaration that bound it now, so a consumer that reads one is
+        # reading the provider's declaration and there is no ledger between
+        # them to drop (`drop-provider-reference`). The other three mutated
+        # the nominal/trait halves of `allocation` and the declaration path
+        # `identity` derives from -- both still there, and both still held:
+        # `mint-provider-identity` and `collide-same-domain` are
+        # `binding-conflict` and `owner-conflict` in `allocation.py`, and
+        # `rename-blind-identity` is `spelling-drops-kind` and
+        # `spelling-drops-owner` in `identity.py`, which mutate the derived
+        # spelling itself rather than one caller of it.
     ]
     with tempfile.TemporaryDirectory(prefix="dawn-provenance-carry-") as temp:
         root = Path(temp)

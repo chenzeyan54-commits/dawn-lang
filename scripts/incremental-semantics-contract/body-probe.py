@@ -21,15 +21,32 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--java-home", required=True, type=Path)
     parser.add_argument("--typed", action="store_true", help="compare the production typed-tree mapper against the cold bodies")
-    typed_variants = ["local", "capture", "dynamic",
-                      "inferred-write", "test-state", "default-write", "default-dictionary",
+    # `local`, `capture` and `dynamic` stood at the front of this list and
+    # turned off the identifier half of the tree projection. A binder is
+    # `identity.pack` of its declaration and its slot now, so
+    # `relocate.local_id` is deleted and `local_ids` answers with what it is
+    # handed: none of the three could be told from the production code (K5).
+    # What the same projection still decides -- that a recorded local names a
+    # symbol this revision has, and spells it the way the symbol table does --
+    # is `relocate_tree`'s own inline test and `relocate.py`'s controls.
+    typed_variants = ["inferred-write", "test-state", "default-write", "default-dictionary",
                       "impl-owner", "impl-parameters", "impl-roles", "default-diagnostics",
                       "module-functions", "module-signatures", "module-method-boundary", "module-registered-tag",
-                      "header-alias", "header-impl", "header-adt",
+                      # `header-adt` went with them: `relocate_header.adt` and the
+                      # constructor projection under it relocate nothing but
+                      # binders, and a binder does not move, so turning the
+                      # projection off leaves the same exports (K5).
+                      "header-alias", "header-impl",
                       "header-state-bounds", "header-state-surface", "read-state"]
     parser.add_argument("--typed-mutant", choices=typed_variants)
     parser.add_argument("--typed-all", action="store_true", help="run the typed positive and its compiling mutations")
-    variants = ["skip-symbol", "skip-captures", "skip-spans", "skip-operator-spans", "ambiguous-key",
+    # `skip-symbol` and `skip-captures` stood at the front of this list and
+    # turned off the identifier half of the relocation. A binder is
+    # `identity.pack` of its declaration and its slot now, so `Move.delta` is
+    # zero in every trial the probe builds and the relocation's identifier
+    # half is the identity: neither control could be told from the fixture it
+    # mutated (K5). The source half below still moves, and still has six.
+    variants = ["skip-spans", "skip-operator-spans", "ambiguous-key",
                 "skip-cx-symbols", "skip-diagnostics", "skip-symbol-location"]
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--mutant", choices=variants)
@@ -87,7 +104,6 @@ def main():
             "header-state-surface": ("observable_impls: projected_list(p.observable_impls, i => implementation(v, i))?", "observable_impls: p.observable_impls"),
             "header-alias": ("aliases: projected_map(e.aliases, names, a => alias_info(v, a))?", "aliases: e.aliases"),
             "header-impl": ("impls: projected_list(e.impls, info => implementation(v, info))?", "impls: e.impls"),
-            "header-adt": ("adt_infos: projected_map(e.adt_infos, same, info => adt(v, info))?", "adt_infos: e.adt_infos"),
             "default-diagnostics": ("diags: current.diags ++ product.diagnostics",
                                     'diags: if match product.frame.current_sig { Some(s) -> s.name == "sample\\$default\\$0", None -> false } { current.diags } else { current.diags ++ product.diagnostics }'),
             "default-dictionary": ("TDefault { body: dx, dict_syms: dsyms }", "TDefault { body: dx, dict_syms: [] }"),
@@ -98,9 +114,6 @@ def main():
             "impl-roles": ("sig.is_builtin ||\n                  sig.trait_id != None || sig.op_of != None", "sig.is_builtin"),
             "inferred-write": ("fns: apply_changes(current.fns, product.signatures)", "fns: current.fns"),
             "test-state": ("in_test: product.in_test", "in_test: if product.frame.current_sig == None { true } else { product.in_test }"),
-            "local": ("Some(XLocal(relocate.local_id(v.ids, id)?,", "Some(XLocal(id,"),
-            "capture": ("names, expression(v, body)?, local_ids(v, captures)?,", "names, expression(v, body)?, captures,"),
-            "dynamic": ("Some(XCallDyn(relocate.local_id(v.ids, id)?,", "Some(XCallDyn(id,"),
         }
         old, new = replacements[args.typed_mutant]
         if tree.count(old) != 1:
@@ -148,23 +161,25 @@ def main():
         if probe.count(old) != 1:
             raise RuntimeError("Typed edit replacement anchor drifted")
         probe = probe.replace(old, "typed_projection.body_in_source(saved.raw, saved.before, saved.after, id_delta, headers, new_ast, new_decls[index])")
-        anchor = "    replayed_cx = relocation.replay(replayed_cx, saved.before, saved.after, movement)"
+        anchor = "    replayed_cx = unowned(relocation.replay(replayed_cx, saved.before, saved.after, movement))"
         if probe.count(anchor) != 1:
             raise RuntimeError("Source state replay anchor drifted")
-        probe = probe.replace(anchor, "    replayed_cx = typed_projection.source_state(replayed_cx, saved.before, saved.after, saved.raw, id_delta)")
+        probe = probe.replace(anchor, "    replayed_cx = unowned(typed_projection.source_state(replayed_cx, saved.before, saved.after, saved.raw, id_delta))")
         # The scheduler owns the declaration boundary, and a body's captured
         # diagnostics are recorded against it. Drive check_fn the way the
         # scheduler does, or the projection refuses an unanchored diagnostic.
         for old, new in [
+            ("let before = entered_decl(cx, m, d)",
+             "let before = typed_projection.probe_decl(cx, m, d)"),
             ("let (after, body) = check_fn(before, d, signatures[index])",
              "let (after, raw) = typed_projection.checked_body(before, m, d, signatures[index])\n"
              "    let body = typed_projection.resolved_body(before, m, d, raw)"),
             ("let (shifted, shifted_body) = check_fn(with_slots(before, 12345, 1000), d, signatures[index])",
              "let (shifted, shifted_body) = typed_projection.checked_body(with_slots(before, 12345, 1000), m, d, signatures[index])"),
-            ("let (first, _) = check_fn(headers, new_decls[0], signatures[0])",
-             "let (first, _) = typed_projection.checked_body(headers, new_ast, new_decls[0], signatures[0])"),
-            ("let (checked, _) = check_fn(cold_cx, new_decls[index], signatures[index])",
-             "let (checked, _) = typed_projection.checked_body(cold_cx, new_ast, new_decls[index], signatures[index])"),
+            ("let (first, _) = check_fn(first_cx, new_decls[0], signatures[0])",
+             "let (first, _) = typed_projection.checked_body(first_cx, new_ast, new_decls[0], signatures[0])"),
+            ("let (checked, _) = check_fn(cold_entered, new_decls[index], signatures[index])",
+             "let (checked, _) = typed_projection.checked_body(cold_entered, new_ast, new_decls[index], signatures[index])"),
         ]:
             if probe.count(old) != 1:
                 raise RuntimeError("Declaration boundary anchor drifted: " + old)
@@ -196,8 +211,6 @@ def main():
     identity = (HERE / ("declaration-identity.dawn.txt" if args.typed else "body-identity.dawn.txt")).read_text()
     relocation = (HERE / "body-relocate.dawn.txt").read_text()
     mutations = {
-        "skip-symbol": ("{ id + m.delta }", "{ id }"),
-        "skip-captures": ("ids(captures, m), position(lo, m), position(hi, m), ty)", "captures, position(lo, m), position(hi, m), ty)"),
         "skip-spans": ("p + m.span", "p"),
         "skip-operator-spans": ("moved, position(olo, m), position(ohi, m)", "moved, olo, ohi"),
         "skip-cx-symbols": ("..cx, syms: syms", "..cx, syms: cx.syms"),
@@ -258,7 +271,6 @@ def main():
                                 "constant-span": "module assembly: replayed module differs from cold module",
                                 "header-alias": "header metadata: projected exports differ from cold headers",
                                 "header-impl": "header metadata: projected exports differ from cold headers",
-                                "header-adt": "header metadata: projected exports differ from cold headers",
                                 "header-state-bounds": "header state: projected context differs from cold headers",
                                 "header-state-surface": "header state: projected context differs from cold headers",
                                 "default-write": "default state: replayed Cx differs from cold body boundary",

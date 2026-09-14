@@ -162,12 +162,54 @@ executor 语义；它按函数体类别（字面量标量、原语参数算术�
 header来自生产check_module_headers的ModuleHeaders，不再按源码锚点复制header前缀。
 它不是已上线的函数缓存，也不代替下列生产前缀门禁。
 
-`relocate.py` 验证生产 `check/relocate` 基础层：Ty/Eff、Sig/Sym 和 witness 的引用域
-映射、缺失引用冷回退、效果重新规范化、evidence 编码/生成名称及完整角色的ABI顺序。
-该层只剩两个绑定域：nominal 与 trait 的整数由声明派生（`check/cx.mint`），
-跨修订恒等，表里不再有它们的条目，三条 evidence band 因此改由 key 本身读回
-（label 与 associated 自答，variable 仍须查表并 fail closed），四个负控守这一读法。
-22个成功编译负控必须命中具名断言。
+`relocate.py` 验证生产 `check/relocate` 还在判断的两件事。这一层已经没有映射了：
+类型变量、效果变量和局部符号都是 `identity.pack(声明, 槽位)`，nominal 与 trait 由
+声明派生，没有被编辑的声明在候选修订里绑定同样的整数，所以 `ty`/`effect_row`/
+`witness`/`evidence_key`/`evidence_slot` 都答以收到的值，表、区间和平移全部删除。
+剩下的两个判断各有自己的负控：**evidence key 的 band 从 key 本身读回**（label 名字的
+前缀、associated 的 trait、variable 的拼法，以及 `checked_symbol` 对生成名的校验，共六个），
+和**两个签名的 ABI 行是否逐槽对应**（参数绑定的效果变量、行长不符的拒绝、
+associated 槽的主体与成员，共四个）。10个成功编译负控必须命中具名断言。
+
+### Controls retired with packed binders (K5)
+
+A negative control that cannot be told from the production code is not a
+control, and packing a binder into its declaration turned a row of them into
+exactly that. Every one is accounted for here rather than quietly dropped, in
+the three dispositions K4 set: moved to a harness that still has a subject,
+deleted because another harness already owns the judgment, or deleted with the
+production decision it mutated.
+
+- Six callback controls replaced a relocation with `Some` and are gone:
+  `effect-callback` (`type-reads.py`, `effect-reads.py`), `type-callback`
+  (`environment-reads.py`), `constant-domain` (`export-reads.py`),
+  `constant-type` (`projection.py`) and `product-projection`
+  (`write-journal.py`). The journal is still projected and `write_journal`'s
+  own inline test still hands it two callbacks that move, which is what
+  `symbol-domain` and `bounds-domain` ride on.
+- Four consumer-side controls in `provenance.py` went with
+  `driver.module_references` and `ModuleStep.references`, deleted this knife.
+  `mint-provider-identity` and `collide-same-domain` are `binding-conflict`
+  and `owner-conflict` in `allocation.py`; `rename-blind-identity` is
+  `spelling-drops-kind` and `spelling-drops-owner` in `identity.py`.
+- `stale-source` and `header-only-ids` in `scalar-oracle.py`: on an admitted
+  body the projection is the identity and both relocations are `relocate.new()`.
+  The rebuilt read log is still held by `observer-mode`, and the refusals by
+  `header-only-admission` and `changed-declaration-text` in `scalar-replay.py`.
+- Two controls moved rather than died. `evidence-origin` in `projection.py`
+  became `crossed-evidence-origin`: the origin is carried unchanged now, so
+  what is left at that call site is the refusal beside it, that a read's key
+  and its origin are two records of one slot. `header-only-admission` in
+  `scalar-replay.py` now admits against the recorded header instead of the
+  candidate one, which is a real difference: a declaration whose own bytes did
+  not change can still have a different signature, because the types it names
+  are declared elsewhere.
+- Three fixtures had to be taught the declaration seam rather than re-anchored.
+  `reference-body-scheduler.dawn.txt` opens each declaration in its own words
+  (a loop that checks bodies without opening one numbers the whole module in
+  the free pool); `body-probe.dawn.txt` and `typed-projection.dawn.txt` do the
+  same, and replay a saved body by resolving it against its declaration's
+  position instead of shifting every offset by a constant.
 
 `body-probe.py --typed --typed-all --java-home <JDK> --output <新目录>` 运行生产树投影
 的私有对照：23个真实函数、22次非均匀源码编辑及一次真实effect声明重排，七个树投影编译
@@ -180,8 +222,13 @@ test block状态的完整冷模块对照，丢封定签名写入、保留错误i
 另有丢默认值字典符号的编译负控，必须命中泛型默认值的具名字典断言。
 另有丢默认参数诊断的编译负控，必须命中默认错误态的具名断言。
 Compilation or linking failures do not count as passing negative controls;
-typed-all now contains 21 compiling controls, down from 30 when nominal and
-trait ids started deriving from their declarations. Six of the nine that left
+typed-all now contains 17 compiling controls, down from 30 when nominal and
+trait ids started deriving from their declarations, and from 21 before binders
+were packed into their declarations (K5: `local`, `capture` and `dynamic` turned
+off the identifier half of the tree projection, which is the identity now, and
+`header-adt` turned off a header projection that relocates nothing else).
+`body-probe.py --all` lost `skip-symbol` and `skip-captures` the same way and
+keeps six. Six of the nine that left
 could no longer be told apart from the production code by the reordered-header
 sample, because a declaration reorder does not move a derived id: a ground
 label stays put, so an evidence pack cannot be permuted (pack-order,
@@ -215,14 +262,14 @@ opaque/透明alias、trait及方法、效果和函数签名binder，同时反转
 显式/推断默认值类型错误两例，共六例；全部在源码前增加注释，比较移动后的诊断及位置。
 尚未覆盖全部复杂表达式，也未接入生产缓存调度。
 已不再生成稠密header identity表。固定header的其他案例暂仍用稠密夹具映射。
-`allocation.py`有二十二个编译负控，守身份/ID冲突、目标版本选择、负槽与引用域及常量声明类型，
+`allocation.py`有21个编译负控，守身份/ID冲突、目标版本选择、负槽与引用域及常量声明类型，
 以及body evidence置换、未观察临时ID、分配终点、前序台账保留、world、无路径边界、
 compiler trait binder和runtime擦除绑定；
 台账的 nominal/trait 半边已随派生身份删除（消费者不需要映射，两个声明也不可能争同一个号），
 继承那两条判词的是 `check/cx.mint` 的 intern 表，五个负控在同一个脚本里守它：
 撞车被静默接受、不登记、顺手推进计数器、把机器相关的 src_path 读进派生输入、丢掉声明种类。
 CI的incremental-allocation独立运行该脚本，
-并运行`provenance.py`的十三个生产生成器负控：丢用户/std/compiler来源、丢provider carry、
+并运行`provenance.py`的九个生产生成器负控：丢用户/std/compiler来源、丢provider carry、
 错误header放行、漏std world重绑定，三个丢 intern 表跨模块 carry 的控制，
 以及四个消费者侧的：丢 provider 台账仍解析引用、消费者自铸 provider 的 binder、
 消费者声明抢 provider 已占的分配、按位置匹配改名的声明；
@@ -302,19 +349,30 @@ test、默认辅助函数签名登记及泛型字典保留；另两个负控守i
 （合计18个）。这只是同revision生产边界，
 不是模块cache有效性证明，也尚未接上跨revision的具名header重组。
 源码token相等不证明AST相等，尤其不能忽略换行的语义。
-`identity.py` 验证生产声明候选身份及十三个成功编译负控：重复父声明及子路径、
+`identity.py` 验证生产声明候选身份及17个成功编译负控：重复父声明及子路径、
 类型/关联效果的绑定槽归一、默认参数歧义、模块world隔离，以及派生身份本身的五个：
 拼写丢掉种类字母或模块、跳过终混、派生区间的上下界。具名owning断言必须失败，
 编译或链接失败不算负控。typed模式现在通过适配器调用生产声明索引；legacy模式
 保留原型身份实现及原来的八个负控。候选key不证明依赖环境或body有效。
+同一脚本另跑四个 `ir/lower.densify` 的负控：打包键在 Core 里没有意义，下降期把它们
+和 lowering 自己的临时号一起摊成每模块一串小整数，顺序必须与 `ir/coredump.names_of`
+一致（captures → params → dicts → evs → body 首次出现），否则同一个局部量在 Core dump 里
+叫 `v3`、在 `emitc` 印的 C 里叫 `v5`。提升体用外层给的 symbol id 引用自己的 captures
+（`core.CFun.captures`），所以**漏掉 captures 不是缺号而是错号**：它会在 body 第一次
+出现时拿到一个排在参数后面的号。因此这四个负控（跳过 captures、把 captures 排到最后、
+符号表留着打包键、符号表捎上模块没提到的键）都是顺序断言而不是崩溃。
 
 native-selfhost-tests 分别执行tree、source及identity的owning依赖闭包（包含重叠依赖），
 因为新模块尚未被nmain导入，不能只跑主图就宣称它们有native覆盖。
 
-`state-product.py` runs 19 compiling controls for capture, assembly and coordinate
+`state-product.py` runs 17 compiling controls for capture, assembly and coordinate
 projection: signature/alias/bound writes, frames, diagnostics, environment guards,
-allocation starts and ghost IDs, type/effect domains, handler cells, symbol order,
-constant trees, and read-log suffix capture, assembly and reference relocation.
+the owner declaration's slot row and its installation, symbol order, constant trees,
+the frame's agreement with the symbol table, and read-log suffix capture, assembly
+and reference relocation. Six controls that replaced a relocation callback with
+`Some` are gone with the decision they turned off: relocating a reference between
+revisions is the identity now (K5), and `relocate.local_id` and `relocate.signature`
+are deleted outright.
 It also audits every Cx field and rejects an added unclassified field. The constant
 tree control must hit the real TConst owning assertion. This remains in the separate
 incremental-state job; the native suite also runs body_product's owning dependency
@@ -329,7 +387,7 @@ cases against complete cold Cx and module products; its read-state mutant must h
 the whole-Cx assertion. Recording remains disabled by default and is not complete
 namespace coverage or production body-cache admission.
 
-`export-reads.py` adds 23 compiling controls for qualified constant and constructor
+`export-reads.py` adds 22 compiling controls for qualified constant and constructor
 answers, export presence, and private-name/candidate/type-constructor diagnostics.
 The additional fourteen complete-state oracle cases exercise these expression,
 call, qualified match and let/for refutability paths without stripping anything except the
@@ -349,7 +407,7 @@ The incremental-reads job runs these read controls and the existing `projection.
 suite. Moving source projection out of incremental-projection keeps the expanded
 typed oracle below the unchanged 660s planning pole without removing any controls.
 
-`type-reads.py` adds 45 compiling controls for qualified alias headers and resolved
+`type-reads.py` adds 44 compiling controls for qualified alias headers and resolved
 targets, local/qualified nominal name/shape reads, type diagnostics, and local
 alias cache/cycle decisions. Eighteen
 further whole-state cases cover transparent/opaque aliases, effect substitution,
@@ -401,7 +459,7 @@ The separate incremental-effect-reads job also runs associated reads,
 with a 424s planning value. Environment controls move intact to the type job,
 which has a 652s planning value; both preserve the unchanged 660s pole.
 
-`environment-reads.py` adds 16 compiling controls for reserved and ordinary
+`environment-reads.py` adds 15 compiling controls for reserved and ordinary
 builtin lookups, current type parameters, and std-module visibility. The checker
 owns the complete ordered sequence, including repeated builtin queries and
 short-circuited parameters, arguments and visibility reads. Builtin metadata

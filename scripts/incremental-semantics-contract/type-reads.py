@@ -16,8 +16,11 @@ from cold import ROOT, edit, run
 def main():
     started = time.monotonic()
     variants = [
-        ("body_product", "effect-callback", "effect_value: e => relocate.effect_row(v.ids, e), source_value: source_value,",
-         "effect_value: e => Some(e), source_value: source_value,"),
+        # `effect-callback` is gone: relocating an effect row is the identity
+        # once a binder is `identity.pack` of its declaration and its slot, so
+        # a control that replaced the callback with `Some` could not be told
+        # from the production code (K5). The alias and constant source
+        # callbacks below still decide something and stay.
         ("body_product", "alias-source-callback", "effect_value: e => relocate.effect_row(v.ids, e), source_value: source_value,",
          "effect_value: e => relocate.effect_row(v.ids, e), source_value: (owner, source) => Some(source),"),
         ("body_product", "constant-source-callback", "tree => relocate_tree.constant(v, tree), source_value, true)",

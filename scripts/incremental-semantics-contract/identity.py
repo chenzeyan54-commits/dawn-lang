@@ -73,7 +73,53 @@ def main():
             elif not status or not re.search(r"^FAIL\s+check/identity :: identity [^\n]*\n\s+assertion failed:", output, re.M):
                 raise RuntimeError(name + " did not reach its owning assertion\n" + output)
             print("OK: declaration identity " + name, flush=True)
-    print(f"OK: declaration identity and {len(variants)} compiling mutants, {time.monotonic() - started:.2f}s")
+        target.write_text(original)
+        # The other end of the same numbering. A packed key means nothing
+        # below the checker, so lowering renumbers every one of them into one
+        # run of small integers per module, in the order `ir/coredump` names
+        # them. Both consumers are outside Core's own meaning -- `emitc`
+        # prints a local as `v<id>`, the JVM emitter looks its type up in one
+        # module-wide table -- and neither can tell a wrong order from a right
+        # one, so the order is held here.
+        #
+        # A lifted body refers to its captures by the ids the enclosing
+        # function gave them, so a pass that stops visiting them does not
+        # crash: it numbers them at their first appearance in the body, which
+        # is why these are assertions about an order rather than a missing key.
+        lower_target = root / "selfhost/src/ir/lower.dawn"
+        lower_original = lower_target.read_text()
+        lower_variants = [
+            ("densify-skips-the-captures",
+             "  dense_expr(dense_params(dense_params(dense_params(dense_params(d, f.captures),\n"
+             "    f.params), f.dicts), f.evs), f.body)",
+             "  dense_expr(dense_params(dense_params(dense_params(d,\n"
+             "    f.params), f.dicts), f.evs), f.body)"),
+            ("densify-numbers-the-captures-last",
+             "  dense_expr(dense_params(dense_params(dense_params(dense_params(d, f.captures),\n"
+             "    f.params), f.dicts), f.evs), f.body)",
+             "  dense_expr(dense_params(dense_params(dense_params(dense_params(d,\n"
+             "    f.params), f.dicts), f.evs), f.captures), f.body)"),
+            ("symbol-table-keeps-the-packed-keys",
+             "      Some(next) -> { moved_syms = map.insert(moved_syms, next, s) }",
+             "      Some(next) -> { moved_syms = map.insert(moved_syms, id, s) }"),
+            ("symbol-table-carries-what-the-module-never-names",
+             "      Some(next) -> { moved_syms = map.insert(moved_syms, next, s) }\n      None -> ()",
+             "      Some(next) -> { moved_syms = map.insert(moved_syms, next, s) }\n"
+             "      None -> { moved_syms = map.insert(moved_syms, id, s) }"),
+        ]
+        for name, source in ([("positive", lower_original)] +
+                             [(n, edit(lower_original, a, b)) for n, a, b in lower_variants]):
+            lower_target.write_text(source)
+            status, output = run("test", lower_target)
+            if name == "positive":
+                if status:
+                    raise RuntimeError("Positive densify subject failed\n" + output)
+            elif not status or not re.search(
+                    r"^FAIL\s+ir/lower :: lowering numbers [^\n]*\n\s+assertion failed:", output, re.M):
+                raise RuntimeError(name + " did not reach its owning assertion\n" + output)
+            print("OK: dense numbering " + name, flush=True)
+    print(f"OK: declaration identity and {len(variants) + len(lower_variants)} compiling mutants, "
+          f"{time.monotonic() - started:.2f}s")
 
 
 if __name__ == "__main__":

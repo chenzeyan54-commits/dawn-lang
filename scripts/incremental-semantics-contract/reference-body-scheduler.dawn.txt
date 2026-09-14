@@ -1,7 +1,38 @@
 # Frozen from main 1b8d99f1267eec2a2377812605162960a6205751, before executor extraction.
 # Test-only independent scheduling oracle; do not mechanically update with production.
+#
+# It opens each declaration itself rather than calling the scheduler's
+# `enter_decl`. It has to open them at all because what a body binds is
+# numbered inside its own declaration, so a loop that checks bodies without
+# opening one numbers the whole module in the free pool and agrees with
+# production about nothing; and it has to open them in its own words, or a
+# mutation of the production boundary would move both sides together and this
+# oracle would have nothing to say about it.
+type RefOwned = { context: Cx, positions: tast_positions.Resolver }
+
+fn ref_open(cx: Cx, view: identity.DeclSpans, path: List[identity.Part]) -> RefOwned = {
+  let name = identity.path_text(path)
+  match identity.span_at(view, name) {
+    None -> RefOwned { context: unowned(cx),
+      positions: tast_positions.unowned(cx.src_path, cx.line_starts) }
+    Some(span) -> {
+      let measured = match cx.mod_path {
+        None -> measured_from(cx, span.lo)
+        Some(module) -> owned_by(cx, module, name, span.lo)
+      }
+      let opened = enter_decl_owner(measured, path, span.lo, span.hi)
+      RefOwned { context: opened,
+        positions: tast_positions.owned(span.lo, span.hi, cx.src_path, cx.line_starts) }
+    }
+  }
+}
+
+fn ref_close(owned: RefOwned, after: Cx) -> Cx =
+  unowned(Cx { ..after, syms: tast_positions.symbols(owned.positions, after.syms,
+    mint_cursor(owned.context), mint_cursor(after)) })
 pub fn reference_module_body_products(headers: ModuleHeaders) -> ModuleBodies !io = {
   let m = headers.syntax
+  let view = identity.declaration_spans(m)
   var cx1 = headers.cx
   let sigs = headers.sigs
   let impl_sigs = headers.impl_sigs
@@ -68,9 +99,10 @@ pub fn reference_module_body_products(headers: ModuleHeaders) -> ModuleBodies !i
         if ready {
           # each pending index is completed at most once, so the signature this
           # reads is still the unsealed one the list held
-          let (cxe, _, tf) = check_fn_inferred(cx1, d, sigs[idx])
-          cx1 = cxe
-          inferred = map.insert(inferred, idx, tf)
+          let owned = ref_open(cx1, view, [identity.Named(identity.FunctionDecl, d.name)])
+          let (cxe, _, tf) = check_fn_inferred(owned.context, d, sigs[idx])
+          cx1 = ref_close(owned, cxe)
+          inferred = map.insert(inferred, idx, tast_positions.function(owned.positions, tf))
           done = set.insert(done, d.name)
           progress = true
         } else {
@@ -95,9 +127,10 @@ pub fn reference_module_body_products(headers: ModuleHeaders) -> ModuleBodies !i
   for d in module_consts(m) {
     match const_tys[ci] {
       Some(declared) -> {
-        let (cxe, tc) = check_const_init(cx1, d, declared, visible)
-        cx1 = cxe
-        tconsts = tconsts ++ [tc]
+        let owned = ref_open(cx1, view, [identity.Named(identity.ConstDecl, d.name)])
+        let (cxe, tc) = check_const_init(owned.context, d, declared, visible)
+        cx1 = ref_close(owned, cxe)
+        tconsts = tconsts ++ [tast_positions.constant(owned.positions, tc)]
       }
       None -> ()
     }
@@ -112,9 +145,10 @@ pub fn reference_module_body_products(headers: ModuleHeaders) -> ModuleBodies !i
   i = 0
   for d in fnds {
     if not sigs[i].inferring {
-      let (cxe, tf) = check_fn(cx1, d, sigs[i])
-      cx1 = cxe
-      tfuns = tfuns ++ [Some(tf)]
+      let owned = ref_open(cx1, view, [identity.Named(identity.FunctionDecl, d.name)])
+      let (cxe, tf) = check_fn(owned.context, d, sigs[i])
+      cx1 = ref_close(owned, cxe)
+      tfuns = tfuns ++ [Some(tast_positions.function(owned.positions, tf))]
     } else {
       match map.get(inferred, i) {
         Some(tf) -> { tfuns = tfuns ++ [Some(tf)] }
@@ -132,15 +166,19 @@ pub fn reference_module_body_products(headers: ModuleHeaders) -> ModuleBodies !i
     # recover (trait id, subject) for codegen's mangled impl-method names;
     # both lookups re-run what registration already validated, diags discarded
     let imp_key = impl_body_key(cx1, imd.trait_name, imd.subject)
+    let head = [identity.ImplHead(imd.trait_name,
+      identity.type_shape(imd.subject, map(imd.tparams, tp => tp.name)))]
     var mi = 0
     for me in imd.methods {
       match msigs[mi] {
         Some(ms) -> {
           # registration refused any parameter defaults; strip them so the
           # refusal is not followed by the value's own diagnostics
-          let (cxe, tf) = check_fn(cx1, strip_param_defaults(me), ms)
-          cx1 = cxe
-          impl_tfuns = impl_tfuns ++ [TFun { ..tf, impl_of: imp_key }]
+          let owned = ref_open(cx1, view, head ++ [identity.Named(identity.MethodDecl, me.name)])
+          let (cxe, tf) = check_fn(owned.context, strip_param_defaults(me), ms)
+          cx1 = ref_close(owned, cxe)
+          impl_tfuns = impl_tfuns ++
+            [TFun { ..tast_positions.function(owned.positions, tf), impl_of: imp_key }]
         }
         None -> ()
       }
@@ -164,9 +202,12 @@ pub fn reference_module_body_products(headers: ModuleHeaders) -> ModuleBodies !i
               }
               match msig {
                 Some(s2) -> {
-                  let (cxe, tf) = check_trait_default(cx1, me, s2, b)
-                  cx1 = cxe
-                  default_tfuns = default_tfuns ++ [TFun { ..tf, default_of: Some(t) }]
+                  let owned = ref_open(cx1, view,
+                    [identity.Named(identity.TraitDecl, td.name), identity.Named(identity.MethodDecl, me.name)])
+                  let (cxe, tf) = check_trait_default(owned.context, me, s2, b)
+                  cx1 = ref_close(owned, cxe)
+                  default_tfuns = default_tfuns ++
+                    [TFun { ..tast_positions.function(owned.positions, tf), default_of: Some(t) }]
                 }
                 None -> ()
               }
@@ -180,9 +221,10 @@ pub fn reference_module_body_products(headers: ModuleHeaders) -> ModuleBodies !i
   }
   var ttests: List[TFun] = []
   for t in module_tests(m) {
-    let (cxe, tf) = check_test(cx1, t.name, t.body)
-    cx1 = cxe
-    ttests = ttests ++ [tf]
+    let owned = ref_open(cx1, view, [identity.Named(identity.TestDecl, t.name)])
+    let (cxe, tf) = check_test(owned.context, t.name, t.body)
+    cx1 = ref_close(owned, cxe)
+    ttests = ttests ++ [tast_positions.function(owned.positions, tf)]
   }
   var fns_out: List[TFun] = []
   for sl in tfuns {

@@ -58,10 +58,12 @@ def main():
          "pub fn fresh(cx: Cx) -> (Cx, Int) = {\n  let slot = 0"),
         ("pool-is-one-for-the-program", 'pub fn module_pool(cx: Cx) -> Int = free_pool(cx.owner_class.unwrap_or(""))',
          'pub fn module_pool(cx: Cx) -> Int = free_pool("")'),
-        ("mint-reads-the-source-path", 'let decl = minted(cx.owner_class.unwrap_or(""), kind, name)',
-         'let decl = minted(cx.owner_class.unwrap_or("") ++ cx.src_path.unwrap_or(""), kind, name)'),
-        ("mint-ignores-the-kind", 'let decl = minted(cx.owner_class.unwrap_or(""), kind, name)',
-         'let decl = minted(cx.owner_class.unwrap_or(""), identity.TypeDecl, name)'),
+        ("mint-reads-the-source-path",
+         'interned(cx, minted(cx.owner_class.unwrap_or(""), kind, name), lo, hi)',
+         'interned(cx, minted(cx.owner_class.unwrap_or("") ++ cx.src_path.unwrap_or(""), kind, name), lo, hi)'),
+        ("mint-ignores-the-kind",
+         'interned(cx, minted(cx.owner_class.unwrap_or(""), kind, name), lo, hi)',
+         'interned(cx, minted(cx.owner_class.unwrap_or(""), identity.TypeDecl, name), lo, hi)'),
     ]
     with tempfile.TemporaryDirectory(prefix="dawn-allocation-") as temp:
         root = Path(temp)

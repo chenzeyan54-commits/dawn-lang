@@ -4970,6 +4970,53 @@ fn densify(l: LMod, syms: Map[Int, Sym]) -> LMod = {
   }
 }
 
+test "lowering numbers a module's names in the order the Core dump reads them" {
+  # `ir/coredump.names_of` reads a function's names captures, parameters,
+  # dictionaries, evidence, then first appearance in the body, and `densify`
+  # has to hand out its numbers in that same order or one local has two names:
+  # `v3` in a Core dump and `v5` in the C `emitc` prints.
+  #
+  # A lifted body refers to its captures by the symbol ids the enclosing
+  # function gave them (core.CFun.captures), so a capture this pass forgets to
+  # visit is not a missing number. It is a number handed out at the capture's
+  # first appearance in the body, which is after the parameters instead of
+  # before them, and nothing downstream can tell that apart from a Core dump
+  # whose names are simply wrong.
+  let p = (s: Int) => CParam { sym: s, ty: TyInt, mode: COwned }
+  let local = (s: Int) => CLocal(s, TyInt)
+  let sum = (a: CExpr, b: CExpr) => CBinary(CAdd, a, b, TyInt)
+  let sym_named = (nm: String) => Sym { name: nm, ty: TyInt, mutable: false,
+    dlo: 0, dhi: 0, dict_of: None, ev_of: None, cell_of: None }
+  let lifted = CFun {
+    name: "lambda\$0", owner: "m",
+    captures: [p(4001)], params: [p(4002)], dicts: [p(4003)], evs: [p(4004)],
+    ret: TyInt,
+    body: CBlock([CSLet(4005, TyInt, sum(local(4002), local(4004)))],
+      Some(sum(sum(local(4001), local(4003)), local(4005))), TyInt),
+    is_test: false, impl_of: None, default_of: None
+  }
+  var syms: Map[Int, Sym] = map.empty()
+  syms = map.insert(syms, 4002, sym_named("x"))
+  syms = map.insert(syms, 9999, sym_named("unmentioned"))
+  let l = LMod { m: CModule { owner: "m", fns: [lifted], dicts: [], next_sym: 4006 },
+    fns: [(lifted, [])], tests: [], dicts: [], syms: syms, next_sym: 4006 }
+  let dense = densify(l, syms)
+  let out = dense.m.fns[0]
+  assert out.captures == [p(0)]
+  assert out.params == [p(1)]
+  assert out.dicts == [p(2)]
+  assert out.evs == [p(3)]
+  assert out.body == CBlock([CSLet(4, TyInt, sum(local(1), local(3)))],
+    Some(sum(sum(local(0), local(2)), local(4))), TyInt)
+  assert dense.m.next_sym == 5 && dense.next_sym == 5
+  # the grouped list is renumbered with the flat one
+  let (grouped, _lifts) = dense.fns[0]
+  assert grouped == out
+  # and the checker's table is rebuilt under the new keys, holding exactly
+  # what the module names
+  assert dense.syms == map.insert(map.empty(), 1, sym_named("x"))
+}
+
 test "the flat module and the grouped functions are one lowering" {
   # `reach` reads LMod.m to decide what Unicode freight a program carries and
   # the JVM emitter reads LMod.fns to write the methods. Those used to be two

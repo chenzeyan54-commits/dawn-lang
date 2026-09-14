@@ -46,8 +46,6 @@ def main():
         ("function-read-write", "semantic_reads.append(current.function_reads, product.function_reads)?", "current.function_reads"),
         ("function-read-domain", "semantic_reads.project_mapped(p.function_reads, read_mapping(v, source_value))",
          "Some(p.function_reads)"),
-        ("function-read-relocation", "effect_binder: id => relocate.effect_var(v.ids, id) }",
-         "effect_binder: id => Some(id) }"),
         ("constant-tree", "tree => relocate_tree.constant(v, tree)", "tree => Some(tree)"),
         ("symbol-order", "sort_by(moved_symbols, (a, b) => cmp(a.key, b.key))", "moved_symbols"),
         ("signature-write", "fns: apply_changes(current.fns, product.signatures)", "fns: current.fns"),
@@ -65,14 +63,19 @@ def main():
         # no row leaves the declaration where the header pass left it, so its
         # body's bindings are handed out a second time.
         ("owner-row-not-installed",
-         "..with_slots(current, product.owner_decl, product.owner_slots),",
-         "..current,"),
-        ("bound-key", "projected_changes(p.bounds, id => relocate.type_var(v.ids, id), bs => Some(bs))?",
-         "projected_changes(p.bounds, id => Some(id), bs => Some(bs))?"),
-        ("used-effect-domain", "used = used ++ [relocate.effect_row(v.ids, e)?]", "used = used ++ [e]"),
-        ("handler-cell", "Some(cell) -> Some(relocate.local_id(v.ids, cell)?)", "Some(cell) -> Some(cell)"),
-        ("frame-signature", "Some(s) -> Some(relocate.signature(v.ids, s)?)", "Some(s) -> Some(s)"),
-        ("sealed-signature", "projected_changes(p.signatures, name => Some(name), s => relocate.signature(v.ids, s))?", "p.signatures"),
+         "    decl_slots: installed_slots(current, product.owner_decl, product.owner_slots),",
+         "    decl_slots: current.decl_slots,"),
+        # Six controls stood here and are gone with the decisions they turned
+        # off (K5). `function-read-relocation`, `bound-key`,
+        # `used-effect-domain` and `sealed-signature` replaced a relocation
+        # callback with `Some`, which is what the production callback is now
+        # that a binder is `identity.pack` of its declaration and its slot;
+        # `handler-cell` and `frame-signature` mutated `relocate.local_id` and
+        # `relocate.signature`, which are deleted. The frame is still
+        # projected, and what it still decides is below: a recorded scope has
+        # to spell its symbols the way the symbol table does, and neither a
+        # scope has to spell its bindings the way the symbol table does.
+        ("frame-scope-spelling", "      if old.name != name { return None }", ""),
     ]
     with tempfile.TemporaryDirectory(prefix="dawn-state-product-") as temp:
         root = Path(temp)

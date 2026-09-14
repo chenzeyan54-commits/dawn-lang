@@ -4,8 +4,9 @@
 use std/map
 use std/str
 use compiler/front/parser
-use compiler/front/ast.{module_fns}
-use compiler/check/cx.{Cx, cx_new, mint_cursor, with_slots}
+use compiler/front/ast.{Module, FnDecl, module_fns}
+use compiler/check/cx.{Cx, cx_new, mint_cursor, with_slots, enter_decl_owner, unowned}
+use compiler/check/identity.{declaration_spans, span_at, path_text, Named, FunctionDecl}
 use compiler/check/checker.{headers_for_body_probe, check_fn, check_module}
 use compiler/check/tast.{TFun}
 use relocation
@@ -31,6 +32,18 @@ fn fixture_text() -> String =
     "pub fn jumping(x: Int) -> Int = { while true { if x > 0 { break } else { continue } }\n x }\n" ++
     "pub fn wrong() -> Int = false\n"
 
+## Open the declaration whose body is about to be checked, the way the
+## scheduler does. What a body binds is numbered inside its own declaration,
+## so a fixture that checks one without opening it numbers every name in the
+## module's free pool and cannot be compared with `check_module` at all.
+fn entered_decl(cx: Cx, m: Module, d: FnDecl) -> Cx = {
+  let path = [Named(FunctionDecl, d.name)]
+  match span_at(declaration_spans(m), path_text(path)) {
+    Some(sp) -> enter_decl_owner(cx, path, sp.lo, sp.hi)
+    None -> cx
+  }
+}
+
 pub fn samples() -> List[Trial] !io = {
   let text = fixture_text()
   let (m, diagnostics) = parser.parse_module(text)
@@ -42,7 +55,7 @@ pub fn samples() -> List[Trial] !io = {
   var trials: List[Trial] = []
   var index = 0
   for d in module_fns(m) {
-    let before = cx
+    let before = entered_decl(cx, m, d)
     let (after, body) = check_fn(before, d, signatures[index])
     # The same body checked in a context where some *other* declaration has
     # bound a thousand names. It used to shift this body's ids by a thousand
@@ -103,9 +116,13 @@ pub fn edit_samples() -> List[EditTrial] !io = {
   let (_, cold) = check_module(cx_new(Some("probe"), Some("probe.dawn")), new_ast, map.empty())
   # Replay checks only the changed first body. The complete cold check above
   # is the oracle, not part of this replay algorithm.
-  let (first, _) = check_fn(headers, new_decls[0], signatures[0])
-  var replayed_cx = first
-  var cold_cx = first
+  let first_cx = entered_decl(headers, new_ast, new_decls[0])
+  let (first, _) = check_fn(first_cx, new_decls[0], signatures[0])
+  # Both sides are compared at a declaration boundary, which is outside
+  # every declaration: whichever one was last open is not part of what a
+  # body wrote.
+  var replayed_cx = unowned(first)
+  var cold_cx = unowned(first)
   var out: List[EditTrial] = []
   var index = 1
   while index < len(old) {
@@ -122,9 +139,10 @@ pub fn edit_samples() -> List[EditTrial] !io = {
       start: mint_cursor(saved.before), limit: mint_cursor(saved.after), delta: id_delta, span: span_delta
     }
     let moved = relocation.relocate(saved.body, movement)
-    replayed_cx = relocation.replay(replayed_cx, saved.before, saved.after, movement)
-    let (checked, _) = check_fn(cold_cx, new_decls[index], signatures[index])
-    cold_cx = checked
+    replayed_cx = unowned(relocation.replay(replayed_cx, saved.before, saved.after, movement))
+    let cold_entered = entered_decl(cold_cx, new_ast, new_decls[index])
+    let (checked, _) = check_fn(cold_entered, new_decls[index], signatures[index])
+    cold_cx = unowned(checked)
     out = out ++ [EditTrial { relocated: moved, cold: cold.fns[index], id_delta: id_delta, span_delta: span_delta,
       replayed_cx: replayed_cx, cold_cx: cold_cx }]
     index = index + 1

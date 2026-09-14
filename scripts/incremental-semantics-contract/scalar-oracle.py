@@ -33,14 +33,20 @@ def main():
          '            (Counts { ..count, reused: count.reused + 1 }, checked, tree)\n          }'),
         ('lost-current-symbols', '}, after, product.tree)',
          '}, Cx { ..after, syms: map.empty() }, product.tree)'),
-        ('stale-source',
-         '  let moved = match cx.function_reads {\n'
-         '    None -> body_product.project_without_reads(view, p)?\n'
-         '    Some(_) -> body_product.project(view, p)?\n'
-         '  }',
-         '  let moved = p'),
-        ('header-only-ids', 'let view = View { ids: ids,',
-         'let view = View { ids: prepared.headers,'),
+        # `stale-source` stood here and turned the projection off, leaving the
+        # recorded product where the projected one belongs. A product is
+        # coordinate-free now -- every reference in it is the same integer in
+        # the candidate revision -- so on an admitted body the projection is
+        # the identity and the control cannot be told from production (K5).
+        # Its two halves are still owned: the rebuilt read log by
+        # `observer-mode` below, and the refusals by `header-only-admission`
+        # and `changed-declaration-text` in `scalar-replay.py`.
+        # `header-only-ids` handed the view the header relocation instead of
+        # the body one. Both are `relocate.new()` now -- a relocation carries
+        # no fields at all, because a binder is `identity.pack` of its
+        # declaration and its slot -- so the two are the same value and the
+        # control is the identity (K5). What the admission it came from still
+        # decides is held by `header-only-admission` in `scalar-replay.py`.
         ('missing-local-symbols', 'symbols: saved.symbols,', 'symbols: map.empty(),'),
         ('lost-local-journal', 'Some(_) -> moved.body_writes',
          'Some(_) -> Some([])'),

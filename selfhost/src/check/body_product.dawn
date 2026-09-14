@@ -402,6 +402,10 @@ test "body product constants project their real tree and share state admission" 
   # revision: a binder is a slot of the declaration that binds it
   assert moved.body_writes == saved.body_writes
   assert moved.tree == constant
+  # the tree is still projected rather than carried, which is what refuses a
+  # recorded constant naming a binding this revision does not have
+  assert project_constant(v, BodyProduct { ..saved,
+    tree: TConst { ..constant, init: XLocal(11, "x", 0, 1, ty) } }) == None
   let assembled = assemble(before, moved).expect("constant state assembly")
   assert slots_of(assembled, before.owner_decl) == 1
   assert map.get(assembled.syms, 10).expect("constant symbol").ty == ty
@@ -552,7 +556,9 @@ test "body product hands its symbol changes over in key order" {
   let x = Sym { name: "x", ty: TyInt, mutable: false, dlo: 0, dhi: 1,
     dict_of: None, ev_of: None, cell_of: None }
   let y = Sym { ..x, name: "y" }
-  let after = Cx { ..before, syms: map.from([(10, x), (11, y)]) }
+  # inserted the other way round, so the order the comparison sees is not
+  # the order a product hands over
+  let after = Cx { ..before, syms: map.from([(11, y), (10, x)]) }
   let p = capture(before, after, f).expect("capture two symbols")
   let view = View { ids: relocate.new(), symbols: after.syms,
     callee: (owner, name, builtin, tr) => Some(f.sig) }
@@ -689,6 +695,12 @@ test "body product projects every state reference and the whole allocation inter
   assert cx.alias_resolved == after.alias_resolved
   assert cx.fns == after.fns
   assert cx.frame == after.frame
+  # The frame is projected rather than carried, and what projecting it still
+  # decides is whether it agrees with the symbol table: a recorded scope that
+  # spells a binding differently from the symbol it names is a product this
+  # compiler did not write.
+  let mis_spelled = Cx { ..after, frame: Frame { ..after.frame, scopes: [map.from([("y", 10)])] } }
+  assert project(view, capture(before, mis_spelled, f).expect("capture a mis-spelled scope")) == None
   # The diagnostic stays measured from the declaration that raised it, and the
   # render sites add that declaration's start in the revision they render, so
   # a product carries it through untouched whatever moved.

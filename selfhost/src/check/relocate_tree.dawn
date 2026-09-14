@@ -665,6 +665,9 @@ test "tree relocation assembles defaults symbols and permuted call evidence" {
   assert moved.consts[0] == m.consts[0]
   let s = map.get(moved.syms, 1).expect("carried symbol")
   assert s.dlo == 10 && s.dhi == 11
+  # a recorded function whose evidence slots do not correspond to the ABI
+  # row its signature describes is refused rather than truncated to fit
+  assert function(v, TFun { ..f, ev_syms: [1, 2, 3] }) == None
   let unknown = View { ..v, callee: (owner, name, builtin, tr) => None }
   assert function(unknown, f) == None
 }

@@ -23,9 +23,12 @@ def main():
         ('alias-owner', 'cx', 'write_journal.observe(cx.body_writes, write_journal.AliasKey(name))', 'cx.body_writes'),
         ('bounds-owner', 'cx', 'write_journal.observe(cx.body_writes, write_journal.BoundsKey(id))', 'cx.body_writes'),
         ('replay-journal', 'body_product', 'write_journal.append(current.body_writes, product.body_writes)?', 'current.body_writes'),
-        ('product-projection', 'body_product',
-         'write_journal.project(p.body_writes, id => relocate.local_id(v.ids, id), id => relocate.type_var(v.ids, id))?',
-         'p.body_writes'),
+        # `product-projection` is gone. The product still projects its
+        # journal, but both callbacks are `id => Some(id)` now that a symbol
+        # and a binder are packed keys, so replacing the call with the journal
+        # itself is the identity (K5). The two domain controls below keep the
+        # projection itself honest: they are held by the inline test, which
+        # hands it two callbacks that do move.
         ('symbol-domain', 'write_journal', 'SymbolKey(local(id)?)', 'SymbolKey(binder(id)?)'),
         ('bounds-domain', 'write_journal', 'BoundsKey(binder(id)?)', 'BoundsKey(local(id)?)'),
     ]

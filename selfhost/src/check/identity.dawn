@@ -835,6 +835,9 @@ test "identity packs a binding into its declaration and its slot" {
   # span is what it is
   let widest = pack(derived_floor() + derived_width(), slot_span() - 1).expect("the widest key")
   assert widest > 0 && 3 * widest + 1 > 0
+  # and lowering starts its own temporaries above that key, so the two
+  # domains cannot meet before `ir/lower.densify` brings both down to one run
+  assert temporary_floor() > widest
   # a module's free pool is a declaration no declaration can spell, and one
   # module's is not another's
   assert pack(free_pool("pkg/m"), 0) != None

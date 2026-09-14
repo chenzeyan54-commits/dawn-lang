@@ -38,8 +38,9 @@ def main():
         ("semantic_reads", "constant-type", "Some((owner, type_value(ty)?))", "Some((owner, ty))"),
         ("semantic_reads", "presence-answer", "ExportPresence(qualifier, present) -> ExportPresence(qualifier, present)", "ExportPresence(qualifier, present) -> ExportPresence(qualifier, not present)"),
         ("semantic_reads", "diagnostic-kind", "ExportDiagnosticAnswer(kind, qualifier, name, answer) -> ExportDiagnosticAnswer(kind, qualifier, name, answer)", "ExportDiagnosticAnswer(kind, qualifier, name, answer) -> ExportDiagnosticAnswer(FunctionDiagnostic, qualifier, name, answer)"),
-        ("body_product", "constant-domain", "type_value: t => relocate.ty(v.ids, t), nominal: id => Some(id),",
-         "type_value: t => Some(t), nominal: id => Some(id),"),
+        # `constant-domain` went with `relocate.ty`'s decision (K5): a
+        # constant's declared type carries onto the candidate revision
+        # unchanged, so replacing the callback with `Some` is the identity.
     ]
     sources = {name: (ROOT / "selfhost/src/check" / (name + ".dawn")).read_text()
                for name in ("checker", "semantic_reads", "body_product")}

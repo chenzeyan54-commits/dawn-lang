@@ -379,6 +379,29 @@ test "scalar replay moves unchanged bodies through the current scheduler" {
   assert actual.bodies.cx.body_writes == expected.cx.body_writes
 }
 
+test "scalar replay refuses a header that changed outside the declaration's own text" {
+  # The two revisions spell `answer` with the same bytes, so the text half of
+  # admission says yes. What changed is the alias its return type names, and
+  # the signature is the only record of that: the recorded header has to
+  # carry onto the candidate one field for field, or a body checked at `Int`
+  # is reused for a declaration whose header says `Bool`.
+  let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
+  let before = "alias Answer = Int\nfn answer() -> Answer = 42\n"
+  let after = "alias Answer = Bool\nfn answer() -> Answer = 42\n"
+  let old_snapshot = source_snapshot.of(before).expect("recorded snapshot")
+  let next_snapshot = source_snapshot.of(after).expect("candidate snapshot")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(old_snapshot), map.empty())
+  let next = checker.check_module_headers(base, source_snapshot.syntax(next_snapshot), map.empty())
+  let saved = body_execution.record(scope, old)
+  assert saved.refused == 0
+  let actual = replay(admit(scope, old, old_snapshot, saved), next, next_snapshot)
+  let expected = checker.check_module_body_products(next)
+  assert actual.reused == 0 && actual.checked == 1
+  assert actual.bodies.functions == expected.functions
+  assert actual.bodies.cx.diags == expected.cx.diags
+}
+
 test "scalar replay finds a product by the candidate declaration's identity" {
   let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
   let before = "fn answer() -> Int = 42\nfn other(x: Int) -> Int = x\n"

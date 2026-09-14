@@ -6,6 +6,16 @@ import java.util.Arrays;
 
 /** Observe the real body's state footprint without a generated Cx Eq dictionary. */
 public final class BodyProbe {
+    /** Which fields of two contexts differ, for an assertion that would otherwise name none. */
+    private static String differing(Object left, Object right) throws Exception {
+        var fields = new ArrayList<String>();
+        for (var field : left.getClass().getFields()) {
+            if (Modifier.isStatic(field.getModifiers()) || field.getName().equals("jsig")) continue;
+            if (!SemanticSnapshot.same(field.get(left), field.get(right))) fields.add(field.getName());
+        }
+        return fields.toString();
+    }
+
     public static void main(String[] args) throws Exception {
         Class<?> probe = Class.forName("bodyprobe");
         Object samples = probe.getMethod("samples").invoke(null);
@@ -64,8 +74,16 @@ public final class BodyProbe {
             Class<?> e = edit.getClass();
             if (!SemanticSnapshot.same(e.getField("relocated").get(edit), e.getField("cold").get(edit)))
                 throw new AssertionError("edited source: relocated body differs from shifted cold check (" + i + ")");
-            if (!SemanticSnapshot.same(e.getField("replayed_cx").get(edit), e.getField("cold_cx").get(edit)))
-                throw new AssertionError("edited source: replayed Cx differs from cold body boundary (" + i + ")");
+            if (!SemanticSnapshot.same(e.getField("replayed_cx").get(edit), e.getField("cold_cx").get(edit))) {
+                Object replayed = e.getField("replayed_cx").get(edit), checked = e.getField("cold_cx").get(edit);
+                var fields = new ArrayList<String>();
+                for (var field : replayed.getClass().getFields()) {
+                    if (Modifier.isStatic(field.getModifiers()) || field.getName().equals("jsig")) continue;
+                    if (!SemanticSnapshot.same(field.get(replayed), field.get(checked))) fields.add(field.getName());
+                }
+                throw new AssertionError("edited source: replayed Cx differs from cold body boundary (" + i
+                        + "): " + fields);
+            }
         }
         System.out.println("edited-source\t" + editedLength + "\tstable keys, TFun and full body-boundary Cx agree with cold products");
         if (expected == 23) {
@@ -93,7 +111,8 @@ public final class BodyProbe {
                 Object trial = stateAt.invoke(null, inferred, i);
                 Class<?> t = trial.getClass();
                 if (!SemanticSnapshot.same(t.getField("replayed").get(trial), t.getField("cold").get(trial)))
-                    throw new AssertionError("inferred state: replayed Cx differs from cold body boundary (" + i + ")");
+                    throw new AssertionError("inferred state: replayed Cx differs from cold body boundary (" + i
+                            + "): " + differing(t.getField("replayed").get(trial), t.getField("cold").get(trial)));
                 if (!SemanticSnapshot.same(t.getField("relocated").get(trial), t.getField("cold_body").get(trial))
                         || !SemanticSnapshot.same(t.getField("cold_body").get(trial), t.getField("module_body").get(trial)))
                     throw new AssertionError("inferred state: body differs from cold module (" + i + ")");
@@ -104,7 +123,8 @@ public final class BodyProbe {
             Object test = stateAt.invoke(null, tests, 0L);
             Class<?> tt = test.getClass();
             if (!SemanticSnapshot.same(tt.getField("replayed").get(test), tt.getField("cold").get(test)))
-                throw new AssertionError("test state: replayed Cx differs from cold body boundary");
+                throw new AssertionError("test state: replayed Cx differs from cold body boundary: "
+                        + differing(tt.getField("replayed").get(test), tt.getField("cold").get(test)));
             if (!SemanticSnapshot.same(tt.getField("relocated").get(test), tt.getField("cold_body").get(test))
                     || !SemanticSnapshot.same(tt.getField("cold_body").get(test), tt.getField("module_body").get(test)))
                 throw new AssertionError("test state: body differs from cold module");
@@ -115,7 +135,8 @@ public final class BodyProbe {
                 Object def = stateAt.invoke(null, defaults, i);
                 Class<?> dt = def.getClass();
                 if (!SemanticSnapshot.same(dt.getField("replayed").get(def), dt.getField("cold").get(def)))
-                    throw new AssertionError("default state: replayed Cx differs from cold body boundary (" + i + ")");
+                    throw new AssertionError("default state: replayed Cx differs from cold body boundary (" + i
+                            + "): " + differing(dt.getField("replayed").get(def), dt.getField("cold").get(def)));
                 if (!SemanticSnapshot.same(dt.getField("relocated").get(def), dt.getField("cold_body").get(def))
                         || !SemanticSnapshot.same(dt.getField("cold_body").get(def), dt.getField("module_body").get(def)))
                     throw new AssertionError("default state: body differs from cold module (" + i + ")");
@@ -127,7 +148,8 @@ public final class BodyProbe {
                 Object imported = stateAt.invoke(null, imports, i);
                 Class<?> it = imported.getClass();
                 if (!SemanticSnapshot.same(it.getField("replayed").get(imported), it.getField("cold").get(imported)))
-                    throw new AssertionError("import state: replayed Cx differs from cold body boundary");
+                    throw new AssertionError("import state: replayed Cx differs from cold body boundary: "
+                            + differing(it.getField("replayed").get(imported), it.getField("cold").get(imported)));
                 if (!SemanticSnapshot.same(it.getField("relocated").get(imported), it.getField("cold_body").get(imported))
                         || !SemanticSnapshot.same(it.getField("cold_body").get(imported), it.getField("module_body").get(imported)))
                     throw new AssertionError("import state: body differs from cold module");
@@ -176,7 +198,8 @@ public final class BodyProbe {
             if (!SemanticSnapshot.same(t.getField("replayed").get(trial), t.getField("cold").get(trial)))
                 throw new AssertionError("module assembly: replayed module differs from cold module (" + i + ")");
             if (!SemanticSnapshot.same(t.getField("replayed_cx").get(trial), t.getField("cold_cx").get(trial)))
-                throw new AssertionError("module assembly: replayed Cx differs from cold module state (" + i + ")");
+                throw new AssertionError("module assembly: replayed Cx differs from cold module state (" + i
+                        + "): " + differing(t.getField("replayed_cx").get(trial), t.getField("cold_cx").get(trial)));
         }
         System.out.println("module-assembly\t10\treordered functions, methods, constants and tests assemble complete cold modules and Cx");
     }

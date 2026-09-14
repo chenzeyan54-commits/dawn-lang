@@ -521,6 +521,10 @@ test "allocation body boundaries admit an entry pack that is one run of slots" {
   assert body_relocation(headers, sig, sig, []) == None
   # a header that does not carry onto this one is refused, defaults included
   assert body_relocation(headers, sig, Sig { ..sig, eff: EPure }, [21, 22]) == None
+  # including one that agrees about its ABI row and disagrees about anything
+  # else: what the boundary asks is whether the recorded header carries onto
+  # this one field for field, not whether the two pass the same evidence
+  assert body_relocation(headers, sig, Sig { ..sig, name: "renamed" }, [21, 22]) == None
   assert body_relocation(headers, Sig { ..sig, param_defaults: [true] }, sig, [21, 22]) == None
   assert body_relocation(headers, sig, Sig { ..sig, param_defaults: [true] }, [21, 22]) == None
   # `body_segment_relocation` is the same boundary for one whose signature
