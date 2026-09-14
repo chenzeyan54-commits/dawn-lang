@@ -791,6 +791,24 @@ pub fn declared_effect_info_read(cx: Cx, id: Int) -> (Cx, EffectI) = {
   (observe_type_read(cx, semantic_reads.DeclaredEffectInfo(id, answer)), answer)
 }
 
+## `types.eff_ctl_labels` with the table lookups written down: the same walk
+## over the same labels in the same order, and the same alphabetical answer,
+## except that each label's declaration is asked for through the recorded
+## accessor so admission can put the question to the candidate revision. An id
+## a row names is an id the effect table declared, which is why this asks the
+## accessor that panics on a missing one, the way `label_eff` does.
+pub fn ctl_labels_read(cx: Cx, e: Eff) -> (Cx, List[String]) = {
+  var cx1 = cx
+  var out: List[String] = []
+  for l in eff_labels(e) {
+    let (lid, lname) = l
+    let (next, info) = declared_effect_info_read(cx1, lid)
+    cx1 = next
+    if info.ctl { out = out ++ [lname] }
+  }
+  (cx1, sort(out))
+}
+
 ## A row carrying exactly one declared effect.
 pub fn label_eff(cx: Cx, id: Int) -> Eff = ELabeled(EPure, [(id, effect_of(cx, id).name)])
 
@@ -1023,8 +1041,17 @@ fn builtin_type_read(cx: Cx, name: String) -> (Cx, Option[BuiltinTypeI]) = {
   (observe_type_read(cx, semantic_reads.BuiltinTypeAnswer(name, answer)), answer)
 }
 
-fn std_module_mode_read(cx: Cx) -> (Cx, Bool) =
+pub fn std_module_mode_read(cx: Cx) -> (Cx, Bool) =
   (observe_type_read(cx, semantic_reads.StdModuleMode(cx.is_std_module)), cx.is_std_module)
+
+## The std loader's removed-name hints: where a name that is no longer a
+## builtin went. Only a diagnostic hint reads it, but the answer is a property
+## of the environment the body was checked against and std can move a name
+## again, so it is written down like every other table lookup.
+pub fn moved_name_read(cx: Cx, name: String) -> (Cx, Option[String]) = {
+  let answer = map.get(cx.moved, name)
+  (observe_type_read(cx, semantic_reads.MovedName(name, answer)), answer)
+}
 
 pub fn java_class_name_read(cx: Cx, name: String) -> (Cx, Option[String]) = {
   let answer = map.get(cx.java_classes, name)
@@ -1613,6 +1640,8 @@ pub fn revalidate_context_read(candidate: Cx, fact: FunctionRead) -> Option[Bool
       next }
     semantic_reads.StdModuleMode(_) -> { let (next, _) = std_module_mode_read(initial)
       next }
+    semantic_reads.MovedName(name, _) -> { let (next, _) = moved_name_read(initial, name)
+      next }
     _ -> return None
   }
   Some(semantic_reads.observed_equal(fact, observed.function_reads))
@@ -1627,6 +1656,7 @@ test "context revalidation recomputes every supported query family" {
     ctors_by_name: map.from([("Make", (id, 0))]), adts_by_name: map.from([("Box", id)]),
     consts: map.from([("value", TyInt)]), all_const_names: set.from(["value"]),
     effects: map.from([("Ask", 700)]), effect_infos: map.from([(700, effect_info)]),
+    moved: map.from([("print", "use `std/io.println`")]),
     current_tparams: map.from([("T", TyInt)]), current_eff_vars: map.from([("e", EIo)]) }
   let (c1, _) = local_constructor_read(initial, "Make")
   let (c2, _) = local_constant_read(c1, "value")
@@ -1648,12 +1678,13 @@ test "context revalidation recomputes every supported query family" {
   let (c18, _) = declared_effect_read(c17, "Ask")
   let (c19, _) = builtin_type_read(c18, "Int")
   let (c20, _) = std_module_mode_read(c19)
-  let facts = c20.function_reads.expect("all context query families")
-  assert len(facts) == 20
+  let (c21, _) = moved_name_read(c20, "print")
+  let facts = c21.function_reads.expect("all context query families")
+  assert len(facts) == 21
   let changed = Cx { ..initial, adts: map.empty(), adts_by_name: map.empty(), ctors_by_name: map.empty(),
     consts: map.empty(), all_const_names: set.empty(), const_cutoff: Some(set.empty()),
     effects: map.empty(), effect_infos: map.empty(), current_tparams: map.empty(), current_eff_vars: map.empty(),
-    btypes: map.empty(), is_std_module: true }
+    btypes: map.empty(), is_std_module: true, moved: map.empty() }
   for fact in facts {
     assert revalidate_context_read(initial, fact) == Some(true)
     assert revalidate_context_read(changed, fact) == Some(false)
