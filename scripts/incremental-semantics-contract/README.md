@@ -228,11 +228,22 @@ whole. The dispositions below are K4's three.
   **untouched**. They mutate the one arm that survives, and they are the only
   two controls the read log's projection still has.
 - Thirty one inline assertions in `check/semantic_reads` went with the arms
-  they exercised, replaced by one: `semantic reads carry every fact but move an
-  alias source with its owner`. The vocabulary-wide statement they used to make
-  between them is made by `body_product`'s corpus, which was extended from
+  they exercised, replaced by two. `semantic reads carry every fact but move an
+  alias source with its owner` makes the projection claim, and the
+  vocabulary-wide half of it is made by `body_product`'s corpus, extended from
   fifty facts to sixty six so that it names every constructor rather than only
   the arms that used to rebuild a reference.
+- The second replacement, `semantic reads append every observation in the order
+  it was made`, exists because two of the thirty one were doing two jobs. They
+  built a log with `record`/`candidates`/`observe`, asserted something about
+  recording, and then asserted something about projecting it; deleting them for
+  the second half took the first half too, and `function-reads.py`'s
+  `negative-answer`, `candidate-answer` and `candidate-order` and
+  `export-reads.py`'s `observation` lost their owner. The sweep caught it.
+  Before deleting a test with a production arm, check what fails without it,
+  not what it is named. One more thing that check turns up: the deleted
+  ordering assertion used `["beta", "alpha", "beta"]`, a palindrome, so it had
+  never owned `candidate-order` in the first place.
 
 ### Controls retired with the translation layer (K7)
 
