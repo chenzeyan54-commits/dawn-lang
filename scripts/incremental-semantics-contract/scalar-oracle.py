@@ -28,9 +28,11 @@ def main():
     original = (ROOT / 'selfhost/src/check/scalar_replay.dawn').read_text()
     variants = [
         ('disguised-cold',
-         'Some(after) -> (Counts { ..count, reused: count.reused + 1 }, after, product.tree)',
-         'Some(after) -> {\n            let (ignored, checked, tree) = cold.function(count, cx, d, sig)\n'
-         '            (Counts { ..count, reused: count.reused + 1 }, checked, tree)\n          }'),
+         'Some(after) -> (Pass { ..stepped,\n'
+         '            counts: Counts { ..stepped.counts, reused: stepped.counts.reused + 1 } }, after, product.tree)',
+         'Some(after) -> {\n            let (ignored, checked, tree) = cold.function(stepped, cx, d, sig)\n'
+         '            (Pass { ..stepped, counts: Counts { ..stepped.counts, reused: stepped.counts.reused + 1 } },'
+         ' checked, tree)\n          }'),
         ('lost-current-symbols', '}, after, product.tree)',
          '}, Cx { ..after, syms: map.empty() }, product.tree)'),
         # `stale-source` stood here and turned the projection off, leaving the

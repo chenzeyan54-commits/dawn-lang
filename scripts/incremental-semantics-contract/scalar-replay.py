@@ -27,7 +27,32 @@ CONTEXT = 'selfhost/src/check/cx.dawn'
 def main():
     started = time.monotonic()
     own = [
-        ('disable-replay', 'Some(p) -> candidate(p, cx, d, sig)', 'Some(p) -> None'),
+        ('disable-replay', '(Pass { ..state, prepared: Some(after) }, product)',
+         '(Pass { ..state, prepared: Some(after) }, None)'),
+        # The shared memo. Its key is the recorded fact, its verdicts are
+        # answered once for the whole candidate revision, and none of them
+        # crosses into another revision. Each of those three is a separate
+        # way for the memo to hand back a verdict the per-body loop it
+        # replaced would not have produced.
+        ('memo-stale-hit', 'query_runtime.Available(value) -> (asked.engine, value)',
+         'query_runtime.Available(value) -> (asked.engine, None)'),
+        ('memo-family-closed', 'AssignableType(_, _, _) -> true', 'AssignableType(_, _, _) -> false'),
+        ('memo-wrong-key',
+         'let opened = match query_runtime.begin(asked.engine, read) {\n'
+         '        Some(engine) -> engine\n'
+         '        None -> return (asked.engine, value)\n'
+         '      }\n'
+         '      match query_runtime.finish(opened, read, value) {',
+         'let opened = match query_runtime.begin(asked.engine, AssignableType(TyUnit, TyUnit, false)) {\n'
+         '        Some(engine) -> engine\n'
+         '        None -> return (asked.engine, value)\n'
+         '      }\n'
+         '      match query_runtime.finish(opened, AssignableType(TyUnit, TyUnit, false), value) {'),
+        ('memo-not-published',
+         'match query_runtime.finish(opened, read, value) {\n        Some(engine) -> (engine, value)',
+         'match query_runtime.finish(opened, read, value) {\n        Some(engine) -> (asked.engine, value)'),
+        ('memo-not-carried', 'let carried = Prepared { ..prepared, memo: memo }', 'let carried = prepared'),
+        ('memo-not-threaded', '(Pass { ..state, prepared: Some(after) }, product)', '(state, product)'),
         ('source-owner', 'not snapshot_matches(old, old_source)', 'false'),
         ('observer-mode', 'Some(_) -> moved.function_reads', 'Some(_) -> None'),
         ('current-isolation', 'isolated: cx.frame.isolated', 'isolated: false'),
@@ -75,22 +100,22 @@ def main():
         # being counted is a category that left the remainder silently.
         ('cold-remainder-function',
          '        }\n'
-         '        None -> cold.function(Counts { ..count, checked: count.checked + 1 }, cx, d, sig)',
-         '        }\n        None -> cold.function(count, cx, d, sig)'),
+         '        None -> cold.function(cold_pass(stepped), cx, d, sig)',
+         '        }\n        None -> cold.function(stepped, cx, d, sig)'),
         ('cold-remainder-inferred-body',
-         'inferred_body: (n, cx, d, sig) => cold.inferred_body(Counts { ..n, checked: n.checked + 1 }, cx, d, sig),',
+         'inferred_body: (n, cx, d, sig) => cold.inferred_body(cold_pass(n), cx, d, sig),',
          'inferred_body: (n, cx, d, sig) => cold.inferred_body(n, cx, d, sig),'),
         ('cold-remainder-constant',
-         'constant: (n, cx, d, ty, visible) => cold.constant(Counts { ..n, checked: n.checked + 1 }, cx, d, ty, visible),',
+         'constant: (n, cx, d, ty, visible) => cold.constant(cold_pass(n), cx, d, ty, visible),',
          'constant: (n, cx, d, ty, visible) => cold.constant(n, cx, d, ty, visible),'),
         ('cold-remainder-method',
-         'method: (n, cx, tr, subject, d, sig) => cold.method(Counts { ..n, checked: n.checked + 1 }, cx, tr, subject, d, sig),',
+         'method: (n, cx, tr, subject, d, sig) => cold.method(cold_pass(n), cx, tr, subject, d, sig),',
          'method: (n, cx, tr, subject, d, sig) => cold.method(n, cx, tr, subject, d, sig),'),
         ('cold-remainder-default-body',
-         'default_body: (n, cx, tr, d, sig, body) => cold.default_body(Counts { ..n, checked: n.checked + 1 }, cx, tr, d, sig, body),',
+         'default_body: (n, cx, tr, d, sig, body) => cold.default_body(cold_pass(n), cx, tr, d, sig, body),',
          'default_body: (n, cx, tr, d, sig, body) => cold.default_body(n, cx, tr, d, sig, body),'),
         ('cold-remainder-test-body',
-         'test_body: (n, cx, name, body) => cold.test_body(Counts { ..n, checked: n.checked + 1 }, cx, name, body)',
+         'test_body: (n, cx, name, body) => cold.test_body(cold_pass(n), cx, name, body)',
          'test_body: (n, cx, name, body) => cold.test_body(n, cx, name, body)'),
         # Every declaration a revision adds or drops renumbers the
         # declarations after it, so the recorded slice has to be taken at the

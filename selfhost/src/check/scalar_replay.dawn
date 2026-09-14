@@ -25,11 +25,24 @@ use check/source_snapshot.{Snapshot}
 use check/callee_index
 use check/body_admit
 use check/body_admit.{View}
-use check/semantic_reads.{AssignableType}
+use check/semantic_reads
+use check/semantic_reads.{AssignableType, FunctionRead}
+use check/query_runtime
 use front/ast.{FnDecl, DFn}
 
 pub type Replayed = { bodies: ModuleBodies, checked: Int, reused: Int }
 type Counts = { checked: Int, reused: Int }
+
+## One candidate revision's verdicts on the facts its recorded bodies logged.
+## The key is the recorded fact itself, because a fact is a query and the
+## answer that query returned in one value: two bodies that recorded the same
+## fact are asking the same question, and a fact whose answer moved is a
+## different key rather than a stale entry under an old one. A key pair of
+## declaration and log position would share nothing, which is the whole point
+## of holding this per revision instead of per body.
+alias Memo = query_runtime.Engine[FunctionRead, Option[Bool]]
+
+fn new_memo() -> Memo = query_runtime.new((a, b) => a == b)
 
 ## One saved body, with every admission question the recorded revision can
 ## answer on its own already answered. The candidate revision cannot change
@@ -48,7 +61,18 @@ pub opaque type Admitted = AdmittedData
 
 type Prepared = { scope: ModuleKey, ready: Ready,
   candidates: Map[Int, (DeclKey, Int)], callees: callee_index.CalleeIndex,
-  old_tokens: source_projection.Tokens, tokens: source_projection.Tokens }
+  old_tokens: source_projection.Tokens, tokens: source_projection.Tokens,
+  memo: Memo }
+
+## What the replay pass carries from one declaration to the next: the tally
+## the caller gets back, and the preparation of the candidate revision. The
+## preparation is threaded rather than captured beside the executor because
+## the memo inside it grows as bodies are revalidated, and a body that is
+## refused still leaves its work there for the next one.
+type Pass = { counts: Counts, prepared: Option[Prepared] }
+
+fn cold_pass(state: Pass) -> Pass =
+  Pass { ..state, counts: Counts { ..state.counts, checked: state.counts.checked + 1 } }
 
 fn primitive(t: Ty) -> Bool = match t {
   TyInt -> true, TyFloat -> true, TyBool -> true, TyUnit -> true, _ -> false
@@ -217,7 +241,45 @@ fn prepare(admitted: AdmittedData, next: ModuleHeaders, source: Snapshot) -> Opt
   # products are relocated onto.
   Some(Prepared { scope: scope, ready: settled, candidates: candidates,
     callees: callee_index.of(next.cx),
-    old_tokens: source_snapshot.tokens(settled.source), tokens: source_snapshot.tokens(source) })
+    old_tokens: source_snapshot.tokens(settled.source), tokens: source_snapshot.tokens(source),
+    memo: new_memo() })
+}
+
+## Which recorded facts one revision may answer once for all of its bodies.
+## Sharing a verdict is sound exactly when recomputing it reads only what the
+## revision settled before any body ran. `AssignableType` is such a family:
+## `assignable` answers from the two types the fact carries and the owner this
+## module is checked under, and nothing a body does moves either. The families
+## that read what the scheduler rebinds per declaration are not, and the
+## signature binders below are revalidated per body for that reason. The
+## allowlist is closed so that widening the admitted class has to make this
+## decision rather than inherit it.
+fn shared(read: FunctionRead) -> Bool = match read {
+  AssignableType(_, _, _) -> true
+  _ -> false
+}
+
+## Revalidate one recorded fact, at most once per candidate revision for the
+## facts a revision may answer for all of its bodies. `checker.revalidate_read`
+## has no effect row and writes nothing this pass reads, so what the memo holds
+## is a value and not a cached observation.
+fn revalidated(memo: Memo, cx: Cx, read: FunctionRead) -> (Memo, Option[Bool]) = {
+  if not shared(read) { return (memo, checker.revalidate_read(cx, read)) }
+  let asked = query_runtime.read(memo, read)
+  match asked.answer {
+    query_runtime.Available(value) -> (asked.engine, value)
+    _ -> {
+      let value = checker.revalidate_read(cx, read)
+      let opened = match query_runtime.begin(asked.engine, read) {
+        Some(engine) -> engine
+        None -> return (asked.engine, value)
+      }
+      match query_runtime.finish(opened, read, value) {
+        Some(engine) -> (engine, value)
+        None -> (asked.engine, value)
+      }
+    }
+  }
 }
 
 ## The recorded body paired with the relocation onto this candidate: every
@@ -275,28 +337,48 @@ fn relocation(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[(Prior,
   Some((saved, view))
 }
 
-fn candidate(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[Product] = {
-  let (saved, view) = relocation(prepared, cx, d, sig)?
+## The candidate's verdict on one saved body, and the preparation to carry to
+## the next one. The preparation comes back on every path, refusals included:
+## the facts this body asked about are the facts the next body is about to
+## ask about, and an answer is no less true for having refused the body that
+## paid for it.
+fn candidate(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> (Prepared, Option[Product]) = {
+  let (saved, view) = match relocation(prepared, cx, d, sig) {
+    Some(pair) -> pair
+    None -> return (prepared, None)
+  }
   let p = saved.product
+  let reads = match p.function_reads {
+    Some(recorded_reads) -> recorded_reads
+    None -> return (prepared, None)
+  }
   # The recorded log is revalidated where it lies: each fact is walked beside
   # the answer the candidate revision observes, and nothing is rebuilt in
   # candidate coordinates to be compared and thrown away. The rebuilt log is
   # only what an observing caller installs, so it is built only when the
   # caller is observing.
-  for read in p.function_reads? {
-    if checker.revalidate_read(cx, read) != Some(true) { return None }
+  var memo = prepared.memo
+  for read in reads {
+    let (next_memo, verdict) = revalidated(memo, cx, read)
+    memo = next_memo
+    if verdict != Some(true) { return (Prepared { ..prepared, memo: memo }, None) }
   }
-  let moved = match cx.function_reads {
-    None -> body_product.project_without_reads(view, p)?
-    Some(_) -> body_product.project(view, p)?
+  let carried = Prepared { ..prepared, memo: memo }
+  let projected = match cx.function_reads {
+    None -> body_product.project_without_reads(view, p)
+    Some(_) -> body_product.project(view, p)
+  }
+  let moved = match projected {
+    Some(product) -> product
+    None -> return (carried, None)
   }
   # These fields pass through this closed producer unchanged. The old final
   # value is not a write: preserve the corresponding current scheduler state.
-  Some(BodyProduct { ..moved, in_test: cx.in_test, const_cutoff: cx.const_cutoff,
+  (carried, Some(BodyProduct { ..moved, in_test: cx.in_test, const_cutoff: cx.const_cutoff,
     loop_jumps: cx.loop_jumps, take_cell: cx.take_cell,
     function_reads: match cx.function_reads { None -> None, Some(_) -> moved.function_reads },
     body_writes: match cx.body_writes { None -> None, Some(_) -> moved.body_writes },
-    frame: Frame { ..moved.frame, isolated: cx.frame.isolated } })
+    frame: Frame { ..moved.frame, isolated: cx.frame.isolated } }))
 }
 
 ## Inputs must come from the canonical header/recording producers in one
@@ -307,29 +389,41 @@ pub fn replay(admitted: Admitted, next: ModuleHeaders, source: Snapshot) -> Repl
   let data: AdmittedData = admitted
   let valid = next.cx.diags == [] && snapshot_matches(next, source)
   let prepared: Option[Prepared] = if valid { prepare(data, next, source) } else { None }
-  let cold: BodyExecutor[Counts] = checker.cold_body_executor()
-  let executor: BodyExecutor[Counts] = BodyExecutor {
-    function: (count, cx, d, sig) => {
-      let hit: Option[Product] = match prepared {
-        Some(p) -> candidate(p, cx, d, sig)
-        None -> None
+  let (outcome, bodies) = checker.execute_module_bodies(next,
+    Pass { counts: Counts { checked: 0, reused: 0 }, prepared: prepared }, pass_executor())
+  Replayed { bodies: bodies, checked: outcome.counts.checked, reused: outcome.counts.reused }
+}
+
+## The executor the pass runs. It is named rather than built inside `replay`
+## so that a judgment can run the production one and read the state it leaves
+## behind, which is where the shared memo ends up.
+fn pass_executor() -> BodyExecutor[Pass] = {
+  let cold: BodyExecutor[Pass] = checker.cold_body_executor()
+  BodyExecutor {
+    function: (state, cx, d, sig) => {
+      let stepped_hit: (Pass, Option[Product]) = match state.prepared {
+        Some(p) -> {
+          let (after, product) = candidate(p, cx, d, sig)
+          (Pass { ..state, prepared: Some(after) }, product)
+        }
+        None -> (state, None)
       }
+      let (stepped, hit) = stepped_hit
       match hit {
         Some(product) -> match body_product.assemble(cx, product) {
-          Some(after) -> (Counts { ..count, reused: count.reused + 1 }, after, product.tree)
-          None -> cold.function(Counts { ..count, checked: count.checked + 1 }, cx, d, sig)
+          Some(after) -> (Pass { ..stepped,
+            counts: Counts { ..stepped.counts, reused: stepped.counts.reused + 1 } }, after, product.tree)
+          None -> cold.function(cold_pass(stepped), cx, d, sig)
         }
-        None -> cold.function(Counts { ..count, checked: count.checked + 1 }, cx, d, sig)
+        None -> cold.function(cold_pass(stepped), cx, d, sig)
       }
     },
-    inferred_body: (n, cx, d, sig) => cold.inferred_body(Counts { ..n, checked: n.checked + 1 }, cx, d, sig),
-    constant: (n, cx, d, ty, visible) => cold.constant(Counts { ..n, checked: n.checked + 1 }, cx, d, ty, visible),
-    method: (n, cx, tr, subject, d, sig) => cold.method(Counts { ..n, checked: n.checked + 1 }, cx, tr, subject, d, sig),
-    default_body: (n, cx, tr, d, sig, body) => cold.default_body(Counts { ..n, checked: n.checked + 1 }, cx, tr, d, sig, body),
-    test_body: (n, cx, name, body) => cold.test_body(Counts { ..n, checked: n.checked + 1 }, cx, name, body)
+    inferred_body: (n, cx, d, sig) => cold.inferred_body(cold_pass(n), cx, d, sig),
+    constant: (n, cx, d, ty, visible) => cold.constant(cold_pass(n), cx, d, ty, visible),
+    method: (n, cx, tr, subject, d, sig) => cold.method(cold_pass(n), cx, tr, subject, d, sig),
+    default_body: (n, cx, tr, d, sig, body) => cold.default_body(cold_pass(n), cx, tr, d, sig, body),
+    test_body: (n, cx, name, body) => cold.test_body(cold_pass(n), cx, name, body)
   }
-  let (count, bodies) = checker.execute_module_bodies(next, Counts { checked: 0, reused: 0 }, executor)
-  Replayed { bodies: bodies, checked: count.checked, reused: count.reused }
 }
 
 test "scalar replay moves unchanged bodies through the current scheduler" {
@@ -352,7 +446,7 @@ test "scalar replay moves unchanged bodies through the current scheduler" {
   assert match table(scope, next) { Some(_) -> true, None -> false }
   let admitted: AdmittedData = admit(scope, old, old_snapshot, saved)
   assert match prepare(admitted, next, next_snapshot) {
-    Some(p) -> match candidate(p, next.cx, declaration, sig) { Some(_) -> true, None -> false }
+    Some(p) -> match candidate(p, next.cx, declaration, sig) { (_, Some(_)) -> true, (_, None) -> false }
     None -> false
   }
   # The index the preparation carries is the revision's own: on a real
@@ -1186,4 +1280,109 @@ test "scalar replay reuses an admitted body when a type declaration is changed" 
   assert actual.bodies.cx.diags == expected.cx.diags
   assert actual.bodies.cx.function_reads == expected.cx.function_reads
   assert actual.bodies.cx.body_writes == expected.cx.body_writes
+}
+
+test "scalar replay asks one candidate revision each shared question once" {
+  # What the memo is for, measured rather than assumed: a module's bodies
+  # repeat each other's questions, and the loop this replaced recomputed every
+  # repetition. A module of eight functions over two nominal types and one
+  # constant logs four facts for every one it can tell apart.
+  let text = "type Shape = { width: Int, height: Int }\n" ++
+    "type Flag = { on: Bool }\n" ++
+    "const LIMIT: Int = 10\n" ++
+    "fn one() -> Int = 1\n" ++
+    "fn two(x: Int) -> Int = x + 1\n" ++
+    "fn three(x: Int) -> Int = x * 2\n" ++
+    "fn four(x: Int, y: Int) -> Int = x + y\n" ++
+    "fn five(b: Bool) -> Bool = not b\n" ++
+    "fn six(x: Int) -> Bool = x > LIMIT\n" ++
+    "fn seven(s: Shape) -> Int = s.width\n" ++
+    "fn eight(f: Flag) -> Bool = f.on\n"
+  let snapshot = source_snapshot.of(text).expect("repetition snapshot")
+  let observing = Cx { ..cx_new(Some("sample"), Some("sample.dawn")), function_reads: Some([]) }
+  let headers = checker.check_module_headers(observing, source_snapshot.syntax(snapshot), map.empty())
+  assert headers.cx.diags == []
+  let facts = checker.check_module_body_products(headers).cx.function_reads.expect("module log")
+  assert len(facts) > 2 * set.len(set.from(facts))
+  # One real computation per distinct shareable fact, and strictly fewer
+  # computations than questions. The verdict the memo returns is the verdict
+  # the per-body loop returned, hit or miss, fact for fact.
+  var memo = new_memo()
+  var distinct: Set[FunctionRead] = set.empty()
+  var questions = 0
+  var computed = 0
+  for fact in facts {
+    if shared(fact) {
+      questions = questions + 1
+      distinct = set.insert(distinct, fact)
+      match query_runtime.read(memo, fact).answer {
+        query_runtime.Available(_) -> ()
+        _ -> { computed = computed + 1 }
+      }
+      let (next_memo, verdict) = revalidated(memo, headers.cx, fact)
+      memo = next_memo
+      assert verdict == checker.revalidate_read(headers.cx, fact)
+    }
+  }
+  assert questions > 0 && computed == set.len(distinct) && computed < questions
+}
+
+test "scalar replay carries one memo across the bodies of a revision and no further" {
+  let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
+  let before = "fn answer() -> Int = 42\nfn other(x: Int) -> Int = x\n"
+  let after = "type Added = { value: Int }\nfn other(x: Int) -> Int = x\n# moved\nfn answer() -> Int = 42\n"
+  let old_snapshot = source_snapshot.of(before).expect("recorded snapshot")
+  let next_snapshot = source_snapshot.of(after).expect("candidate snapshot")
+  let new_syntax = source_snapshot.syntax(next_snapshot)
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(old_snapshot), map.empty())
+  let next = checker.check_module_headers(base, new_syntax, map.empty())
+  assert old.cx.diags == [] && next.cx.diags == []
+  let saved = body_execution.record(scope, old)
+  let admitted: AdmittedData = admit(scope, old, old_snapshot, saved)
+  # The memo travels with the revision rather than with the body: both
+  # declarations here ask the same question, and only the first one pays for
+  # the answer.
+  var carried = prepare(admitted, next, next_snapshot).expect("prepared candidate revision")
+  var questions = 0
+  var answered_already = 0
+  for (declaration, name) in [(1, "other"), (2, "answer")] {
+    let d = match new_syntax.decls[declaration] { DFn(syntax) -> syntax, _ -> panic("declaration") }
+    let sig = map.get(next.cx.fns, name).expect("candidate header")
+    let (prior, _) = relocation(carried, next.cx, d, sig).expect("relocation")
+    for fact in prior.product.function_reads.expect("recorded log") {
+      if shared(fact) {
+        questions = questions + 1
+        match query_runtime.read(carried.memo, fact).answer {
+          query_runtime.Available(_) -> { answered_already = answered_already + 1 }
+          _ -> ()
+        }
+      }
+    }
+    let (after_body, product) = candidate(carried, next.cx, d, sig)
+    assert product != None
+    carried = after_body
+  }
+  assert questions == 2 && answered_already == 1
+  # The production pass carries the same preparation, so the memo the module
+  # ends with is the one its bodies filled.
+  let (outcome, _) = checker.execute_module_bodies(next,
+    Pass { counts: Counts { checked: 0, reused: 0 },
+      prepared: prepare(admitted, next, next_snapshot) }, pass_executor())
+  assert outcome.counts.reused == 2
+  let finished = outcome.prepared.expect("carried preparation")
+  let probe = AssignableType(TyInt, TyInt, true)
+  assert shared(probe)
+  assert match query_runtime.read(finished.memo, probe).answer {
+    query_runtime.Available(value) -> value == Some(true)
+    _ -> false
+  }
+  # A memo belongs to the revision that prepared it. Another preparation of
+  # the same recording starts with nothing answered, so no verdict crosses
+  # from one candidate revision into another.
+  let fresh = prepare(admitted, next, next_snapshot).expect("second preparation")
+  assert match query_runtime.read(fresh.memo, probe).answer {
+    query_runtime.Needs(_) -> true
+    _ -> false
+  }
 }
