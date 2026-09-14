@@ -11,8 +11,9 @@ at ca33cdbe for exactly that. The list is parsed out of gates.yml at run time
 rather than written down a second time, so a harness added to an existing job is
 swept without anyone remembering to, and `sweep.sh --self-test` compares that
 parse against a plain grep of the same file so the sweep cannot quietly run a
-subset (48 invocations today, 46 after deduplicating the three jobs that each
-run `diagnostic-reads.py --self-test`). Harnesses start longest first, since the
+subset (47 invocations today, 45 after deduplicating the three jobs that each
+run `diagnostic-reads.py --self-test`; `header-metadata.py` left with
+`check/relocate_header` in K7). Harnesses start longest first, since the
 sweep is tail-bound rather than throughput-bound: the longest harness is the
 whole wall clock if it starts in the last wave. `prefix.py` was that harness at
 771s of a 1413s sweep, and the floor the sweep could not go under; on
@@ -162,14 +163,71 @@ executor 语义；它按函数体类别（字面量标量、原语参数算术�
 header来自生产check_module_headers的ModuleHeaders，不再按源码锚点复制header前缀。
 它不是已上线的函数缓存，也不代替下列生产前缀门禁。
 
-`relocate.py` 验证生产 `check/relocate` 还在判断的那件事。这一层已经没有映射了：
-类型变量、效果变量和局部符号都是 `identity.pack(声明, 槽位)`，nominal 与 trait 由
-声明派生，没有被编辑的声明在候选修订里绑定同样的整数，所以 `ty`/`effect_row`/
-`witness`/`evidence_key` 都答以收到的值，表、区间和平移全部删除。剩下的判断是
+`relocate.py` 验证生产 `check/evidence_spelling` 还在判断的那件事（脚本名没改，因为
+`gates.yml` 按文件名跑它；主语在 K7 从 `check/relocate` 搬了家）。翻译这一层已经不
+存在了：类型变量、效果变量和局部符号都是 `identity.pack(声明, 槽位)`，nominal 与
+trait 由声明派生，没有被编辑的声明在候选修订里绑定同样的整数，所以 `ty`/`effect_row`/
+`witness`/`evidence_key` 全部答以收到的值，K7 连同 `Ids` 一起删掉。剩下的判断是
 **evidence key 的 band 从 key 本身读回**（label 名字的前缀、associated 的 trait、
 variable 的拼法，以及 `checked_symbol` 对生成名的校验，共六个）：6个成功编译负控
 必须命中具名断言。曾经与它并列的「两个签名的 ABI 行是否逐槽对应」在 K6 连同置换
 一起删了，见下。
+
+### Controls retired with the translation layer (K7)
+
+`equal_under` walked a recorded fact beside an observed one under a relocation,
+`check/relocate_tree` rebuilt a recorded tree node by node, and
+`check/relocate_header` rebuilt a header product's tables. All three were the
+identity on every domain they touched, because a reference names the
+declaration that owns it and a span is an offset from the declaration that
+recorded it. What the two body-side walks were really doing was refusing the
+products they could not rebuild, and that is what `check/body_admit` is: the
+same 35 arms, answering `Bool`. The header-side one was refusing nothing a
+production caller could reach, and it had no production caller at all. The
+dispositions are K4's three.
+
+- **`header-metadata.py` is deleted, with all four of its controls and its
+  ten-schema field audit.** `impl-owner`, `impl-end`, `alias-sentinel` and
+  `alias-target` mutated the positional half of `relocate_header`; the module
+  is gone, and so is the classification the audit enforced ("projected" versus
+  "retained" fields), because nothing projects a header any more. This is K4's
+  third disposition: the judgment goes with the production code that made it.
+  The fixture movement those controls were measured against was invented by
+  the fixture itself: `metadata_sample` built a `HeaderView` that shifted every
+  position by the length of a prefix it had prepended, and production never
+  built one.
+- **Four `body-probe.py --typed-all` controls are deleted**: `header-alias`,
+  `header-impl`, `header-state-bounds` and `header-state-surface`, with the two
+  comparisons that owned them (`header metadata: projected exports differ from
+  cold headers` and `header state: projected context differs from cold
+  headers`). Same disposition, same reason. The third comparison in that
+  family, `header state: assembled context differs from cold headers`, is
+  **kept**: it is `header_product.capture` followed by `header_product.assemble`
+  on a real module's headers, which has nothing to do with projecting them.
+- `projection.py`'s `pack-order`, `crossed-evidence-origin` and
+  `evidence-arity` are **re-anchored, not retired** (K4's first disposition):
+  the three judgments moved to `check/body_admit` with the walk that makes
+  them, and each is still held by the same inline assertion, now spelled as a
+  refusal rather than as `== None`.
+- `projection.py`'s three callee controls (`callee-owner`,
+  `callee-module-alias`, `callee-conflict`) are re-anchored to
+  `check/callee_index`. Finding a callee in one revision was never a
+  translation; the module moved out of the tree visitor in K7 and the controls
+  followed it.
+- `relocate.py`'s six controls are re-anchored to `check/evidence_spelling`,
+  for the same reason.
+- `state-product.py`'s `constant-tree` and `function-read-domain`,
+  `type-reads.py`'s `alias-source-callback` and `constant-source-callback`,
+  `witness-revalidation.py`'s `accept-changed-answer` and
+  `accept-missing-trait`, `context-revalidation.py`'s `accept-changed`,
+  `discard-context-result` and `accept-unknown-query`, `scalar-replay.py`'s
+  `header-only-admission`, and `allocation.py`'s `constant-type`,
+  `target-identity`, `entry-pack-not-a-run` and `reserved-signature` are all
+  re-anchored: seventeen controls whose judgments did not change and whose
+  owning assertions did not move.
+- `witness-revalidation.py`'s nineteen `project-*` controls are **untouched**.
+  They mutate `semantic_reads.project_with_inference`, which still rebuilds a
+  read log for a caller that installs one. Shrinking that is a separate knife.
 
 ### Controls retired with the ABI permutation (K6)
 
@@ -232,7 +290,8 @@ production decision it mutated.
   and `owner-conflict` in `allocation.py`; `rename-blind-identity` is
   `spelling-drops-kind` and `spelling-drops-owner` in `identity.py`.
 - `stale-source` and `header-only-ids` in `scalar-oracle.py`: on an admitted
-  body the projection is the identity and both relocations are `relocate.new()`.
+  body admission is the whole of the walk, and there is no relocation left
+  for either boundary to carry (K7).
   The rebuilt read log is still held by `observer-mode`, and the refusals by
   `header-only-admission` and `changed-declaration-text` in `scalar-replay.py`.
 - Two controls moved rather than died. `evidence-origin` in `projection.py`
@@ -261,11 +320,14 @@ test block状态的完整冷模块对照，丢封定签名写入、保留错误i
 另有丢默认值字典符号的编译负控，必须命中泛型默认值的具名字典断言。
 另有丢默认参数诊断的编译负控，必须命中默认错误态的具名断言。
 Compilation or linking failures do not count as passing negative controls;
-typed-all now contains 17 compiling controls, down from 30 when nominal and
-trait ids started deriving from their declarations, and from 21 before binders
-were packed into their declarations (K5: `local`, `capture` and `dynamic` turned
-off the identifier half of the tree projection, which is the identity now, and
-`header-adt` turned off a header projection that relocates nothing else).
+typed-all now contains 13 compiling controls, down from 17 before the header
+projection was deleted (K7: `header-alias`, `header-impl`,
+`header-state-bounds` and `header-state-surface` went with `relocate_header`),
+from 30 when nominal and trait ids started deriving from their declarations,
+and from 21 before binders were packed into their declarations (K5: `local`,
+`capture` and `dynamic` turned off the identifier half of the tree projection,
+which is the identity now, and `header-adt` turned off a header projection that
+relocates nothing else).
 `body-probe.py --all` lost `skip-symbol` and `skip-captures` the same way and
 keeps six. Six of the nine that left
 could no longer be told apart from the production code by the reordered-header
@@ -276,8 +338,8 @@ impl-table key is a trait id and an ADT head, so rekeying is the identity
 (header-state-key); and the value sample's constants are declared at types
 with no binders in them (constant-type). pack-order, evidence-origin and
 constant-type moved to `projection.py`, which owns inline assertions, and are
-held by `check/relocate_tree` tests that hand the relocation type variables
-that do swap; symbol-order was already held by `state-product.py`.
+held by `check/body_admit` tests that hand the walk products it must refuse;
+symbol-order was already held by `state-product.py`.
 header-effect went with the production code it mutated: an `EffectI` has
 nothing left to relocate, so `relocate_header.effect_info` is deleted rather
 than left as an identity. Typed mode also compares assembly
@@ -346,16 +408,12 @@ nominal类型、三个常量与两个test，比较完整TModule/Cx；两个typed
 和源码投影必须命中整模块断言。这是已知可复用语料的产物重放，不证明一般可见集
 变化时的缓存有效性，也不跳过后续依赖接线。
 
-relocate_header投影完整导出记录中的类型/构造器、alias、trait方法及关联成员、
-效果和impl元数据。真实header案例使用源码前缀与不同起始分配计数，来源表仍从实际
-声明生成；独立Java比较整个ModExports，包括Map顺序。四个编译负控分别漏投影
-alias/impl/ADT/effect表，必须命中导出记录不一致断言。此例不改变声明顺序；投影
-保留旧顺序，不能替代跨声明重排后的当前顺序装配。
-header-metadata.py的十二个编译负控守binder、构造字段、trait方法/default、impl关联
-类型/效果/owner/位置和alias的哨兵/源码/effect。透明alias的-1不是nominal引用；
-另审计十种metadata记录的投影/保留字段，每种均有新增未分类字段的拒绝自测。
-源码回调按声明owner和可选路径选择映射。该脚本在incremental-state执行；native另跑
-relocate_header及其header_product依赖的55项owning测试，不与其他target相加。
+`check/relocate_header`（完整导出记录与 header 表的投影）与 `header-metadata.py`
+在 K7 一起删了：header 里的每个引用在两个修订里都是同一个整数，每个位置都是记录它
+的那个声明内的偏移，所以它投影不出任何东西，而且从来没有生产读者。夹具自己造的那
+段位移（`metadata_sample` 先加前缀再按前缀长度平移每个位置）是它唯一能被测出来的输
+入。留下来的是同修订的 `header_product.capture` + `assemble` 往返，由
+`body-probe.py --typed` 的 `header-state` 比较和 `header-state.py` 的十二个负控守着。
 
 header_product captures complete header scope tables, diagnostic suffixes and
 allocation intervals without retaining the entire Cx or a Java capability. Real
