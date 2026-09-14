@@ -1,7 +1,7 @@
 # A header result includes private scope and residual binders, not just its
 # public exports. Keep persistent table snapshots without retaining an input
 # Cx or its host capability. This same-revision product is not a dependency
-# proof; a different revision must project it before assembly.
+# proof; admitting it into another revision is the caller's obligation.
 use std/map
 use std/list
 use check/cx.{Cx, AliasE, ModExports, Origin, TySpan, cx_new, write_alias}
@@ -26,7 +26,7 @@ pub type HeaderProduct = {
   # intern table behind them is something a header boundary writes. It is
   # carried whole rather than as a delta because it is not an allocation: a
   # candidate revision derives the same ids from the same declarations, which
-  # is why `relocate_header.state` has nothing to do to it.
+  # is why installing it in another revision has nothing to do to it.
   identities: Map[Int, Minted],
   adts: Adts,
   traits: Traits,

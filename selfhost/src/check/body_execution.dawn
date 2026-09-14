@@ -1,7 +1,7 @@
 # Capture products at the scheduler's real entry contexts, not by replaying
 # a second copy of its ordering rules. Saved entries contain syntax and keyed
 # writes, never a complete historical Cx or a Java capability. Capture is not
-# admission: callers must validate dependencies and relocate before replay.
+# admission: callers must validate dependencies and admit before replay.
 use std/map
 use std/set
 use check/checker

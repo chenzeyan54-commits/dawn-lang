@@ -118,7 +118,7 @@ pub type TExpr =
 # pack and hands back `ev_get(pack, key)` for a label or the pack itself for a
 # non-ground atom (`types.ev_pack_adt`). The symbol that was resolved would
 # name neither.
-# The origin is retained for semantic relocation; lowering still uses the
+# The origin is retained for the semantic layer; lowering still uses the
 # erased key. A trait key alone loses the associated subject/member identity.
   | XEvRead(key: Int, origin: EvidenceRole, lo: Int, hi: Int, ty: Ty)
 # a top-level fn / builtin used as a value (type already instantiated)

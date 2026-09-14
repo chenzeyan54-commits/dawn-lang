@@ -1,12 +1,15 @@
 # Checker integers are allocations, not identities. Join explicit declaration
-# provenance and binder slots across revisions before constructing the domain
-# maps consumed by relocation. An equal integer alone never grants a mapping.
+# provenance and binder slots across revisions before deciding that a
+# reference means the same thing in both. An equal integer alone never grants
+# that.
 #
 # Nominal and trait ids left this ledger when they stopped being allocations:
 # they derive from the declaration (`check/identity.derive`), so a consumer
 # needs no table to know what a provider's id is, and two declarations cannot
-# quarrel over one number. What remains here is the binder domains, which are
-# still minted off `Cx.next_id`.
+# quarrel over one number. What remains here is the binder domains. Those are
+# packed keys as well (`check/identity.pack` of a declaration and its slot),
+# so what the join still buys is the refusal below: a binding both revisions
+# claim and number differently is a compiler that broke its own rule.
 use std/map
 use std/list
 use check/identity
