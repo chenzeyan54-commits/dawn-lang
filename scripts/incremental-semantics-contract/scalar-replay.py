@@ -92,6 +92,15 @@ def main():
         ('cold-remainder-test-body',
          'test_body: (n, cx, name, body) => cold.test_body(Counts { ..n, checked: n.checked + 1 }, cx, name, body)',
          'test_body: (n, cx, name, body) => cold.test_body(n, cx, name, body)'),
+        # Every declaration a revision adds or drops renumbers the
+        # declarations after it, so the recorded slice has to be taken at the
+        # index the recording gave this declaration and not at the index the
+        # candidate revision gives it. Reading both slices at the candidate's
+        # index pairs a body against whatever the recorded revision had at
+        # that position, which is another declaration or nothing at all.
+        ('recorded-declaration-index',
+         '    saved.declaration, declaration, prior.lo, prior.hi, d.lo, d.hi) { return None }',
+         '    declaration, declaration, prior.lo, prior.hi, d.lo, d.hi) { return None }'),
     ]
     # The assembly boundary is not this module's to break: the order the
     # declarations come out in and the order their diagnostics come out in are
