@@ -75,8 +75,6 @@ def main():
         # `header-answer-id`, `header-binder`, `field-answer-id`, `field-type`,
         # `field-name` and `field-slot`. A constructor fact is carried whole
         # now, fields and all.
-        # Select ConstructorFields, not the independent rendered-constructor
-        # projection that now uses the same FieldI reconstruction expression.
         ('body_product', 'capture', 'semantic_reads.capture(before.function_reads, after.function_reads)?', 'before.function_reads'),
     ]
     modules = ('cx', 'checker', 'semantic_reads', 'body_product', 'exhaustive')
