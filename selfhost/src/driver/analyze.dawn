@@ -26,9 +26,9 @@ use check/passes.{
 use check/checker.{check_module, check_module_headers, check_module_bodies, assemble_module_bodies, exports_of, check_fn, check_fn_inferred}
 use check/body_execution
 use check/allocation
-use check/allocation.{TypeParameter}
+use check/allocation.{TypeParameter, EffectParameter}
 use check/identity
-use check/identity.{module_key, Minted, DeclKey, Named, FunctionDecl}
+use check/identity.{module_key, Minted, DeclKey, Named, FunctionDecl, EffectDecl}
 use ir/interp.{eval_comptime, CtOut, CtOpts, ct_default}
 use check/jsig.{Jsig, jsig_refused}
 use driver/fsmem
@@ -36,7 +36,7 @@ use driver/stdlib.{
   StdCtx, load_std, std_load_error_text, std_module_of, is_std_dir, read_index
 }
 use check/tast.{TFun, TModule}
-use check/types.{Sym, Impls, TyVar}
+use check/types.{Sym, Impls, TyVar, EffVar}
 use front/parser
 use front/lexer
 use fspath/fspath
@@ -1986,6 +1986,97 @@ test "module provenance carry keeps exporting owners across header reorder" {
       assert len(step.diags) > 0
       assert map.get(step.after.provenance.expect("failed module provenance").modules, "broken") == Some(None)
     }
+  })
+}
+
+test "a consumer names a provider's effect without minting the provider's identity" {
+  in_mem(() => {
+    # The effect half of the test above, which covered the nominal and the
+    # type-parameter halves. Two integers cross the module boundary here and
+    # they cross it for different reasons: `Ask` is a declared effect, whose
+    # id the consumer derives from the provider's spelling and could compute
+    # without ever being told, and `!e` is a binder of `twice`, a packed key
+    # of the provider's declaration that arrives inside the signature the
+    # consumer was handed and that a join is the only way to read.
+    #
+    # A module alias cannot carry the effect itself: the grammar reads `!dep`
+    # as an effect variable and then has nothing to do with the `.`, so
+    # `!dep.Ask` is a parse error ("expected `=` (function body), found `.`")
+    # and is not the spelling this asserts about. The consumer therefore
+    # names the effect through a selective import and calls the operation and
+    # the generic through the alias, which is the whole of what the surface
+    # allows a qualified effect consumer to be today.
+    let std = std_or_die()
+    let initial = initial_carry_with_provenance(std, "provenance-test")
+    let asks = "pub effect Ask { fn ask() -> Int }\n"
+    let generic = "pub fn twice[!e](f: fn() -> Int !e) -> Int !e = f() + f()\n"
+    # The provider's own declaration spelling, and nothing about the consumer.
+    let declared = identity.derive(identity.minted("library", EffectDecl, "Ask"))
+    var effect_ids: List[Int] = []
+    var binders: List[Int] = []
+    var tables: List[allocation.Table] = []
+    for text in [asks ++ generic, generic ++ asks] {
+      let (syntax, pd) = parser.parse_module(text)
+      let input = LoadedModule { mod_path: "library", class_name: "library", path: "/provenance/effects.dawn",
+        text: text, m: syntax, pdiags: pd, pkg: None }
+      let step = analyze_module_step(input, initial, std, ct_default(), jsig_refused(), None)
+      assert len(step.diags) == 0
+      let table = map.get(step.after.provenance.expect("provider provenance").modules, "library")
+        .expect("provider record").expect("provider table")
+      let effect_id = map.get(step.checked.cx.effects, "Ask").expect("provider effect")
+      assert effect_id == declared
+      let binder = match map.get(step.checked.cx.fns, "twice").expect("provider generic").eparams[0] {
+        EffVar(_, v) -> v
+        _ -> { assert false
+          0 }
+      }
+      assert allocation.published(table, EffectParameter, binder)
+      assert not allocation.published(table, TypeParameter, binder)
+      effect_ids = effect_ids ++ [effect_id]
+      binders = binders ++ [binder]
+      tables = tables ++ [table]
+      # `relay` is the consumer's own effect-parameter binding, and it is
+      # here so that the claim about the provider's binder below is a claim
+      # about that binder rather than about an empty table.
+      let consumer_text = "use library as dep\nuse library.{Ask}\n" ++
+        "fn consume() -> Int !Ask = dep.twice(() => dep.ask())\n" ++
+        "fn relay[!f](g: fn() -> Int !f) -> Int !f = dep.twice(g)\n"
+      let (consumer_ast, consumer_pd) = parser.parse_module(consumer_text)
+      let consumer = LoadedModule { mod_path: "consumer", class_name: "consumer", path: "/provenance/consumer.dawn",
+        text: consumer_text, m: consumer_ast, pdiags: consumer_pd, pkg: None }
+      let consumed = analyze_module_step(consumer, step.after, std, ct_default(), jsig_refused(), None)
+      # The effect the consumer resolved is the provider's declaration, by
+      # value and by derivation: a second mint in the consumer's owner would
+      # have produced `identity.derive(minted("consumer", EffectDecl, "Ask"))`,
+      # which is a different integer. Asked before the diagnostic count on
+      # purpose, so that a consumer which minted its own `Ask` is caught by
+      # the integer it minted and not by the mismatch that follows from it.
+      assert map.get(consumed.checked.cx.effects, "Ask") == Some(declared)
+      assert declared != identity.derive(identity.minted("consumer", EffectDecl, "Ask"))
+      assert len(consumed.diags) == 0
+      let carried = consumed.after.provenance.expect("consumer provenance")
+      assert map.get(carried.modules, "library") == Some(Some(table))
+      let local = map.get(carried.modules, "consumer").expect("consumer record").expect("consumer table")
+      # The consumer publishes its own binder and neither of the provider's
+      # integers. The effect id is nobody's binding, and the provider's
+      # effect parameter belongs to the provider's declaration.
+      let own = match map.get(consumed.checked.cx.fns, "relay").expect("consumer generic").eparams[0] {
+        EffVar(_, v) -> v
+        _ -> { assert false
+          0 }
+      }
+      assert own != binder
+      assert allocation.published(local, EffectParameter, own)
+      assert not allocation.published(local, EffectParameter, binder)
+      assert not allocation.published(local, EffectParameter, declared)
+      assert not allocation.published(local, TypeParameter, declared)
+      assert allocation.between(table, local)
+      assert allocation.between(local, local)
+    }
+    # Reordering the provider's two declarations moves neither integer.
+    assert effect_ids[0] == effect_ids[1]
+    assert binders[0] == binders[1]
+    assert allocation.between(tables[0], tables[1])
   })
 }
 

@@ -277,9 +277,12 @@ check_fn_inferred_body，保持签名封定与fns写入原序；默认值重放�
 整次合并。**合并里剩下的是 binder 域**：nominal 与 trait 的整数由声明派生，消费者自己算得出，
 不需要向 provider 要；type/effect parameter 是 provider 声明的打包键，消费者拿到的
 provider 泛型签名里带着 provider 的 TyVar/EffVar，这些仍必须 join。「provider 这一版发没发台账」本身也仍是
-复用授权信号，派生不回答这个问题。真实案例现为三个：选择性导入Ask/Tell、限定类型作签名加限定函数调用、
-限定类型作body注解加限定常量；provider在两版本间重排，consumer body重放与冷检查的
-完整Cx一致。当前效果语法不接受!dep.Ask，故没有限定效果案例。
+复用授权信号，派生不回答这个问题。真实案例现为四个：选择性导入Ask/Tell、限定类型作签名加限定函数调用、
+限定类型作body注解加限定常量、跨模块效果（provider声明效果与一个绑定效果参数的泛型
+函数，consumer选择性导入效果名并用模块别名调用操作与该泛型）；provider在两版本间重排，
+consumer body重放与冷检查的完整Cx一致。跨模块效果案例断言效果id等于provider声明的
+派生值、provider的效果参数binder由provider台账发布而consumer台账只发布自己的。
+限定效果拼写本身仍无案例：当前语法不接受!dep.Ask，`!dep`先被读成效果变量。
 限定函数调用的callee查找必须读取旧header的owner+原函数名，而非只查consumer短名。
 callee查找覆盖本地/std/模块导入三张签名表，重复相同记录允许，
 同身份不同签名拒绝；trait/builtin保持独立分支。该查找是正确性边界，

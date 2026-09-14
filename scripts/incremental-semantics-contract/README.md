@@ -443,18 +443,21 @@ compiler trait binder和runtime擦除绑定；
 继承那两条判词的是 `check/cx.mint` 的 intern 表，五个负控在同一个脚本里守它：
 撞车被静默接受、不登记、顺手推进计数器、把机器相关的 src_path 读进派生输入、丢掉声明种类。
 CI的incremental-allocation独立运行该脚本，
-并运行`provenance.py`的九个生产生成器负控：丢用户/std/compiler来源、丢provider carry、
+并运行`provenance.py`的十个生产生成器负控：丢用户/std/compiler来源、丢provider carry、
 错误header放行、漏std world重绑定，三个丢 intern 表跨模块 carry 的控制，
-以及四个消费者侧的：丢 provider 台账仍解析引用、消费者自铸 provider 的 binder、
-消费者声明抢 provider 已占的分配、按位置匹配改名的声明；
-必须命中真实module transition的具名断言。
+以及一个消费者侧的：导入效果时不写provider的id、改按导入方作用域自铸一个。
+四个旧的消费者侧负控随`module_references`退役，理由逐条记在脚本里。
+每个负控必须命中它自己owning的具名断言，脚本按变异体记owner而不是共用一条。
 native门禁另显式执行allocation模块测试；当前已被生产driver引用，与主图有重叠，计数不相加。
 另有两个真实两模块导出/导入案例：provider交换效果或类型声明顺序，consumer分别
 选择性导入效果、通过模块别名访问类型和泛型函数，合并原声明模块与consumer台账后
 重放完整body/Cx。断言consumer不生成导入声明的本地身份，丢合并内容的编译负控由
 allocation owning测试守住。所有typed案例统一使用生产callee_signature入口，以声明
-owner和原函数名查找签名，别名不替代声明身份。该案例不覆盖限定效果
-拼写（当前语法不接受!dep.Ask）。可选AnalysisCarry已在生产header边界记录用户和std
+owner和原函数名查找签名，别名不替代声明身份。另有一个跨模块效果案例：provider声明
+效果与一个绑定效果参数的泛型函数并在两版本间重排，consumer选择性导入效果名、用模块
+别名调用操作与该泛型，断言效果id等于provider声明的派生值、provider的效果参数binder
+由provider台账发布而consumer台账只发布自己的。限定效果拼写本身仍不覆盖，因为当前
+语法不接受`!dep.Ask`（`!dep`先被读成效果变量）。可选AnalysisCarry已在生产header边界记录用户和std
 来源，Session保留固定baseline；内建来源从实际prelude/builtin元数据生成，三个来源
 重排案例不再手写evidence-pack映射。尚未启用body缓存调度。
 
