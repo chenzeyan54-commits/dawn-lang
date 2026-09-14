@@ -36,7 +36,7 @@ def main():
     original = (ROOT / "selfhost/src/driver/analyze.dawn").read_text()
     reference = (HERE / "reference-loop.dawn.txt").read_text()
     variants = [
-        ("next-id", "    next_id: before.next_id,", "    next_id: std.next_id,"),
+        ("intern-table", "    identities: before.identities,", "    identities: map.empty(),"),
         ("impl-carry", "  var base_impls = before.impls\n", "  var base_impls = std.impls\n"),
         ("diagnostic-order", "    diags = diags ++ step.diags\n", "    diags = step.diags ++ diags\n"),
         ("skip-check", "  if not parse_failed {\n", "  if false {\n"),

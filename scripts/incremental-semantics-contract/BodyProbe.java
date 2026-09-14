@@ -42,11 +42,13 @@ public final class BodyProbe {
                 if (!SemanticSnapshot.same(field.get(before), field.get(after))) changed.add(field.getName());
             }
             changed.sort(String::compareTo);
-            var next = before.getClass().getField("next_id");
-            long allocations = next.getLong(after) - next.getLong(before);
-            if (next.getLong(shifted) - next.getLong(after) != 1000)
-                throw new AssertionError(name + ": allocation count depends on starting ID");
-            System.out.println(name + "\t" + allocations + "\t" + String.join(",", changed));
+            // The body binds the same names however many an unrelated
+            // declaration has bound: a binder key is its own declaration and
+            // its slot, so the shifted context produces the same Cx here.
+            if (!SemanticSnapshot.same(before.getClass().getField("syms").get(shifted),
+                    before.getClass().getField("syms").get(after)))
+                throw new AssertionError(name + ": symbols depend on what another declaration bound");
+            System.out.println(name + "\t" + changed.size() + "\t" + String.join(",", changed));
         }
         if (expected == 23)
             System.out.println("captured-state\t" + length + "\tproduction body products assemble complete cold Cx");

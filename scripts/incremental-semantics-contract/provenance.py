@@ -29,7 +29,7 @@ def main():
         ("skip-std-world", driver_path, 'allocation.in_world(table, "std", world)', "Some(table)"),
         ("drop-compiler-origin", driver_path, "intrinsics: allocation.compiler_headers(world)", "intrinsics: None"),
         # The intern table behind the derived nominal and trait ids travels on
-        # the same carry as `next_id`, and for the same reason: a digest
+        # the carry, and for the reason the carry exists: a digest
         # collision between two modules is as fatal as one inside a module and
         # only a program-wide table can see it.
         ("drop-identity-carry", driver_path, "identities: cx.identities,", "identities: before.identities,"),

@@ -57,7 +57,7 @@ test "cold observation is nested and leaves the program unchanged" {
     let step = analyze_module_step(m, initial_carry(std), std, ct_default(), jsig_refused(), None)
     assert step.check_runs == 1
     assert step.comptime_runs == 1
-    assert step.after.next_id == cold.modules[0].cx.next_id
+    assert step.after.identities == cold.modules[0].cx.identities
     assert map.has(step.after.exports, "answer")
   }))
 }
@@ -76,7 +76,7 @@ test "failed cold steps retain exports and only run the reachable phases" {
     assert parsed.comptime_runs == 0
     assert len(parsed.diags) == len(parse_error.pdiags)
     assert map.has(parsed.after.exports, "parse_error")
-    assert parsed.after.next_id == std.next_id
+    assert parsed.after.identities == std.identities
     assert events.toString().expect("trace") == "[module:true, module:false]"
 
     let type_error = source("type_error", "pub fn broken() -> Int = false\n")
@@ -86,7 +86,7 @@ test "failed cold steps retain exports and only run the reachable phases" {
     assert len(typed.diags) > 0
     assert map.has(typed.after.exports, "type_error")
     assert map.has(typed.after.exports, "parse_error")
-    assert typed.after.next_id == typed.checked.cx.next_id
+    assert typed.after.identities == typed.checked.cx.identities
 
     let exhausted = source("exhausted", "pub const N: Int = 40 + 2\n")
     let evaluated = analyze_module_step(exhausted, typed.after, std, ct_fuel(0), jsig_refused(), None)

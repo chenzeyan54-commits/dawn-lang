@@ -4,7 +4,7 @@
 use std/map
 use std/list
 use std/str
-use compiler/check/cx.{Cx, ModExports, cx_new, owned_by, unowned}
+use compiler/check/cx.{Cx, ModExports, cx_new, owned_by, unowned, mint_cursor, slots_of}
 use compiler/check/jsig.{Jsig, JClass, JMethod, JCtor, JField, jsig_refused}
 use compiler/check/tast.{TFun, TDefault, TModule, TConst}
 use compiler/check/types.{Sig, Sym, Ty, eff_labels, sig_abi_eff}
@@ -86,7 +86,7 @@ fn shifted_constant(delta: Int, width: Int, c: TConst) -> TConst =
 ## declaration now sits. A fixture that checks bodies without entering a
 ## declaration measures both from the file, so both move by the same distance.
 fn shifted_syms(before: Cx, after: Cx, delta: Int, width: Int) -> Cx = {
-  let moved = tast_positions.symbols(shift(delta, width), after.syms, before.next_id, after.next_id)
+  let moved = tast_positions.symbols(shift(delta, width), after.syms, mint_cursor(before), mint_cursor(after))
   var diags: List[Diag] = []
   var i = 0
   for d in after.diags {
@@ -97,17 +97,7 @@ fn shifted_syms(before: Cx, after: Cx, delta: Int, width: Int) -> Cx = {
 }
 
 fn local_view(before: Cx, after: Cx, delta: Int) -> View = {
-  var stable: Map[Int, Int] = map.empty()
-  var id = -1024
-  while id < before.next_id {
-    stable = map.insert(stable, id, id)
-    id = id + 1
-  }
-  let none: Map[Int, Int] = map.empty()
-  let ids = relocate.body_interval(relocate.new(stable, stable)
-    .expect("fixture relocation tables"), before.next_id, after.next_id - before.next_id,
-    before.next_id + delta, none).expect("fixture body interval")
-  View { ids: ids, symbols: after.syms,
+  View { ids: relocate.new(), symbols: after.syms,
     callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
 }
 
@@ -126,20 +116,10 @@ pub fn body_in_source(f: TFun, before: Cx, after: Cx, delta: Int, cx: Cx, m: Mod
 # The fixture still supplies allocation/provenance tables, but the complete
 # write product and its source/ID projection now belong to production code.
 pub fn source_state(current: Cx, before: Cx, after: Cx, body: TFun, delta: Int) -> Cx = {
-  var stable: Map[Int, Int] = map.empty()
-  var id = -1024
-  while id < before.next_id {
-    stable = map.insert(stable, id, id)
-    id = id + 1
-  }
-  let none: Map[Int, Int] = map.empty()
-  let ids = relocate.body_interval(relocate.new(stable, stable)
-    .expect("state relocation tables"), before.next_id, after.next_id - before.next_id,
-    current.next_id, none).expect("state body interval")
-  let view = View { ids: ids, symbols: after.syms,
+  let view = View { ids: relocate.new(), symbols: after.syms,
     callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
   let saved = body_product.capture(before, after, body).expect("state capture: " ++ body.name)
-  let projected = body_product.project(view, saved, current.next_id).expect("state projection: " ++ body.name)
+  let projected = body_product.project(view, saved).expect("state projection: " ++ body.name)
   body_product.assemble(current, projected).expect("state assembly: " ++ body.name)
 }
 
@@ -165,7 +145,7 @@ pub fn metadata_sample() -> MetadataTrial !io = {
   let scope = module_key("metadata-world", "metadata", "metadata", "metadata.dawn")
   let initial = cx_new(Some("metadata"), Some("metadata.dawn"))
   let old = check_module_headers(initial, syntax, map.empty())
-  let next = check_module_headers(Cx { ..initial, next_id: initial.next_id + 31 }, next_syntax, map.empty())
+  let next = check_module_headers(initial, next_syntax, map.empty())
   if old.cx.diags != [] || next.cx.diags != [] { panic("metadata headers") }
   let reserved = allocation.compiler_headers(scope.world).expect("metadata compiler origins")
   let old_table = allocation.combine([reserved,
@@ -201,9 +181,9 @@ pub fn metadata_sample() -> MetadataTrial !io = {
   let state_view = HeaderView { ..view,
     position: (owner, path, lo) => if owner == None && path == None { Some(lo) } else { view.position(owner, path, lo) },
     end_position: (owner, path, hi) => if owner == None && path == None { Some(hi) } else { view.end_position(owner, path, hi) } }
-  let moved_product = relocate_header.state(state_view, product, initial.owner_class, initial.src_path,
-    initial.next_id + 31).expect("metadata state projection")
-  let moved_state = header_product.assemble(Cx { ..initial, next_id: initial.next_id + 31 }, moved_product).expect("metadata moved assembly")
+  let moved_product = relocate_header.state(state_view, product, initial.owner_class, initial.src_path)
+    .expect("metadata state projection")
+  let moved_state = header_product.assemble(initial, moved_product).expect("metadata moved assembly")
   MetadataTrial { projected: projected, cold: cold, assembled: assembled, header_state: old.cx,
     moved_state: moved_state, next_state: next.cx }
 }
@@ -275,7 +255,7 @@ pub fn read_samples() -> List[ModuleTrial] !io = {
     "{ for h.Item(value) in (Bag { item: h.Item(1) }) { () }\n 0 }"] {
     let (syntax, pd) = parser.parse_module("use exports as h\n" ++ iter ++ "fn go() -> Int = " ++ body ++ "\n")
     if pd != [] { panic("refutability observation consumer parse") }
-    let initial = Cx { ..cx_new(Some("refutability_read_probe"), None), next_id: exports_cx.next_id }
+    let initial = cx_new(Some("refutability_read_probe"), None)
     let (cold_cx, cold) = check_module(initial, syntax, export_env)
     let (observed_cx, observed) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, export_env)
     if len(cold_cx.diags) != 1 { panic("refutability observation diagnostic path") }
@@ -287,7 +267,7 @@ pub fn read_samples() -> List[ModuleTrial] !io = {
     let (written, errors) = sample
     let (syntax, pd) = parser.parse_module("use exports as h\nfn go(x: " ++ written ++ ") -> Unit = ()\n")
     if pd != [] { panic("type observation consumer parse") }
-    let initial = Cx { ..cx_new(Some("type_read_probe"), None), next_id: exports_cx.next_id }
+    let initial = cx_new(Some("type_read_probe"), None)
     let (cold_cx, cold) = check_module(initial, syntax, export_env)
     let (observed_cx, observed) = check_module(Cx { ..initial, function_reads: Some([]) }, syntax, export_env)
     if len(cold_cx.diags) != errors { panic("type observation diagnostic path") }
@@ -552,11 +532,10 @@ fn value_module_sample() -> ModuleTrial !io = {
       function_product.ConstantHeader(_, d, ty, _) -> {
         let saved = map.get(constants, key).expect("saved constant")
         let p = saved.product
-        let ids = allocation.constant_relocation(header_ids, p.allocation_start,
-          p.allocation_count, replayed.next_id, p.tree.ty, ty).expect("constant allocation")
+        let ids = allocation.constant_relocation(header_ids, p.tree.ty, ty).expect("constant allocation")
         let view = View { ids: ids, symbols: saved.after.syms,
           callee: (owner, name, builtin, tr) => checked_callee(saved.before, owner, name, builtin, tr) }
-        let projected = body_product.project_constant(view, p, replayed.next_id).expect("constant projection")
+        let projected = body_product.project_constant(view, p).expect("constant projection")
         let installed = body_product.assemble(replayed, projected).expect("constant replay")
         let moved_by = d.lo - p.tree.lo
         replayed = shifted_syms(replayed, installed, moved_by, str.len(text))
@@ -572,15 +551,14 @@ fn value_module_sample() -> ModuleTrial !io = {
         let p = saved.product
         # Test signatures have only fixed Unit/io metadata, no header binders.
         let no_evidence: List[Int] = []
-        let ids = allocation.body_relocation(header_ids, p.allocation_start,
-          p.allocation_count, replayed.next_id, p.tree.sig, p.tree.sig, no_evidence).expect("test allocation")
+        let ids = allocation.body_relocation(header_ids, p.tree.sig, p.tree.sig, no_evidence).expect("test allocation")
         let prior = match function_product.value(old_named, key).expect("prior test") {
           function_product.TestHeader(_, old) -> old
           _ -> panic("prior test role")
         }
         let view = View { ids: ids, symbols: saved.after.syms,
           callee: (owner, name, builtin, tr) => checked_callee(saved.before, owner, name, builtin, tr) }
-        let projected = body_product.project(view, p, replayed.next_id).expect("test projection")
+        let projected = body_product.project(view, p).expect("test projection")
         let installed = body_product.assemble(replayed, projected).expect("test replay")
         let moved_by = d.lo - prior.lo
         replayed = shifted_syms(replayed, installed, moved_by, str.len(text))
@@ -666,14 +644,13 @@ fn method_module_sample() -> ModuleTrial !io = {
     let entry = function_product.method(next_methods, key).expect("next method")
     let prior = function_product.method(old_methods, key).expect("prior method")
     let body = map.get(saved, key).expect("method body by key")
-    let ids = allocation.body_relocation(header_ids, body.product.allocation_start,
-      body.product.allocation_count, replayed.next_id, method_signature(prior), method_signature(entry),
+    let ids = allocation.body_relocation(header_ids, method_signature(prior), method_signature(entry),
       body.product.tree.ev_syms).expect("method allocation")
     let (old_lo, old_hi) = method_span(prior)
     let (next_lo, next_hi) = method_span(entry)
     let view = View { ids: ids, symbols: body.after.syms,
       callee: (owner, name, builtin, tr) => checked_callee(body.before, owner, name, builtin, tr) }
-    let projected = body_product.project(view, body.product, replayed.next_id).expect("method projection")
+    let projected = body_product.project(view, body.product).expect("method projection")
     let installed = body_product.assemble(replayed, projected).expect("method replay")
     let moved_by = next_lo - old_lo
     replayed = shifted_syms(replayed, installed, moved_by, str.len(text))
@@ -738,12 +715,11 @@ fn reordered_module_sample() -> ModuleTrial !io = {
     let entry = function_product.get(next_named, key).expect("next declaration")
     let prior = function_product.get(old_named, key).expect("prior declaration")
     let body = map.get(saved, key).expect("named body lookup")
-    let ids = allocation.body_relocation(header_ids, body.product.allocation_start,
-      body.product.allocation_count, replayed.next_id, prior.signature, entry.signature,
+    let ids = allocation.body_relocation(header_ids, prior.signature, entry.signature,
       body.product.tree.ev_syms).expect("named allocation")
     let view = View { ids: ids, symbols: body.after.syms,
       callee: (owner, name, builtin, tr) => checked_callee(body.before, owner, name, builtin, tr) }
-    let projected = body_product.project(view, body.product, replayed.next_id).expect("named projection")
+    let projected = body_product.project(view, body.product).expect("named projection")
     let installed = body_product.assemble(replayed, projected).expect("named replay")
     let moved_by = entry.syntax.lo - prior.syntax.lo
     replayed = shifted_syms(replayed, installed, moved_by, str.len(text))
@@ -785,8 +761,8 @@ fn import_sample(kind: Int) -> StateTrial !io = {
   let (syntax, pd) = parser.parse_module(text)
   if len(pd) != 0 { panic("import consumer parse failed: " ++ join(map(pd, d => d.msg), "; ")) }
   let consumer = cx_new(Some("consumer"), Some("consumer.dawn"))
-  let old_base = Cx { ..consumer, next_id: provider.next_id }
-  let new_base = Cx { ..consumer, next_id: new_provider.next_id }
+  let old_base = consumer
+  let new_base = consumer
   let (before, sigs) = headers_for_body_probe(old_base, syntax, old_env)
   let (next, nsigs) = headers_for_body_probe(new_base, syntax, new_env)
   if len(before.diags) != 0 || len(next.diags) != 0 { panic("import consumer headers failed") }
@@ -812,12 +788,11 @@ fn import_sample(kind: Int) -> StateTrial !io = {
   let decl = module_fns(syntax)[0]
   let (after, body) = check_fn(before, decl, sigs[0])
   let ids = allocation.body_relocation(allocation.between(old_table, new_table).expect("import header IDs"),
-    before.next_id, after.next_id - before.next_id,
-    next.next_id, body.sig, nsigs[0], body.ev_syms).expect("import body plan")
+    body.sig, nsigs[0], body.ev_syms).expect("import body plan")
   let view = View { ids: ids, symbols: after.syms,
     callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
   let saved = body_product.capture(before, after, body).expect("import body capture")
-  let projected = body_product.project(view, saved, next.next_id).expect("import body projection")
+  let projected = body_product.project(view, saved).expect("import body projection")
   let replayed = body_product.assemble(next, projected).expect("import body assembly")
   let (cold, cold_body) = check_fn(next, decl, nsigs[0])
   let (_, whole) = check_module(new_base, syntax, new_env)
@@ -844,7 +819,7 @@ fn default_sample(inferred: Bool, generic: Bool, invalid: Bool) -> ModuleTrial !
   if len(new_diags) != 0 { panic("edited default boundary parse failed") }
   if len(diags) != 0 { panic("default boundary parse failed") }
   let base = cx_new(Some("defaults"), Some("defaults.dawn"))
-  let new_base = Cx { ..base, next_id: base.next_id + 10 }
+  let new_base = base
   let (before, sigs) = headers_for_body_probe(base, syntax, map.empty())
   let (next, nsigs) = headers_for_body_probe(new_base, new_syntax, map.empty())
   let decl = module_fns(syntax)[0]
@@ -853,8 +828,10 @@ fn default_sample(inferred: Bool, generic: Bool, invalid: Bool) -> ModuleTrial !
   let old_table = allocation.table(allocation.local_headers(scope, syntax, before).expect("old default headers")).expect("old table")
   let new_table = allocation.table(allocation.local_headers(scope, new_syntax, next).expect("new default headers")).expect("new table")
   # The defaults and the body that follows them are separate boundaries of one
-  # declaration, so each adds its interval to the relocation the next one uses.
-  var header_ids = allocation.between(old_table, new_table).expect("default header IDs")
+  # declaration. Each was an interval the next one's relocation had to carry;
+  # they are runs of the declaration's own slots now, so each boundary is
+  # admitted on its own header and nothing accumulates.
+  let header_ids = allocation.between(old_table, new_table).expect("default header IDs")
   let moved_by = new_decl.lo - decl.lo
   var old_cx = before
   var new_cx = next
@@ -868,13 +845,11 @@ fn default_sample(inferred: Bool, generic: Bool, invalid: Bool) -> ModuleTrial !
     let fn_value = TFun { name: sig.name, sig: sig, param_syms: [], dict_syms: value.dict_syms,
       defaults: [], ev_syms: [], body: value.body, is_test: false, impl_of: None, default_of: None }
     let no_evidence: List[Int] = []
-    let ids = allocation.body_relocation(header_ids, old_cx.next_id, after.next_id - old_cx.next_id,
-      new_cx.next_id, sig, new_sig, no_evidence).expect("default allocation")
-    header_ids = ids
+    let ids = allocation.body_relocation(header_ids, sig, new_sig, no_evidence).expect("default allocation")
     let view = View { ids: ids, symbols: after.syms,
       callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
     let saved = body_product.capture(old_cx, after, fn_value).expect("default capture")
-    let projected = body_product.project(view, saved, new_cx.next_id).expect("default projection")
+    let projected = body_product.project(view, saved).expect("default projection")
     let default_installed = body_product.assemble(new_cx, projected).expect("default assembly")
     new_cx = shifted_syms(new_cx, default_installed, moved_by, str.len(text))
     old_defaults = old_defaults ++ [Some(value)]
@@ -885,12 +860,12 @@ fn default_sample(inferred: Bool, generic: Bool, invalid: Bool) -> ModuleTrial !
     let (cx, _, value) = check_fn_inferred_body(old_cx, decl, sigs[0], old_defaults)
     (cx, value)
   } else { check_fn_body(old_cx, decl, sigs[0], old_defaults) }
-  let main_ids = allocation.body_segment_relocation(header_ids,
-    old_cx.next_id, old_after.next_id - old_cx.next_id, new_cx.next_id, sigs[0], nsigs[0], old_body.ev_syms).expect("main allocation")
+  let main_ids = allocation.body_segment_relocation(header_ids, sigs[0], nsigs[0], old_body.ev_syms)
+    .expect("main allocation")
   let main_view = View { ids: main_ids, symbols: old_after.syms,
     callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
   let main_saved = body_product.capture(old_cx, old_after, old_body).expect("main capture")
-  let main_projected = body_product.project(main_view, main_saved, new_cx.next_id).expect("main projection")
+  let main_projected = body_product.project(main_view, main_saved).expect("main projection")
   let main_installed = body_product.assemble(new_cx, main_projected).expect("main assembly")
   let replayed = shifted_syms(new_cx, main_installed, moved_by, str.len(text))
   let body = shifted(moved_by, str.len(text), main_projected.tree)
@@ -956,14 +931,13 @@ fn inferred_module_sample() -> ModuleTrial !io = {
       replayed = checked
       functions = functions ++ [cold_body]
     } else {
-      let delta = replayed.next_id - before.next_id
-      if delta != 1 { panic("inferred fixture did not move allocation") }
-      let ids = allocation.body_relocation(header_ids, before.next_id,
-        after.next_id - before.next_id, replayed.next_id, old_sigs[i], new_sigs[i], body.ev_syms).expect("inferred allocation")
+      let delta = 0
+      let ids = allocation.body_relocation(header_ids, old_sigs[i], new_sigs[i], body.ev_syms)
+        .expect("inferred allocation")
       let view = View { ids: ids, symbols: after.syms,
         callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
       let saved = body_product.capture(before, after, body).expect("inferred capture")
-      let projected = body_product.project(view, saved, replayed.next_id).expect("inferred projection: " ++ body.name)
+      let projected = body_product.project(view, saved).expect("inferred projection: " ++ body.name)
       let installed = body_product.assemble(replayed, projected).expect("inferred assembly")
       let moved_by = new_decls[i].lo - old_decls[i].lo
       replayed = shifted_syms(replayed, installed, moved_by, str.len(text))
@@ -1003,8 +977,7 @@ pub fn test_samples() -> List[StateTrial] !io = {
   let n = new_tests[1]
   let (after, body) = check_test(before, d.name, d.body)
   let (cold, cold_body) = check_test(current, n.name, n.body)
-  let delta = current.next_id - before.next_id
-  if delta != 1 { panic("test fixture did not move allocation") }
+  let delta = 0
   let moved_by = n.lo - d.lo
   let replayed = shifted_syms(current,
     source_state(current, before, after, body, delta), moved_by, str.len(text))
@@ -1042,7 +1015,7 @@ pub fn header_sample() -> HeaderTrial !io = {
   let nsigs = new_headers.sigs
   let impl_sigs = old_headers.impl_sigs
   let new_impl_sigs = new_headers.impl_sigs
-  if len(before.diags) != 0 || len(next.diags) != 0 || before.next_id != next.next_id { panic("header fixture invalid") }
+  if len(before.diags) != 0 || len(next.diags) != 0 { panic("header fixture invalid") }
   let decl = module_fns(old_ast)[1]
   let ndecl = module_fns(new_ast)[1]
   let (after, saved) = check_fn(before, decl, sigs[1])
@@ -1083,7 +1056,7 @@ pub fn header_sample() -> HeaderTrial !io = {
   let old_table = allocation.combine([allocation.table(old_entries).expect("old local table"), reserved]).expect("old header table")
   let new_table = allocation.combine([allocation.table(new_entries).expect("new local table"), reserved]).expect("new header table")
   let ids = allocation.body_relocation(allocation.between(old_table, new_table).expect("header body IDs"),
-    before.next_id, after.next_id - before.next_id, next.next_id, saved.sig, nsigs[1], saved.ev_syms).expect("body allocation plan")
+    saved.sig, nsigs[1], saved.ev_syms).expect("body allocation plan")
   let old_methods = function_product.methods(scope, old_headers).expect("old named methods")
   let new_methods = function_product.methods(scope, new_headers).expect("new named methods")
   if len(function_product.impl_keys(old_methods)) != 2 || len(function_product.default_keys(old_methods)) != 2 {
@@ -1094,34 +1067,34 @@ pub fn header_sample() -> HeaderTrial !io = {
     let new_method = function_product.method(new_methods, key).expect("new method by key")
     match (old_method, new_method) {
       (function_product.ImplMethod(_, _, old_sig, old_info), function_product.ImplMethod(_, _, new_sig, new_info)) -> {
-        if relocate.signature(ids, old_sig) != Some(new_sig) || relocate.ty(ids, old_info.subject) != Some(new_info.subject) ||
+        if old_sig != new_sig || old_info.subject != new_info.subject ||
             old_info.trait_id != new_info.trait_id { panic("named impl header projection") }
       }
       (function_product.TraitDefault(_, _, old_sig, old_tid), function_product.TraitDefault(_, _, new_sig, new_tid)) -> {
-        if relocate.signature(ids, old_sig) != Some(new_sig) || old_tid != new_tid {
+        if old_sig != new_sig || old_tid != new_tid {
           panic("named default header projection")
         }
       }
       _ -> panic("named method role mismatch")
     }
   }
-  if next.next_id + (after.next_id - before.next_id) != checked.next_id { panic("body allocation endpoint differs from cold") }
+  if slots_of(checked, after.owner_decl) != slots_of(after, after.owner_decl) { panic("body allocation endpoint differs from cold") }
   for name in ["First", "Second"] {
     let old_id = map.get(before.adts_by_name, name).expect("old ADT ID")
     let new_id = map.get(next.adts_by_name, name).expect("new ADT ID")
     let old_adt = map.get(before.adts, old_id).expect("old ADT")
     let new_adt = map.get(next.adts, new_id).expect("new ADT")
     if old_id != new_id ||
-      relocate.ty(ids, old_adt.tparams[0]) != Some(new_adt.tparams[0]) ||
-      relocate.effect_row(ids, old_adt.bound_eparams[0]) != Some(new_adt.bound_eparams[0]) {
+      old_adt.tparams[0] != new_adt.tparams[0] ||
+      old_adt.bound_eparams[0] != new_adt.bound_eparams[0] {
       panic("ADT header provenance mismatch")
     }
   }
   for name in ["Wrapped", "Callback"] {
     let old_alias = map.get(before.aliases, name).expect("old alias")
     let new_alias = map.get(next.aliases, name).expect("new alias")
-    if relocate.ty(ids, old_alias.tparams[0]) != Some(new_alias.tparams[0]) ||
-      relocate.effect_row(ids, old_alias.eparams[0]) != Some(new_alias.eparams[0]) {
+    if old_alias.tparams[0] != new_alias.tparams[0] ||
+      old_alias.eparams[0] != new_alias.eparams[0] {
       panic("alias binder provenance mismatch")
     }
     if old_alias.is_opaque && old_alias.id != new_alias.id {
@@ -1136,8 +1109,8 @@ pub fn header_sample() -> HeaderTrial !io = {
     let (_, old_method) = old_trait.methods[0]
     let (_, new_method) = new_trait.methods[0]
     if old_id != new_id ||
-      relocate.ty(ids, old_trait.tvar) != Some(new_trait.tvar) ||
-      relocate.signature(ids, old_method.sig) != Some(new_method.sig) {
+      old_trait.tvar != new_trait.tvar ||
+      old_method.sig != new_method.sig {
       panic("trait header provenance mismatch")
     }
   }
@@ -1145,13 +1118,13 @@ pub fn header_sample() -> HeaderTrial !io = {
   while impl_index < len(impl_sigs) {
     let old_sig = impl_sigs[impl_index][0].expect("old impl method")
     let new_sig = new_impl_sigs[1 - impl_index][0].expect("new impl method")
-    if relocate.signature(ids, old_sig) != Some(new_sig) { panic("impl method provenance mismatch") }
+    if old_sig != new_sig { panic("impl method provenance mismatch") }
     impl_index = impl_index + 1
   }
   let v = View { ids: ids, symbols: after.syms,
     callee: (owner, name, builtin, tr) => checked_callee(before, owner, name, builtin, tr) }
   let product = body_product.capture(before, after, saved).expect("header body capture")
-  let projected = body_product.project(v, product, next.next_id).expect("header body projection")
+  let projected = body_product.project(v, product).expect("header body projection")
   let moved_by = ndecl.lo - decl.lo
   let installed = body_product.assemble(next, projected).expect("header body assembly")
   HeaderTrial { relocated: shifted(moved_by, str.len(old_text), projected.tree), cold: cold,

@@ -60,19 +60,17 @@ def main():
             raise RuntimeError("Metadata field audit accepted a new field: " + name)
     print("OK: ten metadata schemas and their unclassified-field controls", flush=True)
     variants = [
-        ("adt-binder", "tparams: projected_list(a.tparams, t => relocate.ty(v.ids, t))?,\n    bound_eparams:", "tparams: a.tparams,\n    bound_eparams:"),
-        ("constructor-field", "Some(FieldI { ..f, ty: relocate.ty(v.ids, f.ty)? })", "Some(f)"),
-        ("trait-method", "MethodSig { ..method, sig: relocate.signature(v.ids, method.sig)? }", "method"),
-        ("trait-default", "eff_defaults: defaults", "eff_defaults: t.eff_defaults"),
-        ("impl-subject", "subject: relocate.ty(v.ids, i.subject)?", "subject: i.subject"),
-        ("impl-associated", "assoc_bindings: associated", "assoc_bindings: i.assoc_bindings"),
-        ("impl-effect", "eff_bindings: effects", "eff_bindings: i.eff_bindings"),
+        # The reference half of this projection is the identity: a nominal id
+        # derives from its declaration and a binder is that declaration's own
+        # slot, so `relocate.ty`, `relocate.signature` and `relocate.effect_row`
+        # all answer with what they were handed. The controls that turned one
+        # of them off could not be told from the production code and are gone
+        # (K5); what is left here is the positional half, which still moves.
         ("impl-owner", "lo: v.position(i.owner, i.src_path, i.lo)?, hi: v.end_position(i.owner, i.src_path, i.hi)?",
          'lo: v.position(Some("decl"), i.src_path, i.lo)?, hi: v.end_position(Some("decl"), i.src_path, i.hi)?'),
         ("impl-end", "v.end_position(i.owner, i.src_path, i.hi)?", "i.hi"),
         ("alias-sentinel", "if not a.is_opaque && a.id != -1 { return None }", ""),
         ("alias-target", "Some(t) -> Some(type_source(v, Some(a.owner), t)?)", "Some(t) -> Some(t)"),
-        ("alias-effect", "eparams: projected_list(a.eparams, e => relocate.effect_row(v.ids, e))?", "eparams: a.eparams"),
     ]
     with tempfile.TemporaryDirectory(prefix="dawn-header-metadata-") as temp:
         root = Path(temp)

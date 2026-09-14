@@ -22,9 +22,9 @@ def fields(source, name):
 
 
 def audit(cx, product):
-    stored = fields(product, "HeaderProduct") - {"allocation_start", "allocation_count", "diagnostics"}
+    stored = fields(product, "HeaderProduct") - {"decl_slots", "diagnostics"}
     unchanged = set(re.findall(r"a\.([a-z_]+) == b\.\1", product))
-    written = stored | {"diags", "next_id"}
+    written = stored | {"diags", "decl_slots"}
     classified = unchanged | written | {"jsig"}
     if fields(cx, "Cx") != classified or unchanged & written:
         raise RuntimeError(f"Unclassified/stale header context fields: {fields(cx, 'Cx') ^ classified}; overlap: {unchanged & written}")
@@ -38,8 +38,8 @@ def audit_projection(product, visitor):
     # name-keyed tables whose values are those ids, and the constructor map
     # keyed by one, are carried rather than projected: their contents are the
     # same integers in the candidate revision.
-    moved = set("allocation_start diagnostics adts traits fns aliases alias_resolved local_impls observable_impls impl_table module_fn_sigs consts current_eff_vars current_tparams current_tparam_bounds module_exports ty_spans".split())
-    retained = set("allocation_count identities fn_origin adts_by_name ctors_by_name traits_by_name effects effect_infos alias_resolving local_traits module_aliases imported_names const_order all_const_names java_classes record_ty_spans".split())
+    moved = set("diagnostics adts traits fns aliases alias_resolved local_impls observable_impls impl_table module_fn_sigs consts current_eff_vars current_tparams current_tparam_bounds module_exports ty_spans".split())
+    retained = set("decl_slots identities fn_origin adts_by_name ctors_by_name traits_by_name effects effect_infos alias_resolving local_traits module_aliases imported_names const_order all_const_names java_classes record_ty_spans".split())
     if fields(product, "HeaderProduct") != moved | retained or moved & retained:
         raise RuntimeError("Unclassified header projection field")
     block = visitor.split("Some(HeaderProduct { ..p,", 1)[1].split(" })", 1)[0]
@@ -82,9 +82,8 @@ def main():
     variants = [
         ("environment", "not environment_unchanged(before, after)", "false"),
         ("body-journal", "a.body_writes == b.body_writes", "true"),
-        ("allocation-start", "current.next_id != product.allocation_start", "false"),
-        ("allocation-count", " || product.allocation_count < 0 { return None }\n  let limit = current.next_id + product.allocation_count\n  if limit < current.next_id { return None }",
-         " { return None }\n  let limit = current.next_id + product.allocation_count"),
+        ("slots-advanced", "if not slots_advanced(current.decl_slots, product.decl_slots) { return None }", ""),
+        ("slots-not-merged", "slots = map.insert(slots, declaration, count)", "slots = slots"),
         ("diagnostic-prefix", "current.diags ++ product.diagnostics", "product.diagnostics"),
         ("diagnostic-suffix", "current.diags ++ product.diagnostics", "current.diags"),
         ("identity-table", "identities: after.identities", "identities: before.identities"),

@@ -17,23 +17,20 @@ def main():
     started = time.monotonic()
     original = (ROOT / "selfhost/src/check/allocation.dawn").read_text()
     variants = [
-        ("constant-type", "if relocate.ty(header_ids, old_ty) != Some(next_ty) { return None }", ""),
+        ("constant-type", "if old_ty != next_ty { return None }", ""),
         ("binding-conflict", "if id != e.id", "if false"),
         ("owner-conflict", "if binding != e.binding", "if false"),
-        ("target-identity", "map.get(b.bindings, binding)", "map.get(a.bindings, binding)"),
-        ("effect-domain", "EffectParameter -> { effects = map.insert(effects, id, target) }",
-         "EffectParameter -> { types = map.insert(types, id, target) }"),
+        ("target-identity", "Some(target) -> if target != id { return None }",
+         "Some(target) -> if false { return None }"),
+        ("effect-domain", "if held == id && binding.domain == domain", "if held == id"),
         ("compiler-trait-binders", "entries = entries ++ binders(key, [tr.tvar], [])?", "entries = entries"),
         ("negative-slot", "HeaderSlot(index) -> if index < 0", "HeaderSlot(index) -> if false"),
-        # A body's interval is arithmetic; the evidence pack is the one thing
-        # inside it that is not, so the permutation and the extent of the
-        # interval each own a control.
-        ("interval-evidence",
-         "moved_evidence = map.insert(moved_evidence, id, target + evidence[0] - start + index)",
-         "moved_evidence = map.insert(moved_evidence, id, target + id - start)"),
-        ("interval-ghost", "relocate.body_interval(header_ids, start, count, target, moved_evidence)",
-         "relocate.body_interval(header_ids, start, count - 1, target, moved_evidence)"),
-        ("reserved-signature", "if moved != next_sig { return None }", "if false { return None }"),
+        # A body's entry evidence pack is one run of the declaration's own
+        # slots, in ABI order. It was an interval inside one counter, and the
+        # control that owned its extent went with the interval; what is left
+        # to get wrong is the run itself and the header it is admitted under.
+        ("entry-pack-not-a-run", "if id != evidence[0] + index { return None }", "if false { return None }"),
+        ("reserved-signature", "if old_sig != next_sig { return None }", "if false { return None }"),
         ("module-combine", "  table(entries)\n}\n\n## Rebind", "  table([])\n}\n\n## Rebind"),
         ("world-owner", "if declaration.scope.world != from", "if false"),
         ("source-wildcard", 'None -> scope.source == ""', "None -> true"),
@@ -49,8 +46,18 @@ def main():
     cx_variants = [
         ("intern-collision-ignored", "Some(other) -> if other != decl {", "Some(other) -> if false {"),
         ("intern-not-recorded", "(Cx { ..cx, identities: map.insert(cx.identities, id, decl) }, id)", "(cx, id)"),
-        ("mint-takes-the-counter", "(Cx { ..cx, identities: map.insert(cx.identities, id, decl) }, id)",
-         "(Cx { ..cx, next_id: cx.next_id + 1, identities: map.insert(cx.identities, id, decl) }, id)"),
+        ("mint-takes-a-slot", "(Cx { ..cx, identities: map.insert(cx.identities, id, decl) }, id)",
+         "(Cx { ..cx, decl_slots: map.insert(cx.decl_slots, cx.owner_decl, slot_of(cx) + 1),\n    identities: map.insert(cx.identities, id, decl) }, id)"),
+        # The slot seam. A declaration that does not open one numbers its
+        # bindings in whatever declaration the previous pass left open; one
+        # that reissues slot zero puts its body's locals on its signature's
+        # binders; and a pool shared by the program puts two modules' unowned
+        # bindings on one key.
+        ("enter-keeps-the-previous-declaration", "Cx { ..interned_cx, owner_decl: id }", "interned_cx"),
+        ("slots-restart-at-zero", "pub fn fresh(cx: Cx) -> (Cx, Int) = {\n  let slot = slot_of(cx)",
+         "pub fn fresh(cx: Cx) -> (Cx, Int) = {\n  let slot = 0"),
+        ("pool-is-one-for-the-program", 'pub fn module_pool(cx: Cx) -> Int = free_pool(cx.owner_class.unwrap_or(""))',
+         'pub fn module_pool(cx: Cx) -> Int = free_pool("")'),
         ("mint-reads-the-source-path", 'let decl = minted(cx.owner_class.unwrap_or(""), kind, name)',
          'let decl = minted(cx.owner_class.unwrap_or("") ++ cx.src_path.unwrap_or(""), kind, name)'),
         ("mint-ignores-the-kind", 'let decl = minted(cx.owner_class.unwrap_or(""), kind, name)',
@@ -80,7 +87,9 @@ def main():
             if name == "positive":
                 if status:
                     raise RuntimeError("Positive mint subject failed\n" + output)
-            elif not status or not re.search(r"^FAIL\s+check/cx :: (a minted id|two declarations) [^\n]*\n\s+assertion failed:", output, re.M):
+            elif not status or not re.search(
+                    r"^FAIL\s+check/cx :: (a minted id|two declarations|identifiers are numbered|the free pool) [^\n]*\n\s+assertion failed:",
+                    output, re.M):
                 raise RuntimeError(name + " did not reach its owning assertion\n" + output)
             print("OK: derived identity " + name, flush=True)
     print(f"OK: allocation and {len(variants) + len(cx_variants)} compiling mutants, "

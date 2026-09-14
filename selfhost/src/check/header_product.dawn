@@ -69,7 +69,8 @@ fn environment_unchanged(a: Cx, b: Cx) -> Bool =
   a.owner_class == b.owner_class && a.src_path == b.src_path && a.line_starts == b.line_starts &&
   a.mod_path == b.mod_path && a.owner == b.owner && a.owner_lo == b.owner_lo &&
   a.moved == b.moved && a.loop_jumps == b.loop_jumps && a.take_cell == b.take_cell &&
-  a.function_reads == b.function_reads && a.body_writes == b.body_writes
+  a.function_reads == b.function_reads && a.body_writes == b.body_writes &&
+  a.owner_decl == b.owner_decl
 
 ## Whether every declaration the first context had minted into still stands
 ## where it did in the second, or further on. A row that went backwards is a

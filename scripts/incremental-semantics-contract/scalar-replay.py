@@ -39,9 +39,8 @@ def main():
         # path stops recomputing, so each one needs its own control.
         ('recorded-binders', 'let names = scalar_shape.binders(prior.body, prior_sig.param_names)?',
          'let names: List[String] = []'),
-        ('header-only-interval',
-         'let ids = allocation.body_relocation(prepared.headers,\n'
-         '    p.allocation_start, p.allocation_count, cx.next_id, prior_sig, sig, no_evidence)?',
+        ('header-only-admission',
+         'let ids = allocation.body_relocation(prepared.headers, prior_sig, sig, no_evidence)?',
          'let ids = prepared.headers'),
         # The product is retained under a declaration key, so the key the
         # candidate declaration is looked up with has to be the one this

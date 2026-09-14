@@ -148,7 +148,7 @@ pub fn replay(cx: Cx, before: Cx, after: Cx, m: Move) -> Cx = {
   }
   let diagnostics = map(list.drop(after.diags, len(before.diags)), d =>
     Diag { ..d, lo: position(d.lo, m), hi: position(d.hi, m) })
-  Cx { ..cx, syms: syms, next_id: after.next_id + m.delta,
+  Cx { ..cx, syms: syms, decl_slots: after.decl_slots,
     frame: Frame { ..frame, scopes: scopes, dict_syms: dictionaries, eff_witness: evidence },
     diags: cx.diags ++ diagnostics,
     current_tparams: after.current_tparams, current_eff_vars: after.current_eff_vars,

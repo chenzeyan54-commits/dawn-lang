@@ -385,8 +385,17 @@ test "allocation compiler declarations own only observed reserved references" {
   for (_, tr) in map.entries(builtin_types.prelude_traits()) {
     match tr.tvar { TyVar(_, id) -> { reserved = reserved ++ [id] }, _ -> { assert false } }
   }
+  for info in builtin_types.prelude_impls() {
+    for t in info.tparams {
+      match t { TyVar(_, id) -> { reserved = reserved ++ [id] }, _ -> { assert false } }
+    }
+  }
+  match builtin_types.erased_ev_ty() {
+    TyVar(_, id) -> { reserved = reserved ++ [id] }
+    _ -> { assert false }
+  }
   assert len(reserved) > 0
-  assert published(saved, TypeParameter, reserved[0])
+  for id in reserved { assert published(saved, TypeParameter, id) }
   assert not published(saved, TypeParameter, 1000000)
   let elsewhere = compiler_headers("another-test").expect("another world")
   assert between(saved, elsewhere) != None
@@ -488,6 +497,9 @@ test "allocation signature binders keep lexical slots across renamed variables" 
   let next = table(signature_binders(key, renamed).expect("new signature binders")).expect("next table")
   assert between(old, next) != None
   assert published(next, TypeParameter, 10) && published(next, EffectParameter, 20)
+  # the two domains are separate tables as far as a question about a key is
+  # concerned: the same integer under the other domain is a different binding
+  assert not published(next, EffectParameter, 10) && not published(next, TypeParameter, 20)
   # a revision that renumbered one of them is refused
   let renumbered = table(signature_binders(key, Sig { ..sig, tparams: [TyVar("T", 12), TyVar("U", 11)] })
       .expect("renumbered binders")).expect("renumbered table")

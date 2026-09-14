@@ -34,6 +34,20 @@ def main():
          "pub fn derived_floor() -> Int = 7"),
         ("derive-overflows-the-label-key", "pub fn derived_width() -> Int = 140737488355327",
          "pub fn derived_width() -> Int = 9223372036854775807"),
+        # The packed key: what it is made of, what it refuses, and the two
+        # things it has to stay clear of. A slot outside the span folded back
+        # into the key is two bindings of one declaration sharing a row; a
+        # pool shared by the whole program is two modules sharing one; and a
+        # temporary floor inside the packed band is lowering numbering over a
+        # binding the checker minted.
+        ("pack-truncates-the-slot", "if slot < 0 || slot >= slot_span() { return None }",
+         "if slot < 0 { return None }"),
+        ("pack-drops-the-declaration", "Some(declaration * slot_span() + slot)", "Some(slot)"),
+        ("pool-is-one-for-the-program", 'pub fn free_pool(owner: String) -> Int = derive_text(atom(owner) ++ "P")',
+         'pub fn free_pool(owner: String) -> Int = derive_text("P")'),
+        ("temporary-floor-inside-the-band",
+         "pub fn temporary_floor() -> Int = (derived_floor() + derived_width() + 1) * slot_span()",
+         "pub fn temporary_floor() -> Int = derived_floor()"),
         ("parent-not-checked", "var depth = 1", "var depth = len(e.entry.key.path)"),
         ("binder-spelling", "return BoundType(i)", "return NamedType(name, [], [])"),
         ("default-ambiguity", "if same == 1 {", "if same >= 1 {"),

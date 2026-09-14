@@ -19,8 +19,12 @@ def main():
     original = (ROOT / 'selfhost/src/check/checker.dawn').read_text()
     reference = (HERE / 'reference-body-scheduler.dawn.txt').read_text()
     variants = [
-        ('allocation', 'var cx1 = headers.cx\n  let sigs = headers.sigs',
-         'var cx1 = Cx { ..headers.cx, next_id: headers.cx.next_id + 1 }\n  let sigs = headers.sigs'),
+        # The scheduler is where a declaration is opened, and opening it is
+        # what puts the identifiers its body binds inside it. A scheduler that
+        # does not numbers every body in the module's free pool instead, so
+        # every symbol id in the module moves.
+        ('allocation', 'Entered { cx: enter_decl_owner(entered, path, sp.lo, sp.hi),',
+         'Entered { cx: entered,'),
         ('constant-visibility', 'executor.constant(state, owner.cx, d, declared, visible)',
          'executor.constant(state, owner.cx, d, declared, set.empty())'),
         ('method-tag', 'impl_of: imp_key }', 'impl_of: None }'),

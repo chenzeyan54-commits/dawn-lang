@@ -35,10 +35,10 @@ def main():
          '}, Cx { ..after, syms: map.empty() }, product.tree)'),
         ('stale-source',
          '  let moved = match cx.function_reads {\n'
-         '    None -> body_product.project_without_reads(view, p, cx.next_id)?\n'
-         '    Some(_) -> body_product.project(view, p, cx.next_id)?\n'
+         '    None -> body_product.project_without_reads(view, p)?\n'
+         '    Some(_) -> body_product.project(view, p)?\n'
          '  }',
-         '  let moved = BodyProduct { ..p, allocation_start: cx.next_id }'),
+         '  let moved = p'),
         ('header-only-ids', 'let view = View { ids: ids,',
          'let view = View { ids: prepared.headers,'),
         ('missing-local-symbols', 'symbols: saved.symbols,', 'symbols: map.empty(),'),

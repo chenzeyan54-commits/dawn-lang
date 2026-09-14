@@ -82,8 +82,8 @@ def main():
         tree = target.read_text()
         replacements = {
             "read-state": ("Some(_) -> Cx { ..cx, function_reads: semantic_reads.candidates(cx.function_reads, names) }",
-                           "Some(_) -> Cx { ..cx, next_id: cx.next_id + 1, function_reads: semantic_reads.candidates(cx.function_reads, names) }"),
-            "header-state-bounds": ("current_tparam_bounds: projected_map(p.current_tparam_bounds, id => relocate.type_var(v.ids, id),\n      bounds => Some(bounds))?", "current_tparam_bounds: p.current_tparam_bounds"),
+                           "Some(_) -> Cx { ..cx, in_test: not cx.in_test, function_reads: semantic_reads.candidates(cx.function_reads, names) }"),
+            "header-state-bounds": ("current_tparam_bounds: projected_map(p.current_tparam_bounds, same, bounds => Some(bounds))?", "current_tparam_bounds: map.empty()"),
             "header-state-surface": ("observable_impls: projected_list(p.observable_impls, i => implementation(v, i))?", "observable_impls: p.observable_impls"),
             "header-alias": ("aliases: projected_map(e.aliases, names, a => alias_info(v, a))?", "aliases: e.aliases"),
             "header-impl": ("impls: projected_list(e.impls, info => implementation(v, info))?", "impls: e.impls"),
@@ -139,8 +139,8 @@ def main():
         probe += "pub fn import_samples() -> List[typed_projection.StateTrial] !io = typed_projection.import_samples()\n"
         probe += "pub fn state_count(xs: List[typed_projection.StateTrial]) -> Int = len(xs)\n"
         probe += "pub fn state_at(xs: List[typed_projection.StateTrial], i: Int) -> typed_projection.StateTrial = xs[i]\n"
-        old = "relocation.relocate(body, Move {\n        start: before.next_id, limit: after.next_id, delta: 1000, span: 0 })"
-        new = "typed_projection.body(raw, before, after, 1000)"
+        old = "relocation.relocate(body, Move {\n        start: mint_cursor(before), limit: mint_cursor(after), delta: 0, span: 0 })"
+        new = "typed_projection.body(raw, before, after, 0)"
         if probe.count(old) != 1:
             raise RuntimeError("Typed trial replacement anchor drifted")
         probe = probe.replace(old, new)
@@ -159,8 +159,8 @@ def main():
             ("let (after, body) = check_fn(before, d, signatures[index])",
              "let (after, raw) = typed_projection.checked_body(before, m, d, signatures[index])\n"
              "    let body = typed_projection.resolved_body(before, m, d, raw)"),
-            ("let (shifted, shifted_body) = check_fn(Cx { ..before, next_id: before.next_id + 1000 }, d, signatures[index])",
-             "let (shifted, shifted_body) = typed_projection.checked_body(Cx { ..before, next_id: before.next_id + 1000 }, m, d, signatures[index])"),
+            ("let (shifted, shifted_body) = check_fn(with_slots(before, 12345, 1000), d, signatures[index])",
+             "let (shifted, shifted_body) = typed_projection.checked_body(with_slots(before, 12345, 1000), m, d, signatures[index])"),
             ("let (first, _) = check_fn(headers, new_decls[0], signatures[0])",
              "let (first, _) = typed_projection.checked_body(headers, new_ast, new_decls[0], signatures[0])"),
             ("let (checked, _) = check_fn(cold_cx, new_decls[index], signatures[index])",

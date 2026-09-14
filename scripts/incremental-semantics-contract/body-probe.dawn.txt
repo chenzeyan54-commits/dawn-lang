@@ -5,7 +5,7 @@ use std/map
 use std/str
 use compiler/front/parser
 use compiler/front/ast.{module_fns}
-use compiler/check/cx.{Cx, cx_new}
+use compiler/check/cx.{Cx, cx_new, mint_cursor, with_slots}
 use compiler/check/checker.{headers_for_body_probe, check_fn, check_module}
 use compiler/check/tast.{TFun}
 use relocation
@@ -44,7 +44,11 @@ pub fn samples() -> List[Trial] !io = {
   for d in module_fns(m) {
     let before = cx
     let (after, body) = check_fn(before, d, signatures[index])
-    let (shifted, shifted_body) = check_fn(Cx { ..before, next_id: before.next_id + 1000 }, d, signatures[index])
+    # The same body checked in a context where some *other* declaration has
+    # bound a thousand names. It used to shift this body's ids by a thousand
+    # with it; a binder key names its own declaration, so what it produces now
+    # is the same body, and the comparison below says so.
+    let (shifted, shifted_body) = check_fn(with_slots(before, 12345, 1000), d, signatures[index])
     let expected = if d.name == "wrong" { 1 } else { 0 }
     if len(after.diags) - len(before.diags) != expected {
       panic("unexpected diagnostics in body probe: " ++ d.name)
@@ -58,7 +62,7 @@ pub fn samples() -> List[Trial] !io = {
     trials = trials ++ [Trial { name: d.name, before: before, after: after, body: body,
       shifted: shifted, shifted_body: shifted_body, module_body: whole.fns[index],
       relocated: relocation.relocate(body, Move {
-        start: before.next_id, limit: after.next_id, delta: 1000, span: 0 }) }]
+        start: mint_cursor(before), limit: mint_cursor(after), delta: 0, span: 0 }) }]
     cx = after
     index = index + 1
   }
@@ -109,11 +113,13 @@ pub fn edit_samples() -> List[EditTrial] !io = {
     let old_key = identity.function_key(scope, old_decls, saved.name)
     let new_key = identity.function_key(scope, new_decls, saved.name)
     if old_key == None || old_key != new_key { panic("unchanged function lost its stable key") }
-    let id_delta = replayed_cx.next_id - saved.before.next_id
+    # The identifiers do not move: the edit is inside another declaration.
+    # The source does, which is the half of the movement that is left.
+    let id_delta = 0
     let span_delta = new_decls[index].lo - old_decls[index].lo
-    if id_delta != 1 || span_delta <= 0 { panic("edit did not exercise both ID and source movement") }
+    if span_delta <= 0 { panic("edit did not move the declaration") }
     let movement = Move {
-      start: saved.before.next_id, limit: saved.after.next_id, delta: id_delta, span: span_delta
+      start: mint_cursor(saved.before), limit: mint_cursor(saved.after), delta: id_delta, span: span_delta
     }
     let moved = relocation.relocate(saved.body, movement)
     replayed_cx = relocation.replay(replayed_cx, saved.before, saved.after, movement)

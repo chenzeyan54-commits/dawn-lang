@@ -15,16 +15,19 @@
 #
 # ## Determinism
 #
-# Symbol and loop ids come from counters that run across a whole lowering, so
-# an unrelated edit upstream shifts every number downstream and the diff is
-# noise. They are renumbered per function in order of first appearance.
+# Symbol ids are renumbered per function in order of first appearance, and
+# loop ids with them. Lowering already renumbers a module's symbols into one
+# run from zero (`ir/lower.densify`), so what this adds is the per-function
+# part: two functions that bind the same number of names print the same
+# names, and a module-level insertion cannot shift a function's own.
 #
-# ADT ids are NOT renumbered, and `next_id` is one counter shared by ADTs,
-# traits, type variables and every symbol -- so adding a function anywhere
-# shifts the ids of every type declared after it. Constructors print by name
-# for that reason; what still carries a raw id is the name of a synthesised
-# comparison (`structeq$Adt1814`), which is a real emitted method name and so
-# belongs to `__emit`'s detector rather than this one.
+# ADT ids are NOT renumbered, and they no longer have to be: a nominal id
+# derives from the declaration that owns it (`check/identity.derive`), so
+# adding a declaration anywhere shifts none of them. Constructors print by
+# name for an older reason and keep doing so; what still carries a raw id is
+# the name of a synthesised comparison (`structeq$Adt97671642350015`), which
+# is a real emitted method name and so belongs to `__emit`'s detector rather
+# than this one.
 #
 # Lifted-lambda and bridge names are NOT normalised. They are real emitted
 # method names, so `__emit` already covers them; normalising here would turn

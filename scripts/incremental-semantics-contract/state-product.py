@@ -21,7 +21,7 @@ def audit_fields(cx_source, product_source):
     fields = set(re.findall(r"^  ([a-z_]+):", block, re.M))
     unchanged = set(re.findall(r"a\.([a-z_]+) == b\.\1", product_source))
     unchanged |= set(re.findall(r"environment_map_same\(a\.([a-z_]+), b\.\1, tracked\)", product_source))
-    written = {"diags", "next_id", "fns", "alias_resolved", "frame", "syms",
+    written = {"diags", "decl_slots", "fns", "alias_resolved", "frame", "syms",
                "current_eff_vars", "current_tparams", "current_tparam_bounds",
                "in_test", "const_cutoff", "loop_jumps", "take_cell", "function_reads", "body_writes"}
     # jsig is the one owner-held capability; it is intentionally not Eq data.
@@ -59,13 +59,14 @@ def main():
         ("environment-value", "Some(other) -> value == other", "Some(other) -> true"),
         ("environment-key", "Some(other) -> value == other, None -> false", "Some(other) -> value == other, None -> true"),
         ("environment-size", "map.len(a) == map.len(b) && map.fold", "map.fold"),
-        ("allocation-start", "current.next_id != product.allocation_start", "false"),
-        # The interval a product recorded has to be the interval the
-        # relocation carries, which is what the walk over every allocated ID
-        # used to establish one lookup at a time.
-        ("unobserved-allocation",
-         "if not relocate.carries_interval(v.ids, p.allocation_start, p.allocation_count, allocation_start) { return None }",
-         "if false { return None }"),
+        ("owner-slots", "slots_of(current, product.owner_decl) > product.owner_slots", "false"),
+        # A product carries the row of the declaration it was checked inside,
+        # and installing it is putting that row back. A product that installs
+        # no row leaves the declaration where the header pass left it, so its
+        # body's bindings are handed out a second time.
+        ("owner-row-not-installed",
+         "..with_slots(current, product.owner_decl, product.owner_slots),",
+         "..current,"),
         ("bound-key", "projected_changes(p.bounds, id => relocate.type_var(v.ids, id), bs => Some(bs))?",
          "projected_changes(p.bounds, id => Some(id), bs => Some(bs))?"),
         ("used-effect-domain", "used = used ++ [relocate.effect_row(v.ids, e)?]", "used = used ++ [e]"),

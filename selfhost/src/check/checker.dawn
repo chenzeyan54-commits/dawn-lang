@@ -14665,7 +14665,11 @@ pub fn check_module_headers(cx: Cx, m: Module, env: Map[String, ModExports]) -> 
   # unrelated body does, and it lands *before* that body's diagnostics.
   cx1 = pass_export_surface(cx1, m)
   let no_spans: Map[(Int, Int), TySpan] = map.empty()
-  cx1 = Cx { ..cx1, record_ty_spans: false, ty_spans: no_spans }
+  # Outside every declaration again. Each pass above opens the declaration it
+  # is walking so that what it mints is numbered inside it; the boundary they
+  # add up to is not inside any of them, which is what lets a header product
+  # be captured across the whole of it.
+  cx1 = leave_decl_owner(Cx { ..cx1, record_ty_spans: false, ty_spans: no_spans })
   ModuleHeaders { syntax: m, cx: cx1, sigs: sigs, impl_sigs: impl_sigs, const_tys: const_tys }
 }
 

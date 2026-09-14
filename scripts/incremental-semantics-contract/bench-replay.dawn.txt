@@ -205,8 +205,7 @@ fn recorded(prior: FnDecl, prior_sig: Sig, p: Product, declaration: Int) -> Opti
   var symbols: Map[Int, Sym] = map.empty()
   for change in p.symbols {
     let symbol = change.value?
-    if change.key < p.allocation_start || change.key >= p.allocation_start + p.allocation_count ||
-      map.has(symbols, change.key) || not primitive(symbol.ty) || symbol.mutable ||
+    if map.has(symbols, change.key) || not primitive(symbol.ty) || symbol.mutable ||
       symbol.dict_of != None || symbol.ev_of != None || symbol.cell_of != None { return None }
     symbols = map.insert(symbols, change.key, symbol)
   }
@@ -280,8 +279,7 @@ fn shape_ok(p: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[Shaped] = {
     if map.has(cx.module_aliases, name) { return None }
   }
   let no_evidence: List[Int] = []
-  let ids = allocation.body_relocation(p.headers, saved.product.allocation_start,
-    saved.product.allocation_count, cx.next_id, prior_sig, sig, no_evidence)?
+  let ids = allocation.body_relocation(p.headers, prior_sig, sig, no_evidence)?
   Some(Shaped { prior: prior, product: saved.product, symbols: saved.symbols, ids: ids,
     prior_declaration: saved.declaration, declaration_new: declaration })
 }
@@ -331,8 +329,8 @@ fn timed_function(p: Prepared, acc: Acc, cx: Cx, d: FnDecl, sig: Sig,
           } else {
             let t8 = System.nanoTime()
             let moved = match cx.function_reads {
-              None -> body_product.project_without_reads(view, saved.product, cx.next_id)
-              Some(_) -> body_product.project(view, saved.product, cx.next_id)
+              None -> body_product.project_without_reads(view, saved.product)
+              Some(_) -> body_product.project(view, saved.product)
             }
             let t9 = System.nanoTime()
             a = Acc { ..a, proj: a.proj + (t9 - t8) }
