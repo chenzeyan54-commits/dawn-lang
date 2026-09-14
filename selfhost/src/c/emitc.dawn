@@ -1093,6 +1093,13 @@ fn emit_binary(st: CSt, op: CBinOp, l: CExpr, r: CExpr, ty0: Ty) -> (CSt, String
   # every remaining operator is strict in both operands, so they share one
   # ordered row: C's operand order is unspecified, and spec §4.3's is not
   # (both positions borrow: k=false)
+  #
+  # Every arm below reads this row. Four of them used to re-emit `l` and `r`
+  # from the original `st` instead, which both dropped the written order the
+  # row exists to fix and emitted each operand twice, so a nesting of depth n
+  # emitted 2^n copies of its leaves. The derived hash of a 15-field record is
+  # a 30-deep left-nested add/mul chain, and it turned an 8-second `__emitc`
+  # of the compiler into one that does not finish.
   let (st2, row) = emit_ordered(st, [l, r], [false, false])
   let lv = row[0]
   let rv = row[1]
@@ -1136,8 +1143,6 @@ fn emit_binary(st: CSt, op: CBinOp, l: CExpr, r: CExpr, ty0: Ty) -> (CSt, String
     # architecture CI runs. AArch64's `lsl` by 64 answers 0, and `1 << -1`
     # answers whatever the low bits of -1 select, which is `1 << 63` here and
     # need not be there.
-    let (st1, lv) = emit_expr(st, l, false)
-    let (st2, rv) = emit_expr(st1, r, false)
     let n = "((" ++ rv ++ ") & 63)"
     # `<<` also goes through uint64_t: shifting a bit into (or past) the sign
     # bit of a signed type is undefined on its own account (C11 6.5.7p4), and
@@ -1153,18 +1158,77 @@ fn emit_binary(st: CSt, op: CBinOp, l: CExpr, r: CExpr, ty0: Ty) -> (CSt, String
         "((int64_t)((uint64_t)(" ++ lv ++ ")" ++ sh ++ n ++ "))"
       })
   } else if op == CDiv && ty == TyInt {
-    let (st1, lv) = emit_expr(st, l, false)
-    let (st2, rv) = emit_expr(st1, r, false)
     (st2, "dawn_idiv(" ++ lv ++ ", " ++ rv ++ ")")
   } else if op == CMod && ty == TyInt {
-    let (st1, lv) = emit_expr(st, l, false)
-    let (st2, rv) = emit_expr(st1, r, false)
     (st2, "dawn_imod(" ++ lv ++ ", " ++ rv ++ ")")
   } else {
-    let (st1, lv) = emit_expr(st, l, false)
-    let (st2, rv) = emit_expr(st1, r, false)
     (st2, "(" ++ lv ++ " " ++ bin_op_c(op) ++ " " ++ rv ++ ")")
   }
+}
+
+## A bare `CSt` for the two judgments below. `emit_binary` reads the slot map
+## (to tell a tracked local from a plain one), the mode table (borrowed
+## argument positions) and the temp counter; none of the rest, so empty is
+## the honest value everywhere else.
+fn bin_test_st() -> CSt =
+  CSt {
+    out: [],
+    tmp: 0,
+    ind: 0,
+    consts: map.empty(),
+    blocks: map.empty(),
+    dict_syms: set.empty(),
+    adts: map.empty(),
+    intrs: intrinsics(),
+    cur_owner: "t",
+    cdefs: [],
+    cmap: map.empty(),
+    slots: map.empty(),
+    nslots: 0,
+    modes: map.empty()
+  }
+
+## A non-atomic Int operand: a call runs code, so the ordered row has to name
+## it before the other side runs.
+fn bin_test_call(name: String) -> CExpr = CCall(CDirect("t", name), [], TyInt)
+
+fn bin_test_count(hay: String, needle: String) -> Int = len(str.split(hay, needle)) - 1
+
+test "a strict binary operator emits each operand once, in written order" {
+  # One case per arm that reads the ordered row through a shape of its own:
+  # the generic operator, the shifts, `dawn_idiv` and `dawn_imod`.
+  for op in [CAdd, CShl, CDiv, CMod] {
+    let (st1, v) = emit_binary(bin_test_st(), op, bin_test_call("lf"),
+      bin_test_call("rf"), TyInt)
+    let text = join(st1.out, "")
+    # once each, left one declared first
+    assert bin_test_count(text, "dawn_t__lf()") == 1
+    assert bin_test_count(text, "dawn_t__rf()") == 1
+    assert text == "int64_t t0 = dawn_t__lf();\nint64_t t1 = dawn_t__rf();\n"
+    # and the operator reads the temporaries rather than the calls, which is
+    # what makes the written order the order C runs them in
+    assert not str.contains(v, "dawn_t__")
+    assert str.contains(v, "t0")
+    assert str.contains(v, "t1")
+  }
+}
+
+test "a left-nested arithmetic chain emits its leaves once each" {
+  # The shape a derived `Hash` has: `(((1 * 31 + h0) * 31 + h1) * 31 + ...`.
+  # Every level used to emit both operands a second time and throw the
+  # ordered row away, so emission cost 2^(depth) rather than depth; the red
+  # form of this judgment is therefore a test that never finishes.
+  var e: CExpr = CInt(1)
+  for i in 0..24 {
+    e = CBinary(CAdd, CBinary(CMul, e, CInt(31), TyInt), CInt(1000 + i), TyInt)
+  }
+  let (st1, v) = emit_expr(bin_test_st(), e, false)
+  let text = join(st1.out, "") ++ v
+  for i in 0..24 {
+    assert bin_test_count(text, "INT64_C(" ++ to_string(1000 + i) ++ ")") == 1
+  }
+  assert bin_test_count(text, "INT64_C(31)") == 24
+  assert bin_test_count(text, "INT64_C(1)") == 1
 }
 
 ## A branch with nothing to assign: it leaves (return/break/continue) or its
