@@ -179,6 +179,36 @@ test "semantic reads retain misses and capture only the current suffix" {
   assert append(None, writes) == None && record(None, "ignored", None) == None
 }
 
+test "semantic reads append every observation in the order it was made" {
+  # The recording side. A fact is appended when it is observed, whatever the
+  # answer was, and the order it was observed in is the order it is kept in.
+  # The projection above carries facts; this is what decides what there is to
+  # carry, so it stays owned here even though nothing rebuilds a fact any more.
+  let sig = Sig { name: "value", param_tys: [], param_names: [], param_defaults: [],
+    ret: TyInt, eff: EPure, is_builtin: false, tparams: [], constraints: [],
+    eparams: [], owner: Some("module"), trait_id: None, op_of: None, inferring: false }
+  # A miss is a fact too: "this name resolved to nothing" is what makes the
+  # candidate revision recheck it rather than assume the old answer.
+  let answers = record(record(Some([]), "value", Some(sig)), "missing", None)
+  assert answers == Some([FunctionAnswer(NamedFunctionRead { name: "value", answer: Some(sig) }),
+    FunctionAnswer(NamedFunctionRead { name: "missing", answer: None })])
+  # A candidate pool is ordered, and overload resolution reads it in order.
+  let pooled = candidates(answers, ["beta", "alpha", "gamma"])
+  assert pooled == Some([FunctionAnswer(NamedFunctionRead { name: "value", answer: Some(sig) }),
+    FunctionAnswer(NamedFunctionRead { name: "missing", answer: None }),
+    FunctionCandidates(["beta", "alpha", "gamma"])])
+  # `observe` is the general appender the other recorders are spelled against.
+  let observed = observe(pooled, ExportPresence("h", true))
+  assert observed == Some([FunctionAnswer(NamedFunctionRead { name: "value", answer: Some(sig) }),
+    FunctionAnswer(NamedFunctionRead { name: "missing", answer: None }),
+    FunctionCandidates(["beta", "alpha", "gamma"]), ExportPresence("h", true)])
+  assert observe(Some([]), ExportPresence("absent", false)) == Some([ExportPresence("absent", false)])
+  # A disabled log stays disabled rather than starting one.
+  assert observe(None, ExportPresence("h", true)) == None
+  assert candidates(None, ["ignored"]) == None
+  assert qualified(None, "h", "value", Some(sig)) == None && module_alias(None, "h", Some("provider")) == None
+}
+
 test "semantic reads carry every fact but move an alias source with its owner" {
   let old = TNamed("Int", [], [], 0, 3)
   let next = TNamed("Int", [], [], 100, 104)
