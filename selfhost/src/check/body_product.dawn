@@ -716,10 +716,111 @@ fn owned_diagnostic() -> Diag =
   Diag { msg: "body", lo: 0, hi: 1, hint: "",
     owner: Some(DiagOwner { module: "pkg/m", decl: "Nf4:body" }) }
 
+## Every constructor of `semantic_reads.FunctionRead`, named once, in the
+## order that type declares them. This is the list `read_tag` hands out and
+## the list `fixture_read_corpus` has to cover.
+fn read_vocabulary() -> List[String] =
+  ["FunctionAnswer", "FunctionCandidates", "QualifiedFunction", "ModuleAlias",
+    "QualifiedConstant", "QualifiedConstructor", "ExportPresence", "ExportDiagnosticAnswer",
+    "QualifiedAliasHeader", "QualifiedAliasTarget", "NominalTypeName", "NominalTypeShape",
+    "LocalTypeDiagnostic", "LocalAliasTarget", "LocalAliasResolving", "LocalAliasSource",
+    "LocalAliasHeader", "LocalAliasBinders", "ScopedTypeParameter", "ParameterBounds",
+    "TraitAssociatedMembers", "TraitName", "DictionarySymbol", "ReducedAssociatedType",
+    "ReducedEffect", "ReducedTypeEffects", "UnifiedTypes", "ConcreteType", "AssignableType",
+    "DeclaredEffect", "ScopedEffectVariable", "BuiltinTypeAnswer", "StdModuleMode",
+    "JavaClassName", "JavaClassInfo", "JavaMethods", "JavaConstructors", "JavaStaticFields",
+    "JavaEnabled", "JavaFindClass", "JavaClassNames", "JavaAssignable", "JavaSam",
+    "JavaComponent", "LocalConstructor", "LocalConstant", "ConstantVisible", "ConstructorCount",
+    "ConstructorArity", "ConstructorHeaderAnswer", "ConstructorFields", "ConstructorNames",
+    "DeclaredConstantName", "LocalValueCandidates", "DeclaredEffectInfo", "LocalEffectName",
+    "EffectCandidates", "RenderedType", "RenderedFunctionReturn", "RenderedConstructor",
+    "RenderedSignature", "ImplementationPresence", "ImplementationSubgoals",
+    "ImplementationArity"]
+
+## The constructor a recorded fact was built with. The match is exhaustive on
+## purpose, and that is the mechanism behind the corpus below: a constructor
+## added to `FunctionRead` does not compile until it is named here, and a
+## constructor named here with no fact in the corpus fails the coverage test.
+## Before this existed the corpus claimed the whole vocabulary in a comment,
+## and a sixty fifth constructor would have left every gate green.
+##
+## The step it cannot force is the one in between. An arm added here whose tag
+## is left out of `read_vocabulary` as well is still green, because a language
+## with no reflection has no way to ask a type how many constructors it has.
+## The compile error is what brings a person to both lists.
+fn read_tag(r: FunctionRead) -> String =
+  match r {
+    semantic_reads.FunctionAnswer(_) -> "FunctionAnswer"
+    semantic_reads.FunctionCandidates(_) -> "FunctionCandidates"
+    semantic_reads.QualifiedFunction(_, _) -> "QualifiedFunction"
+    semantic_reads.ModuleAlias(_, _) -> "ModuleAlias"
+    semantic_reads.QualifiedConstant(_, _, _) -> "QualifiedConstant"
+    semantic_reads.QualifiedConstructor(_, _, _) -> "QualifiedConstructor"
+    semantic_reads.ExportPresence(_, _) -> "ExportPresence"
+    semantic_reads.ExportDiagnosticAnswer(_, _, _, _) -> "ExportDiagnosticAnswer"
+    semantic_reads.QualifiedAliasHeader(_, _, _) -> "QualifiedAliasHeader"
+    semantic_reads.QualifiedAliasTarget(_, _, _) -> "QualifiedAliasTarget"
+    semantic_reads.NominalTypeName(_, _, _) -> "NominalTypeName"
+    semantic_reads.NominalTypeShape(_, _, _, _, _) -> "NominalTypeShape"
+    semantic_reads.LocalTypeDiagnostic(_, _) -> "LocalTypeDiagnostic"
+    semantic_reads.LocalAliasTarget(_, _) -> "LocalAliasTarget"
+    semantic_reads.LocalAliasResolving(_, _) -> "LocalAliasResolving"
+    semantic_reads.LocalAliasSource(_, _, _) -> "LocalAliasSource"
+    semantic_reads.LocalAliasHeader(_, _) -> "LocalAliasHeader"
+    semantic_reads.LocalAliasBinders(_, _, _) -> "LocalAliasBinders"
+    semantic_reads.ScopedTypeParameter(_, _) -> "ScopedTypeParameter"
+    semantic_reads.ParameterBounds(_, _) -> "ParameterBounds"
+    semantic_reads.TraitAssociatedMembers(_, _, _) -> "TraitAssociatedMembers"
+    semantic_reads.TraitName(_, _) -> "TraitName"
+    semantic_reads.DictionarySymbol(_, _, _) -> "DictionarySymbol"
+    semantic_reads.ReducedAssociatedType(_, _) -> "ReducedAssociatedType"
+    semantic_reads.ReducedEffect(_, _, _) -> "ReducedEffect"
+    semantic_reads.ReducedTypeEffects(_, _, _) -> "ReducedTypeEffects"
+    semantic_reads.UnifiedTypes(_) -> "UnifiedTypes"
+    semantic_reads.ConcreteType(_, _) -> "ConcreteType"
+    semantic_reads.AssignableType(_, _, _) -> "AssignableType"
+    semantic_reads.DeclaredEffect(_, _) -> "DeclaredEffect"
+    semantic_reads.ScopedEffectVariable(_, _) -> "ScopedEffectVariable"
+    semantic_reads.BuiltinTypeAnswer(_, _) -> "BuiltinTypeAnswer"
+    semantic_reads.StdModuleMode(_) -> "StdModuleMode"
+    semantic_reads.JavaClassName(_, _) -> "JavaClassName"
+    semantic_reads.JavaClassInfo(_, _) -> "JavaClassInfo"
+    semantic_reads.JavaMethods(_, _) -> "JavaMethods"
+    semantic_reads.JavaConstructors(_, _) -> "JavaConstructors"
+    semantic_reads.JavaStaticFields(_, _) -> "JavaStaticFields"
+    semantic_reads.JavaEnabled(_) -> "JavaEnabled"
+    semantic_reads.JavaFindClass(_, _) -> "JavaFindClass"
+    semantic_reads.JavaClassNames(_) -> "JavaClassNames"
+    semantic_reads.JavaAssignable(_, _, _) -> "JavaAssignable"
+    semantic_reads.JavaSam(_, _) -> "JavaSam"
+    semantic_reads.JavaComponent(_, _) -> "JavaComponent"
+    semantic_reads.LocalConstructor(_, _) -> "LocalConstructor"
+    semantic_reads.LocalConstant(_, _) -> "LocalConstant"
+    semantic_reads.ConstantVisible(_, _) -> "ConstantVisible"
+    semantic_reads.ConstructorCount(_, _) -> "ConstructorCount"
+    semantic_reads.ConstructorArity(_, _, _) -> "ConstructorArity"
+    semantic_reads.ConstructorHeaderAnswer(_, _) -> "ConstructorHeaderAnswer"
+    semantic_reads.ConstructorFields(_, _, _) -> "ConstructorFields"
+    semantic_reads.ConstructorNames(_, _) -> "ConstructorNames"
+    semantic_reads.DeclaredConstantName(_, _) -> "DeclaredConstantName"
+    semantic_reads.LocalValueCandidates(_, _) -> "LocalValueCandidates"
+    semantic_reads.DeclaredEffectInfo(_, _) -> "DeclaredEffectInfo"
+    semantic_reads.LocalEffectName(_, _) -> "LocalEffectName"
+    semantic_reads.EffectCandidates(_) -> "EffectCandidates"
+    semantic_reads.RenderedType(_, _) -> "RenderedType"
+    semantic_reads.RenderedFunctionReturn(_, _, _) -> "RenderedFunctionReturn"
+    semantic_reads.RenderedConstructor(_, _) -> "RenderedConstructor"
+    semantic_reads.RenderedSignature(_, _) -> "RenderedSignature"
+    semantic_reads.ImplementationPresence(_, _, _) -> "ImplementationPresence"
+    semantic_reads.ImplementationSubgoals(_, _, _) -> "ImplementationSubgoals"
+    semantic_reads.ImplementationArity(_, _, _) -> "ImplementationArity"
+  }
+
 ## One recorded fact per `FunctionRead` constructor, spelled in the recording
 ## revision's coordinates. The whole read vocabulary is here, so a rebuild
 ## that dropped a reference would be caught rather than left to a corpus that
-## did not exercise it.
+## did not exercise it. `read_tag` is what keeps that true: the test below
+## reads this list back through it and requires every constructor to answer.
 fn fixture_read_corpus() -> List[FunctionRead] = {
   let element = TyVar("T", 4)
   let subject = TyAdt(1, [element])
@@ -811,6 +912,27 @@ fn fixture_read_corpus() -> List[FunctionRead] = {
     semantic_reads.JavaAssignable("java.lang.Object", "java.lang.String", true),
     semantic_reads.JavaSam("java.lang.Runnable", Some(jmethod)),
     semantic_reads.JavaComponent("java.lang.String[]", Some("java.lang.String"))]
+}
+
+test "the read corpus holds a fact for every FunctionRead constructor" {
+  # The corpus is a statement about the read vocabulary only for as long as it
+  # still covers it, and the two tests below rest on that. `read_tag` is
+  # exhaustive over `FunctionRead`, so this compares the corpus against the
+  # vocabulary itself rather than against a count that a constructor added
+  # later would still satisfy.
+  let tags = list.map(fixture_read_corpus(), read_tag)
+  let vocabulary = read_vocabulary()
+  # One name per constructor. A tag standing for two of them would let the
+  # corpus cover the vocabulary while leaving a constructor unexercised.
+  assert len(list.unique(vocabulary)) == len(vocabulary)
+  var unexercised = ""
+  for tag in vocabulary { if not list.contains(tags, tag) { unexercised = unexercised ++ " " ++ tag } }
+  if unexercised != "" { panic("the read corpus has no fact for:${unexercised}") }
+  # The other direction, so the two cannot drift apart in either: a fact whose
+  # tag is not in the vocabulary is a tag that was renamed out from under it.
+  var unnamed = ""
+  for tag in tags { if not list.contains(vocabulary, tag) { unnamed = unnamed ++ " " ++ tag } }
+  if unnamed != "" { panic("the read corpus holds a fact read_vocabulary does not name:${unnamed}") }
 }
 
 test "body product read comparison answers for the projection it replaces" {
