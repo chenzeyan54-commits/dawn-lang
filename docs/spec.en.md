@@ -1,4 +1,4 @@
-<!-- doc-check: translation-of docs/spec.md @ 9ac06c6fd0cc6911 -->
+<!-- doc-check: translation-of docs/spec.md @ e039c0378a72c3a2 -->
 
 # Dawn Language Specification
 
@@ -1949,6 +1949,25 @@ are not Java types, so an instance call like `s.substring(…)` does not work to
   by **the source being compiled**.
 
 ### 6.5 Named effects and `with handle`
+
+#### Module-qualified effect names
+
+With `use library as dep`, `!dep.Ask` names the public effect `Ask` declared
+by `library`. The lowercase first segment is a module alias, not an effect
+variable; `!T.E` retains its uppercase-first associated-projection meaning.
+Qualification is available in every effect row, including function types,
+effect arguments and unions such as `!(io | dep.Ask | e)`. It also names a
+single ground effect in trait defaults and impl bindings (`effect E = !dep.Ask`),
+and a handler selector (`with handle dep.Ask { ask() => 42 }`). Handler arms
+use the operation's unqualified name within the selected effect.
+
+Qualified and selectively imported names resolve to the same provider-owned
+effect identity. Different modules' same-named effects remain distinct; a
+whole-module import does not introduce the effect or its operations into the
+unqualified namespace. Missing aliases, missing or private effects, and exported
+members of the wrong kind are errors, never implicit effect-variable binders.
+Only two segments are supported. Ground bindings still reject variables,
+associated projections and unions; qualification does not relax that rule.
 
 `effect` declares a set of operation signatures; the call site calls an operation directly, and the
 `with handle` **lexically nearest to the call** answers it.

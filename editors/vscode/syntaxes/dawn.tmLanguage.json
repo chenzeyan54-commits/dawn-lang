@@ -259,7 +259,7 @@
       "patterns": [
         {
           "name": "meta.effect.annotation.dawn",
-          "begin": "(!)(\\s*)(\\()(?=\\s*[_\\p{L}][_\\p{L}\\p{Nd}]*(?:\\s*\\|\\s*[_\\p{L}][_\\p{L}\\p{Nd}]*)*\\s*\\))",
+          "begin": "(!)(\\s*)(\\()(?=\\s*[_\\p{L}][_\\p{L}\\p{Nd}]*(?:\\.[\\p{Lu}][_\\p{L}\\p{Nd}]*)?(?:\\s*\\|\\s*[_\\p{L}][_\\p{L}\\p{Nd}]*(?:\\.[\\p{Lu}][_\\p{L}\\p{Nd}]*)?)*\\s*\\))",
           "beginCaptures": {
             "1": { "name": "storage.modifier.effect.dawn" },
             "3": { "name": "punctuation.definition.effect.begin.dawn" }
@@ -280,7 +280,7 @@
           ]
         },
         {
-          "match": "(!)(\\s*)([_\\p{L}][_\\p{L}\\p{Nd}]*)",
+          "match": "(!)(\\s*)([_\\p{L}][_\\p{L}\\p{Nd}]*(?:\\.[\\p{Lu}][_\\p{L}\\p{Nd}]*)?)",
           "captures": {
             "1": { "name": "storage.modifier.effect.dawn" },
             "3": { "name": "entity.name.type.effect.dawn" }

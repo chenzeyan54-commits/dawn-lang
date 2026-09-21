@@ -1,0 +1,16 @@
+# Qualified declarations share the row, ground binding, and handler syntax.
+use library as dep
+alias Callback = fn() -> Int !dep.Ask
+alias Applied = Thunk[!dep.Ask]
+trait P[T] {
+  effect E = !dep.Ask
+  fn run(x: T) -> Int !(T.E | dep.Ask)
+}
+impl P[Int] {
+  effect E = !dep.Ask
+  fn run(x: Int) -> Int !dep.Ask = dep.ask()
+}
+fn handled() -> Int = {
+  with handle dep.Ask { ask() => 42 }
+  dep.ask()
+}

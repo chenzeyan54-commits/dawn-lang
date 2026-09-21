@@ -22,6 +22,33 @@ fn rendered(src: String) -> String = {
   render_module(m, ds)
 }
 
+test "qualified effects parse in rows, arguments, ground bindings and handlers" {
+  let (m, ds) = parse_module("fn f(g: fn() -> Int !dep.Ask) -> Int !(dep.Ask | T.E | e) = g()")
+  assert ds == []
+  match m.decls[0] {
+    DFn(f) -> { assert f.effs == ["dep.Ask", "T.E", "e"] }
+    _ -> { assert false }
+  }
+  for source in [
+    "alias A = Thunk[!dep.Ask]",
+    "trait P[T] { effect E = !dep.Ask\n fn run(x: T) -> Int !T.E }",
+    "impl P[Int] { effect E = !dep.Ask }",
+    "fn f() -> Int = { with handle dep.Ask { ask() => 42 }\n dep.ask() }"
+  ] {
+    let (_, errors) = parse_module(source)
+    assert errors == []
+  }
+  for source in [
+    "fn f() -> Int !dep.ask = 1",
+    "fn f() -> Int !dep.Ask.More = 1",
+    "impl P[Int] { effect E = !T.E }",
+    "fn f() -> Int = { with handle e { ask() => 42 }\n 1 }"
+  ] {
+    let (_, errors) = parse_module(source)
+    assert len(errors) > 0
+  }
+}
+
 test "an effect argument joins its own list, and the type arguments keep theirs" {
   let (m, ds) = parse_module("fn f(x: Mapper[Int, !io, String]) -> Int = 1")
   assert len(ds) == 0

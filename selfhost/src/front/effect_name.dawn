@@ -1,0 +1,21 @@
+# Written effect names share one classification across declaration validation
+# and resolution. Qualification is a route to a declaration, never a binder.
+use std/str
+
+pub fn upper(name: String) -> Bool = {
+  for c in code_points(name) { return char_is_upper(c) }
+  false
+}
+
+pub fn qualified(name: String) -> Bool = str.contains(name, ".") && not upper(name)
+
+pub fn projection(name: String) -> Bool = str.contains(name, ".") && upper(name)
+
+pub fn declared(name: String) -> Bool = upper(name) || qualified(name)
+
+test "qualification does not introduce an effect variable or a projection" {
+  assert qualified("dep.Ask") && declared("dep.Ask")
+  assert projection("T.E") && not qualified("T.E")
+  assert declared("Ask") && not projection("Ask")
+  assert not declared("e") && not declared("io")
+}

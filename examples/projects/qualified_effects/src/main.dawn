@@ -1,0 +1,16 @@
+# Qualification changes lookup, not the evidence supplied by a handler.
+use library as dep
+
+alias Callback = fn() -> Int !dep.Ask
+
+fn consume(f: Callback) -> Int !dep.Ask = f() + dep.ask()
+
+pub fn main() -> Unit !io = {
+  let answer = () => {
+    with handle dep.Ask { ask() => 21 }
+    consume(() => dep.ask())
+  }
+  let result = answer()
+  if result != 42 { panic("qualified handler returned the wrong answer") }
+  println("${result}")
+}

@@ -574,6 +574,44 @@ fn pass_executor() -> BodyExecutor[Pass] = {
   }
 }
 
+test "provider effect edits keep mixed replay identical to cold checking" {
+  let scope = identity.module_key("qualified-effects", "sample", "sample", "sample.dawn")
+  let source = "use helper as dep\nfn stable() -> Int = 42\n" ++
+    "fn handled() -> Int = { with handle dep.Ask { ask() => 42 }\n dep.ask() }\n"
+  let snapshot = source_snapshot.of(source).expect("consumer snapshot")
+  let original = "pub effect Ask { fn ask() -> Int }\n"
+  let syntax = source_snapshot.syntax(source_snapshot.of(original).expect("provider snapshot"))
+  let (provider, _) = checker.check_module(cx_new(Some("helper"), None), syntax, map.empty())
+  let exp = checker.exports_of(provider, syntax, "helper", "helper")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(snapshot), map.from([("helper", exp)]))
+  let saved = body_execution.record(scope, old)
+  for pair in [
+    ("helper", original),
+    ("helper", "pub type Unrelated = { value: Int }\n" ++ original),
+    ("helper", "effect Ask { fn ask() -> Int }\n"),
+    ("helper", "pub effect Other { fn ask() -> Int }\n"),
+    ("helper", "pub effect Ask { fn ask() -> String }\n"),
+    ("helper", "pub effect Ask { fn ask() -> Int\n fn extra() -> Int }\n"),
+    ("replacement", original)
+  ] {
+    let (owner, text) = pair
+    let provider_syntax = source_snapshot.syntax(source_snapshot.of(text).expect("provider edit"))
+    let (candidate, _) = checker.check_module(cx_new(Some(owner), None), provider_syntax, map.empty())
+    let candidate_exports = checker.exports_of(candidate, provider_syntax, owner, owner)
+    let next = checker.check_module_headers(base, source_snapshot.syntax(snapshot), map.from([("helper", candidate_exports)]))
+    let actual = replay(admit(scope, old, snapshot, saved), next, snapshot)
+    let expected = checker.check_module_body_products(next)
+    assert actual.bodies.functions == expected.functions
+    assert actual.bodies.cx.diags == expected.cx.diags
+    assert actual.bodies.cx.syms == expected.cx.syms
+    assert actual.bodies.cx.decl_slots == expected.cx.decl_slots
+    # Handler bodies stay outside scalar admission; unrelated pure bodies
+    # remain reusable even when the provider's effect declaration changes.
+    assert actual.reused == 1 && actual.checked == 1
+  }
+}
+
 test "scalar replay moves unchanged bodies through the current scheduler" {
   let scope = identity.module_key("scalar", "sample", "sample", "sample.dawn")
   let before = "fn answer() -> Int = 42\nfn other(x: Int) -> Int = x\n"

@@ -1171,7 +1171,7 @@ fn eff_bind_row(p: P, st: St) -> PR[(List[String], Int)] = {
     st2 = st4
     hi = close.hi
   } else {
-    let (st3, n) = effect_atom(p, st2)?
+    let (st3, n) = effect_name_token(p, st2, false)?
     atoms = [n.text]
     st2 = st3
     hi = n.hi
@@ -1353,20 +1353,31 @@ fn effect_atom(p: P, st: St) -> PR[Token] = {
   Ok((st1, n))
 }
 
-## One row atom as text: `io`, an effect variable, a declared effect, or an
-## associated-effect projection `C.E` (docs/effect-params-design.md 刀 5). The
-## dotted spelling stays one atom string; resolution splits it on the dot, so
-## the row keeps its `List[String]` shape everywhere downstream.
+## Keep module-qualified declarations and associated projections as single
+## atoms. The checker distinguishes their lowercase/uppercase first segment;
+## the row retains its existing `List[String]` shape downstream.
 fn effect_atom_text(p: P, st: St) -> PR[String] = {
+  let (next, name) = effect_name_token(p, st, true)?
+  Ok((next, name.text))
+}
+
+## Preserve the whole selector span for handlers and ground-row diagnostics.
+## A ground selector admits module qualification, but not a projection.
+fn effect_name_token(p: P, st: St, projections: Bool) -> PR[Token] = {
   let upper = at_kind(p, st, TYPEIDENT)
   let (st1, n) = effect_atom(p, st)?
-  if upper && at_kind(p, st1, DOT) {
+  if at_kind(p, st1, DOT) && (not upper || projections) {
     let st2 = adv1(p, st1)
     let (st3, m) = want(p, st2, TYPEIDENT,
-      "an associated effect name (uppercase): `!" ++ n.text ++ ".E`")?
-    return Ok((st3, n.text ++ "." ++ m.text))
+      if upper { "an associated effect name (uppercase): `!" ++ n.text ++ ".E`" }
+      else { "an exported effect name (uppercase): `" ++ n.text ++ ".Effect`" })?
+    if at_kind(p, st3, DOT) {
+      return Err((st3, perr_h(p, st3, "an effect reference has at most two name segments",
+        "use `alias.Effect` for an imported effect or `T.E` for an associated projection")))
+    }
+    return Ok((st3, Token { ..n, text: n.text ++ "." ++ m.text, hi: m.hi }))
   }
-  Ok((st1, n.text))
+  Ok((st1, n))
 }
 
 ## Optional effect annotation after a return type: nothing (pure), the empty
@@ -2613,7 +2624,14 @@ fn with_stmt(p: P, st: St) -> PR[Expr] = {
 ##
 ## `st` is just past `handle`; the returned state sits on the block's `}`.
 fn handle_stmt(p: P, st: St, kw: Token) -> PR[Expr] = {
-  let (st1, name) = want(p, st, TYPEIDENT, "the effect to handle (`with handle Ask { ... }`)")?
+  if not at_kind(p, st, IDENT) && not at_kind(p, st, TYPEIDENT) {
+    let (_, _) = want(p, st, TYPEIDENT, "the effect to handle (`with handle Ask { ... }`)")?
+  }
+  let (st1, name) = effect_name_token(p, st, false)?
+  if name.kind != TYPEIDENT && not str.contains(name.text, ".") {
+    return Err((st1, pd_h("a handler needs a declared effect", name.lo, name.hi,
+      "use `with handle Ask { ... }` or `with handle alias.Ask { ... }`")))
+  }
   let st2 = skip_nl(p, st1)
   let (st3, _) = want(p, st2, LBRACE, "`{` (the handler arms)")?
   var st4 = skip_nl(p, st3)

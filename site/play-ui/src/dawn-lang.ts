@@ -21,7 +21,7 @@ import { BUILTINS } from './builtins.generated'
 const KEYWORDS = new Set([
   'fn', 'let', 'var', 'type', 'const', 'use', 'java', 'pub', 'match', 'if',
   'else', 'for', 'in', 'while', 'return', 'comptime', 'test', 'assert', 'not', 'derive',
-  'trait', 'impl',
+  'trait', 'impl', 'effect',
 ])
 
 // Custom tags for the two classes the standard set doesn't cover cleanly: the
@@ -292,12 +292,18 @@ export function dawnCompletions(context: CompletionContext): CompletionResult | 
   const from = word ? word.from : context.pos
   const line = context.state.doc.lineAt(context.pos)
   const before = context.state.sliceDoc(line.from, from)
-  // an effect row: `!` admits exactly one builtin effect. Pops as soon as the
-  // `!` is typed (no word required), like an IDE trigger character.
+  // Offline effect completion includes local declarations. Module exports are
+  // supplied by the project-aware LSP, not guessed from a module alias here.
   if (before.endsWith('!')) {
     return {
       from,
-      options: [{ label: 'io', type: 'keyword', info: 'the IO effect — this function may perform input/output' }],
+      options: [
+        { label: 'io', type: 'keyword', info: 'the IO effect — this function may perform input/output' },
+        ...Array.from(new Set(Array.from(
+          context.state.doc.toString().matchAll(/\beffect\s+([A-Z]\w*)/g),
+          match => match[1],
+        ))).map(label => ({ label, type: 'type', info: 'declared effect' })),
+      ],
       validFor: /^\w*$/,
     }
   }
