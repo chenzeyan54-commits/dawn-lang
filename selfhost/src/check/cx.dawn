@@ -789,8 +789,8 @@ fn qualified_effect_name_read(cx: Cx, qualifier: String, name: String) -> (Cx, O
   (observe_type_read(cx, semantic_reads.QualifiedEffectName(qualifier, name, answer)), answer)
 }
 
-fn qualified_effect_diagnostic_read(cx: Cx, qualifier: String, name: String) -> (Cx, ExportDiagnostic) = {
-  let answer = match map.get(cx.module_exports, qualifier) {
+fn qualified_effect_diagnostic(cx: Cx, qualifier: String, name: String) -> ExportDiagnostic =
+  match map.get(cx.module_exports, qualifier) {
     None -> ExportDiagnostic { message: "unknown module alias `" ++ qualifier ++ "` in an effect reference",
       hint: Some("import the module with `use <path> as " ++ qualifier ++ "`") }
     Some(exp) -> {
@@ -808,6 +808,13 @@ fn qualified_effect_diagnostic_read(cx: Cx, qualifier: String, name: String) -> 
         hint: Some("exported effects: " ++ join(sort(map.keys(exp.effects)), ", ")) }
     }
   }
+
+fn qualified_effect_diagnostic_read(cx: Cx, qualifier: String, name: String) -> (Cx, Option[ExportDiagnostic]) = {
+  let present = match map.get(cx.module_exports, qualifier) {
+    None -> false
+    Some(exp) -> map.has(exp.effects, name)
+  }
+  let answer: Option[ExportDiagnostic] = if present { None } else { Some(qualified_effect_diagnostic(cx, qualifier, name)) }
   (observe_type_read(cx, semantic_reads.QualifiedEffectDiagnostic(qualifier, name, answer)), answer)
 }
 
@@ -822,7 +829,10 @@ pub fn resolve_named_effect(cx: Cx, name: String, lo: Int, hi: Int) -> (Cx, Opti
     Some(_) -> (next, answer)
     None -> {
       let (observed, diagnostic) = qualified_effect_diagnostic_read(next, parts[0], parts[1])
-      (cerr_h(observed, diagnostic.message, lo, hi, diagnostic.hint.unwrap_or("")), None)
+      match diagnostic {
+        Some(d) -> (cerr_o(observed, d.message, lo, hi, d.hint), None)
+        None -> (observed, None)
+      }
     }
   }
 }

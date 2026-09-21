@@ -300,7 +300,7 @@ export function dawnCompletions(context: CompletionContext): CompletionResult | 
       options: [
         { label: 'io', type: 'keyword', info: 'the IO effect — this function may perform input/output' },
         ...Array.from(new Set(Array.from(
-          context.state.doc.toString().matchAll(/\beffect\s+([A-Z]\w*)/g),
+          context.state.doc.toString().matchAll(/\beffect\s+([A-Z]\w*)\s*\{/g),
           match => match[1],
         ))).map(label => ({ label, type: 'type', info: 'declared effect' })),
       ],

@@ -863,7 +863,7 @@ fn fixture_read_corpus() -> List[FunctionRead] = {
       audience: AWorld, ops: ["ask"], ctl: false }),
     semantic_reads.LocalEffectName("Ask", Some(2)),
     semantic_reads.QualifiedEffectName("h", "Ask", Some(2)),
-    semantic_reads.QualifiedEffectDiagnostic("h", "Missing", diagnostic),
+    semantic_reads.QualifiedEffectDiagnostic("h", "Missing", Some(diagnostic)),
     NominalTypeName(None, "Box", Some(1)),
     NominalTypeName(Some("h"), "Other", Some(2)),
     NominalTypeShape(1, "Box", 1, ["e"], true),
