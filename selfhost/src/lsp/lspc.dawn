@@ -2,8 +2,8 @@
 # locals of the enclosing function, module + imported functions, types and
 # constructors, builtins, and keywords. Suppressed where a suggestion can only
 # be noise: inside strings and comments, while naming a fresh binding, and
-# after `.`. `!` completes the one builtin effect. All offsets are UTF-16 code
-# units (the LSP wire encoding).
+# after ordinary member dots. Effect positions include declarations and aliases.
+# The server translates LSP UTF-16 positions to code-point offsets at the boundary.
 #
 # A `use` line completes too, and to something else entirely: module paths one
 # segment at a time, then the module's exported names inside `.{ }`. That is
@@ -29,7 +29,7 @@ use lsp/lspq.{QCx, locals_at, in_for_pattern}
 use front/lexer.{SourceView, view_of, slice_cp, lex}
 use front/token.{
   Token, TokKind, FOR, IN, PIPE, NEWLINE, EOF, IDENT,
-  LPAREN, RPAREN, LBRACE, RBRACE, LBRACKET, RBRACKET, COMMA, DOT, TYPEIDENT
+  LPAREN, RPAREN, LBRACE, RBRACE, LBRACKET, RBRACKET, COMMA, DOT, TYPEIDENT, BANG, WITH
 }
 use front/ast.{
   module_traits, module_fns, module_types, module_consts, module_effects, module_uses
@@ -776,15 +776,14 @@ fn qualified_alias_before_dot(cps: List[Char], word_start: Int) -> Option[(Strin
   Some((from_code_points(slice_cps(cps, alias_lo, word_start - 1)), alias_lo))
 }
 
-fn qualified_pattern_constructors(qc: QCx, module_alias: String) -> List[CItem] = {
-  let none: List[CItem] = []
+fn qualified_exports(qc: QCx, module_alias: String) -> Option[ModExports] = {
   var imported_path = map.get(qc.entry.cx.module_aliases, module_alias)
   if imported_path == None {
     for imported in module_uses(qc.entry.m) {
       match imported.selective {
         None -> if imported.alias_name == module_alias && map.has(qc.exports_env, imported.path) {
           match imported_path {
-            Some(previous) -> if previous != imported.path { return none }
+            Some(previous) -> if previous != imported.path { return None }
             None -> { imported_path = Some(imported.path) }
           }
         }
@@ -792,19 +791,37 @@ fn qualified_pattern_constructors(qc: QCx, module_alias: String) -> List[CItem] 
       }
     }
   }
-  match imported_path {
-    Some(path) -> match map.get(qc.exports_env, path) {
-      Some(ex) -> {
-        var it = Items { out: [], seen: set.empty() }
-        for name in map.keys(ex.ctors) {
-          it = add(it, name, 20, Some("constructor from ${module_alias}"), "0")
-        }
-        it.out
+  match imported_path { Some(path) -> map.get(qc.exports_env, path), None -> None }
+}
+
+fn qualified_pattern_constructors(qc: QCx, module_alias: String) -> List[CItem] = {
+  let none: List[CItem] = []
+  match qualified_exports(qc, module_alias) {
+    Some(ex) -> {
+      var it = Items { out: [], seen: set.empty() }
+      for name in map.keys(ex.ctors) {
+        it = add(it, name, 20, Some("constructor from ${module_alias}"), "0")
       }
-      None -> none
+      it.out
     }
     None -> none
   }
+}
+
+## A partial row/handler is often not parseable yet. Restrict the lexical
+## suffix rather than offering every module member after an effect qualifier.
+fn effect_reference_tail(text: String) -> Bool = {
+  let (tokens, _) = lex(text)
+  var i = len(tokens) - 1
+  while i >= 0 {
+    let t = tokens[i]
+    if t.kind == BANG { return true }
+    if t.kind == IDENT && t.text == "handle" && i > 0 && tokens[i - 1].kind == WITH { return true }
+    if t.kind != IDENT && t.kind != TYPEIDENT && t.kind != DOT && t.kind != PIPE &&
+      t.kind != LPAREN && t.kind != NEWLINE && t.kind != EOF { return false }
+    i = i - 1
+  }
+  false
 }
 
 pub fn completions_at(
@@ -839,11 +856,43 @@ pub fn completions_at(
   let before = slice_cps(cps, ls, ws)
   let nb = len(before)
   let in_return_type = return_type_tail(slice_cps(cps, 0, ws))
-  # the effect row: `!` admits exactly one builtin effect
-  if nb > 0 && before[nb - 1] == '!' {
-    let d: Option[String] = Some("the IO effect — this function may perform input/output")
-    let st: Option[String] = None
-    return [CItem { label: "io", kind: 14, detail: d, sort_text: st }]
+  if effect_reference_tail(from_code_points(slice_cps(cps, 0, ws))) {
+    var effects = Items { out: [], seen: set.empty() }
+    if nb > 0 && before[nb - 1] == '.' {
+      match qualified_alias_before_dot(cps, ws) {
+        Some(pair) -> {
+          let (alias_name, _) = pair
+          match qualified_exports(qc, alias_name) {
+            Some(ex) -> {
+              for name in map.keys(ex.effects) {
+                effects = add(effects, name, 23, Some("effect ${name}"), "0")
+              }
+            }
+            None -> ()
+          }
+        }
+        None -> ()
+      }
+    } else {
+      if not str.contains(from_code_points(before), "with handle") {
+        effects = add(effects, "io", 14, Some("the IO effect"), "0")
+      }
+      for name in map.keys(qc.entry.cx.effects) {
+        effects = add(effects, name, 23, Some("effect ${name}"), "0")
+      }
+      # A trailing bang leaves the current function incomplete. Earlier
+      # declarations are still useful even when no checked context exists.
+      let (written, _) = parser.parse_module(text)
+      for declaration in module_effects(written) {
+        effects = add(effects, declaration.name, 23, Some("effect ${declaration.name}"), "0")
+      }
+      for imported in module_uses(qc.entry.m) {
+        if imported.selective == None {
+          effects = add(effects, imported.alias_name, 9, Some("module alias"), "1")
+        }
+      }
+    }
+    return effects.out
   }
   if fresh_name_tail(before) {
     let none: List[CItem] = []
@@ -941,6 +990,15 @@ pub fn completions_at(
 # since the answer is what is on disk. What is left here is the two pure
 # decisions it rests on: where the tail of a `use` line begins, and what one
 # `/` does to a set of paths.
+
+test "effect completion recognizes qualified rows and handlers without accepting expression tails" {
+  for text in ["fn f() -> Int !dep.", "fn f() -> Int !(io | dep.", "with handle dep.", "fn f() -> Int !"] {
+    assert effect_reference_tail(text)
+  }
+  for text in ["fn f() -> Int = dep.", "let x = value! + dep.", "fn f() -> Int !io = dep."] {
+    assert not effect_reference_tail(text)
+  }
+}
 
 test "`use` lines are recognized, and everything after the keyword is the tail" {
   fn tail_of(s: String) -> String =

@@ -733,7 +733,7 @@ fn read_vocabulary() -> List[String] =
     "JavaComponent", "LocalConstructor", "LocalConstant", "ConstantVisible", "ConstructorCount",
     "ConstructorArity", "ConstructorHeaderAnswer", "ConstructorFields", "ConstructorNames",
     "DeclaredConstantName", "LocalValueCandidates", "DeclaredEffectInfo", "MovedName",
-    "ConstSerializable", "LocalEffectName",
+    "ConstSerializable", "LocalEffectName", "QualifiedEffectName", "QualifiedEffectDiagnostic",
     "EffectCandidates", "RenderedType", "RenderedFunctionReturn", "RenderedConstructor",
     "RenderedSignature", "ImplementationPresence", "ImplementationSubgoals",
     "ImplementationArity"]
@@ -809,6 +809,8 @@ fn read_tag(r: FunctionRead) -> String =
     semantic_reads.MovedName(_, _) -> "MovedName"
     semantic_reads.ConstSerializable(_, _) -> "ConstSerializable"
     semantic_reads.LocalEffectName(_, _) -> "LocalEffectName"
+    semantic_reads.QualifiedEffectName(_, _, _) -> "QualifiedEffectName"
+    semantic_reads.QualifiedEffectDiagnostic(_, _, _) -> "QualifiedEffectDiagnostic"
     semantic_reads.EffectCandidates(_) -> "EffectCandidates"
     semantic_reads.RenderedType(_, _) -> "RenderedType"
     semantic_reads.RenderedFunctionReturn(_, _, _) -> "RenderedFunctionReturn"
@@ -860,6 +862,8 @@ fn fixture_read_corpus() -> List[FunctionRead] = {
     semantic_reads.DeclaredEffectInfo(2, EffectI { id: 2, name: "Ask", owner: Some("provider"),
       audience: AWorld, ops: ["ask"], ctl: false }),
     semantic_reads.LocalEffectName("Ask", Some(2)),
+    semantic_reads.QualifiedEffectName("h", "Ask", Some(2)),
+    semantic_reads.QualifiedEffectDiagnostic("h", "Missing", Some(diagnostic)),
     NominalTypeName(None, "Box", Some(1)),
     NominalTypeName(Some("h"), "Other", Some(2)),
     NominalTypeShape(1, "Box", 1, ["e"], true),

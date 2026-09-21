@@ -1,0 +1,2 @@
+# expect: an effect reference has at most two name segments
+fn f() -> Int !dep.Ask.More = 1

@@ -35,6 +35,7 @@ use check/jsig.{Jsig, JClass, JMethod, JCtor, JField, jsig_refused}
 use check/semantic_reads
 use check/semantic_reads.{FunctionRead, AliasTypeHeader, ExportDiagnostic, ConstructorHeader}
 use front/suggest
+use front/effect_name
 
 ## An alias entry: the Kotlin AliasInfo without its mutable resolution slots
 ## (resolution results live in Cx.alias_resolved, the in-flight set in
@@ -780,6 +781,62 @@ pub fn local_effect_name_read(cx: Cx, name: String) -> (Cx, Option[Int]) = {
   (observe_type_read(cx, semantic_reads.LocalEffectName(name, answer)), answer)
 }
 
+fn qualified_effect_name_read(cx: Cx, qualifier: String, name: String) -> (Cx, Option[Int]) = {
+  let answer = match map.get(cx.module_exports, qualifier) {
+    None -> None
+    Some(exp) -> map.get(exp.effects, name)
+  }
+  (observe_type_read(cx, semantic_reads.QualifiedEffectName(qualifier, name, answer)), answer)
+}
+
+fn qualified_effect_diagnostic(cx: Cx, qualifier: String, name: String) -> ExportDiagnostic =
+  match map.get(cx.module_exports, qualifier) {
+    None -> ExportDiagnostic { message: "unknown module alias `" ++ qualifier ++ "` in an effect reference",
+      hint: Some("import the module with `use <path> as " ++ qualifier ++ "`") }
+    Some(exp) -> {
+      let wrong_kind = map.has(exp.fns, name) || map.has(exp.types_by_name, name) ||
+        map.has(exp.aliases, name) || map.has(exp.ctors, name) || map.has(exp.consts, name) ||
+        map.has(exp.traits_by_name, name)
+      let message = if wrong_kind {
+        "`" ++ qualifier ++ "." ++ name ++ "` is not an effect"
+      } else if list.contains(exp.all_names, name) {
+        "effect `" ++ name ++ "` is private in module `" ++ exp.mod_path ++ "`"
+      } else {
+        "module `" ++ exp.mod_path ++ "` has no exported effect `" ++ name ++ "`"
+      }
+      ExportDiagnostic { message: message,
+        hint: Some("exported effects: " ++ join(sort(map.keys(exp.effects)), ", ")) }
+    }
+  }
+
+fn qualified_effect_diagnostic_read(cx: Cx, qualifier: String, name: String) -> (Cx, Option[ExportDiagnostic]) = {
+  let present = match map.get(cx.module_exports, qualifier) {
+    None -> false
+    Some(exp) -> map.has(exp.effects, name)
+  }
+  let answer: Option[ExportDiagnostic] = if present { None } else { Some(qualified_effect_diagnostic(cx, qualifier, name)) }
+  (observe_type_read(cx, semantic_reads.QualifiedEffectDiagnostic(qualifier, name, answer)), answer)
+}
+
+## All declared-effect positions share the same provider lookup. Only a
+## qualified failure is diagnosed here; bare-name callers retain their own
+## recovery and suggestions. Neither route introduces an effect variable.
+pub fn resolve_named_effect(cx: Cx, name: String, lo: Int, hi: Int) -> (Cx, Option[Int]) = {
+  if not effect_name.qualified(name) { return local_effect_name_read(cx, name) }
+  let parts = str.split(name, ".")
+  let (next, answer) = qualified_effect_name_read(cx, parts[0], parts[1])
+  match answer {
+    Some(_) -> (next, answer)
+    None -> {
+      let (observed, diagnostic) = qualified_effect_diagnostic_read(next, parts[0], parts[1])
+      match diagnostic {
+        Some(d) -> (cerr_o(observed, d.message, lo, hi, d.hint), None)
+        None -> (observed, None)
+      }
+    }
+  }
+}
+
 pub fn effect_candidates_read(cx: Cx) -> (Cx, List[String]) = {
   let names = map.keys(cx.effects)
   (observe_type_read(cx, semantic_reads.EffectCandidates(names)), names)
@@ -818,7 +875,18 @@ pub fn resolve_eff_at(cx: Cx, atoms: List[String], lo: Int, hi: Int) -> (Cx, Eff
   for a in atoms {
     if a == "io" {
       effs = effs ++ [EIo]
-    } else if str.contains(a, ".") {
+    } else if effect_name.qualified(a) {
+      let (next, id) = resolve_named_effect(cx1, a, lo, hi)
+      cx1 = next
+      match id {
+        Some(eid) -> {
+          let (observed, info) = declared_effect_info_read(cx1, eid)
+          cx1 = observed
+          effs = effs ++ [ELabeled(EPure, [(eid, info.name)])]
+        }
+        None -> ()
+      }
+    } else if effect_name.projection(a) {
       # `C.E`: an associated-effect projection (docs/effect-params-design.md
       # 刀 5). The parser only builds a dotted atom out of two uppercase
       # names, so the split is exact.
@@ -1631,6 +1699,12 @@ pub fn revalidate_context_read(candidate: Cx, fact: FunctionRead) -> Option[Bool
     semantic_reads.NominalTypeShape(id, _, _, _, _) -> { let (next, _) = constructor_nominal_shape_read(initial, id)
       next }
     semantic_reads.LocalEffectName(name, _) -> { let (next, _) = local_effect_name_read(initial, name)
+      next }
+    semantic_reads.QualifiedEffectName(qualifier, name, _) -> {
+      let (next, _) = qualified_effect_name_read(initial, qualifier, name)
+      next }
+    semantic_reads.QualifiedEffectDiagnostic(qualifier, name, _) -> {
+      let (next, _) = qualified_effect_diagnostic_read(initial, qualifier, name)
       next }
     semantic_reads.EffectCandidates(_) -> { let (next, _) = effect_candidates_read(initial)
       next }

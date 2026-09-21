@@ -1,0 +1,2 @@
+# Qualified misses are diagnosed, never introduced as effect variables.
+fn missing() -> Int !absent.Ask = 1

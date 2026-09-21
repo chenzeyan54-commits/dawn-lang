@@ -1,0 +1,22 @@
+# Qualification changes lookup, not the evidence supplied by a handler.
+use library as dep
+
+alias Callback = fn() -> Int !dep.Ask
+
+fn consume(f: Callback) -> Int !dep.Ask = f() + dep.ask()
+
+fn handled_answer() -> Int = {
+  let answer = () => {
+    with handle dep.Ask { ask() => 21 }
+    consume(() => dep.ask())
+  }
+  answer()
+}
+
+test "qualified callbacks and handlers share the provider effect" {
+  assert (handled_answer() == 42)
+}
+
+pub fn main() -> Unit !io = {
+  println("${handled_answer()}")
+}

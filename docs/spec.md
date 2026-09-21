@@ -1580,6 +1580,25 @@ pub fn sqrt(x: Float) -> Float = unsafe_pure { Math.sqrt(x) }   # 仅 std 模块
 
 ### 6.5 具名效果与 `with handle`
 
+#### Module-qualified effect names
+
+With `use library as dep`, `!dep.Ask` names the public effect `Ask` declared
+by `library`. The lowercase first segment is a module alias, not an effect
+variable; `!T.E` retains its uppercase-first associated-projection meaning.
+Qualification is available in every effect row, including function types,
+effect arguments and unions such as `!(io | dep.Ask | e)`. It also names a
+single ground effect in trait defaults and impl bindings (`effect E = !dep.Ask`),
+and a handler selector (`with handle dep.Ask { ask() => 42 }`). Handler arms
+use the operation's unqualified name within the selected effect.
+
+Qualified and selectively imported names resolve to the same provider-owned
+effect identity. Different modules' same-named effects remain distinct; a
+whole-module import does not introduce the effect or its operations into the
+unqualified namespace. Missing aliases, missing or private effects, and exported
+members of the wrong kind are errors, never implicit effect-variable binders.
+Only two segments are supported. Ground bindings still reject variables,
+associated projections and unions; qualification does not relax that rule.
+
 `effect` 声明一组操作签名，调用处直接调操作，由**调用处词法上最近的** `with handle` 应答。
 
 臂有两档。**尾恢复**（tail-resumptive）臂是「就地调用、返回值即操作结果」的普通闭包，

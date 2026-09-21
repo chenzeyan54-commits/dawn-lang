@@ -12,6 +12,7 @@ use std/str
 use std/list
 use std/map
 use std/set
+use front/effect_name
 
 use front/ast.{
   TypeRef, TNamed, TQual, TAssoc, TTuple, TFn, Bound, TypeParamDecl, EffParamDecl, EffArg,
@@ -46,6 +47,7 @@ use check/types.{
 use check/identity
 use check/identity.{TypeDecl, TraitDecl, EffectDecl, FunctionDecl, ConstDecl, Named, ImplHead}
 use check/cx.{
+  resolve_named_effect,
   AliasE, Cx, ModExports, Origin, OPrelude, OImport, OLocal, cx_new, test_cx, cerr,
   cerr_h, cerr_o, fresh, fresh_effvar, mint, enter_decl_owner, leave_decl_owner,
   alias_shadow, alias_shadow_at, effect_of, resolve_eff_at,
@@ -242,24 +244,21 @@ pub fn bind_fn(cx: Cx, name: String, sig: Sig, org: Origin, lo: Int, hi: Int) ->
 
 # ---- declaration-site type checks ----
 
-## The first effect atom inside a type reference that this declaration does not
-## account for, with the span of the function type that wrote it. `!io` is
-## always accounted for, and so is any name the declaration binds in its own
+## The first unbound effect variable inside a type reference, with the span of
+## the function type that wrote it. Builtins and declaration references are
+## resolved later, and any name the declaration binds in its own
 ## parameter table (`type Box[!e] = { f: fn(Int) -> Int !e }`).
 ##
-## The name comes back with the span because the two things left over need
-## different sentences, and only the name tells them apart.
+## Keep scanning past labels so an earlier declaration cannot conceal a later
+## variable without a binder.
 pub fn stray_eff_atom(ref: TypeRef, bound: List[String]) -> Option[(String, Int, Int)] =
   match ref {
     TAssoc(_, _, _, _) -> None
     TFn(params, ret, effs, lo, hi) -> {
       for a in effs {
-        # An uppercase atom is stray whatever the binder list holds. The parser
-        # will not put one in that list, but the refusal that reads this must
-        # not depend on the parser for a soundness rule: a label in a field is
-        # refused because evidence travels with the closure, not because the
-        # spelling failed to get into a table.
-        if a != "io" && (upper_first(a) || not list_has_name(bound, a)) {
+        # Declarations and projections are resolved later. Keep walking: a
+        # legal label must not conceal an unbound variable later in the row.
+        if a != "io" && not effect_name.declared(a) && not list_has_name(bound, a) {
           return Some((a, lo, hi))
         }
       }
@@ -307,7 +306,7 @@ pub fn stray_eff_atom(ref: TypeRef, bound: List[String]) -> Option[(String, Int,
 fn stray_earg_atom(eargs: List[EffArg], bound: List[String]) -> Option[(String, Int, Int)] = {
   for ea in eargs {
     for a in ea.atoms {
-      if a != "io" && (upper_first(a) || not list_has_name(bound, a)) {
+      if a != "io" && not effect_name.declared(a) && not list_has_name(bound, a) {
         return Some((a, ea.lo, ea.hi))
       }
     }
@@ -318,16 +317,6 @@ fn stray_earg_atom(eargs: List[EffArg], bound: List[String]) -> Option[(String, 
 fn list_has_name(names: List[String], n: String) -> Bool = {
   for x in names {
     if x == n { return true }
-  }
-  false
-}
-
-## Uppercase first code point. cx.dawn draws the same line inside a row, where
-## the casing is what says "declared effect" rather than "variable"; this is a
-## two-line copy rather than an export because the export surface is API.
-fn upper_first(s: String) -> Bool = {
-  for c in code_points(s) {
-    return char_is_upper(c)
   }
   false
 }
@@ -358,13 +347,9 @@ pub fn refuse_decl_effvar(cx: Cx, ref: TypeRef, bound: List[String]) -> (Cx, Boo
   match stray_eff_atom(ref, bound) {
     Some(t) -> {
       let (name, lo, hi) = t
-      if upper_first(name) {
-        (cx, false)
-      } else {
-        (cerr_h(cx, "effect variable `" ++ name ++ "` has no binder here", lo, hi,
-          "bind it in the declaration's parameter list -- `[!" ++ name ++
-            "]` -- or write !io, or leave the function type pure"), true)
-      }
+      (cerr_h(cx, "effect variable `" ++ name ++ "` has no binder here", lo, hi,
+        "bind it in the declaration's parameter list -- `[!" ++ name ++
+          "]` -- or write !io, or leave the function type pure"), true)
     }
     None -> (cx, false)
   }
@@ -377,8 +362,11 @@ test "a type declaration accounts for io and for the names it binds, nothing els
   assert stray_eff_atom(ty("e"), ["e"]) == None
   assert stray_eff_atom(ty("e"), ["a", "e"]) == None
   assert stray_eff_atom(ty("b"), ["a", "e"]) == Some(("b", 10, 30))
-  # a label is stray whatever the binder list says
-  assert stray_eff_atom(ty("Ask"), ["Ask"]) == Some(("Ask", 10, 30))
+  # A declaration is not a variable, and must not hide a later variable.
+  assert stray_eff_atom(ty("Ask"), nothing) == None
+  assert stray_eff_atom(ty("dep.Ask"), nothing) == None
+  let mixed = TFn([], TNamed("Int", [], [], 0, 3), ["dep.Ask", "e"], 10, 30)
+  assert stray_eff_atom(mixed, nothing) == Some(("e", 10, 30))
   # and it is found through the shapes a type can nest in
   let nested = TNamed("List", [TTuple([TNamed("Int", [], [], 0, 3), ty("e")], 5, 40)], [], 4, 41)
   assert stray_eff_atom(nested, nothing) == Some(("e", 10, 30))
@@ -391,9 +379,8 @@ test "an unbound effect variable is refused and a label is not" {
   let (cx1, bad1) = refuse_decl_effvar(test_cx(), ty("e"), nothing)
   assert bad1
   assert cx1.diags[0].msg == "effect variable `e` has no binder here"
-  # An uppercase atom is stray by `stray_eff_atom`'s reckoning and is still
-  # not refused here: a written label is legal now, and an uppercase name that
-  # is not a declared effect is `resolve_eff_at`'s report to make.
+  # A written label is legal; an unknown declaration is resolved and diagnosed
+  # later by `resolve_eff_at`, rather than mistaken for an unbound variable.
   let (cx2, bad2) = refuse_decl_effvar(cx1, ty("Ask"), ["Ask"])
   assert not bad2
   assert len(cx2.diags) == 1
@@ -1329,14 +1316,18 @@ fn resolve_ground_row(cx: Cx, atoms: List[String], nlo: Int, nhi: Int) -> (Cx, O
     if a == "io" {
       row = EIo
     } else {
-      match map.get(cx1.effects, a) {
+      let (next, id) = resolve_named_effect(cx1, a, nlo, nhi)
+      cx1 = next
+      match id {
         Some(eid) -> { row = label_eff(cx1, eid) }
         None -> {
           bad = true
-          cx1 = cerr_h(cx1, "an associated effect binds a ground row, and `!" ++ a ++
-              "` is not one", nlo, nhi,
-            "bind a declared effect, `!io`, or the empty row `!()`; an effect variable " ++
-              "or a projection cannot be bound")
+          if not effect_name.qualified(a) {
+            cx1 = cerr_h(cx1, "an associated effect binds a ground row, and `!" ++ a ++
+                "` is not one", nlo, nhi,
+              "bind a declared effect, `!io`, or the empty row `!()`; an effect variable " ++
+                "or a projection cannot be bound")
+          }
         }
       }
     }

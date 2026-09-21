@@ -1,0 +1,2 @@
+# A public effect keeps its identity across every importing module alias.
+pub effect Ask { fn ask() -> Int }

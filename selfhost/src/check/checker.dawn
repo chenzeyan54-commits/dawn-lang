@@ -79,6 +79,8 @@ use check/exhaustive.{
   ReadState, useful_result_read, missing_list_patterns_result_read
 }
 use check/cx.{
+  resolve_named_effect,
+  label_eff,
   revalidate_context_read,
   write_symbol, write_signature, write_bounds,
   AliasE, Cx, Frame, LambdaCx, ModExports,
@@ -108,6 +110,7 @@ use check/passes.{
   fresh_tvar, impl_shape_bad
 }
 use front/suggest
+use front/effect_name
 use front/parser
 
 # ---- scopes and symbols ----
@@ -4905,6 +4908,91 @@ test "type reads retain qualified alias and nominal decision boundaries" {
   }
 }
 
+test "qualified effects share provider identity in every declaration position" {
+  let (syntax, pd) = parser.parse_module("pub effect Ask { fn ask() -> Int }\neffect Hidden { fn hidden() -> Int }\npub type Other = { value: Int }\n")
+  assert pd == []
+  let (provider, _) = check_module(cx_new(Some("helper"), None), syntax, map.empty())
+  assert provider.diags == []
+  let exp = exports_of(provider, syntax, "helper", "helper")
+  let source = "use helper as dep\n" ++
+    "alias Callback = fn() -> Int !dep.Ask\n" ++
+    "alias Thunk[!e] = fn() -> Int !e\nalias Applied = Thunk[!dep.Ask]\n" ++
+    "type Box = { callback: Callback }\n" ++
+    "trait P[T] { effect E = !dep.Ask\n fn run(x: T) -> Int !T.E }\n" ++
+    "type Item = { value: Int }\n" ++
+    "impl P[Item] { effect E = !dep.Ask\n fn run(x: Item) -> Int !dep.Ask = dep.ask() }\n" ++
+    "fn consume() -> Int !dep.Ask = dep.ask()\n" ++
+    "fn handled() -> Int = { with handle dep.Ask { ask() => 42 }\n consume() }\n"
+  let (consumer, errors) = parser.parse_module(source)
+  assert errors == []
+  let (checked, _) = check_module(cx_new(Some("consumer"), None), consumer, map.from([("helper", exp)]))
+  assert checked.diags == []
+  assert not map.has(checked.effects, "Ask") && not map.has(checked.fns, "ask")
+  assert map.get(checked.fns, "consume").expect("consumer").eff ==
+    label_eff(checked, map.get(exp.effects, "Ask").expect("provider effect"))
+  for pair in [("missing.Ask", "unknown module alias"), ("dep.Missing", "no exported effect"),
+    ("dep.Hidden", "is private"), ("dep.Other", "is not an effect")] {
+    let (name, message) = pair
+    let (bad, parse_errors) = parser.parse_module("use helper as dep\nfn f() -> Int !" ++ name ++ " = 1\n")
+    assert parse_errors == []
+    let (refused, _) = check_module(cx_new(Some("consumer"), None), bad, map.from([("helper", exp)]))
+    assert list.any(refused.diags, (d) => str.contains(d.msg, message))
+    assert not map.has(refused.current_eff_vars, name)
+  }
+}
+
+test "qualified effect reads revalidate positive negative and diagnostic answers" {
+  let (syntax, _) = parser.parse_module("pub effect Ask { fn ask() -> Int }\n")
+  let (provider, _) = check_module(cx_new(Some("helper"), None), syntax, map.empty())
+  let exp = exports_of(provider, syntax, "helper", "helper")
+  let initial = Cx { ..provider, module_exports: map.from([("dep", exp)]), function_reads: Some([]) }
+  let (observed, id) = resolve_named_effect(initial, "dep.Ask", 0, 7)
+  assert id == map.get(exp.effects, "Ask") && observed.diags == []
+  let aliases = Cx { ..initial, module_exports: map.from([("dep", exp), ("other", exp)]) }
+  let (_, same_id) = resolve_named_effect(aliases, "other.Ask", 0, 9)
+  assert same_id == id
+  for read in observed.function_reads.expect("recorded read") {
+    assert revalidate_read(initial, read) == Some(true)
+    assert revalidate_read(Cx { ..initial, module_exports: map.empty() }, read) == Some(false)
+    let changed = ModExports { ..exp, effects: map.from([("Ask", 999)]) }
+    assert revalidate_read(Cx { ..initial, module_exports: map.from([("dep", changed)]) }, read) == Some(false)
+  }
+  for name in ["dep.Missing", "absent.Ask"] {
+    let (negative, _) = resolve_named_effect(initial, name, 0, str.len(name))
+    assert len(negative.diags) == 1
+    for read in negative.function_reads.expect("negative reads") {
+      assert revalidate_read(initial, read) == Some(true)
+      let changed = ModExports { ..exp, effects: map.insert(exp.effects, "Missing", id.expect("effect")),
+        all_names: exp.all_names ++ ["Missing"] }
+      let candidate = Cx { ..initial, module_exports: map.from([("dep", changed), ("absent", changed)]) }
+      assert revalidate_read(candidate, read) == Some(false)
+    }
+  }
+  let (missing, _) = resolve_named_effect(initial, "dep.Missing", 0, 11)
+  let private_exp = ModExports { ..exp, all_names: exp.all_names ++ ["Missing"] }
+  let diagnostic = missing.function_reads.expect("diagnostic")[1]
+  assert revalidate_read(Cx { ..initial, module_exports: map.from([("dep", private_exp)]) }, diagnostic) == Some(false)
+}
+
+test "same-named effects from different providers cannot discharge each other" {
+  let (syntax, _) = parser.parse_module("pub effect Ask { fn ask() -> Int }\n")
+  let (left, _) = check_module(cx_new(Some("left"), None), syntax, map.empty())
+  let (right, _) = check_module(cx_new(Some("right"), None), syntax, map.empty())
+  let ex_left = exports_of(left, syntax, "left", "left")
+  let ex_right = exports_of(right, syntax, "right", "right")
+  assert map.get(ex_left.effects, "Ask") != map.get(ex_right.effects, "Ask")
+  let env = map.from([("left", ex_left), ("right", ex_right)])
+  for source in [
+    "use left as a\nuse right as b\nfn f() -> Int !a.Ask = b.ask()\n",
+    "use left as a\nuse right as b\nfn f() -> Int = { with handle a.Ask { ask() => 42 }\n b.ask() }\n"
+  ] {
+    let (consumer, pd) = parser.parse_module(source)
+    assert pd == []
+    let (checked, _) = check_module(cx_new(Some("consumer"), None), consumer, env)
+    assert len(checked.diags) > 0
+  }
+}
+
 test "export reads retain qualified pattern answers and recovery" {
   let (syntax, pd) = parser.parse_module("pub type Choice = Item(value: Int) | Empty\n")
   assert pd == []
@@ -8034,15 +8122,17 @@ fn check_handle(
   # no symbol.
   let (cxh, hid) = fresh(cx1)
   cx1 = cxh
-  let (name_cx, effect_id) = local_effect_name_read(cx1, name)
+  let (name_cx, effect_id) = resolve_named_effect(cx1, name, nlo, nhi)
   cx1 = name_cx
   let eid = match effect_id {
     Some(id) -> id
     None -> {
-      let (pool_cx, names) = effect_candidates_read(cx1)
-      cx1 = pool_cx
-      cx1 = cerr_o(cx1, "unknown effect `" ++ name ++ "`", nlo, nhi,
-        suggest.hint(name, names))
+      if not effect_name.qualified(name) {
+        let (pool_cx, names) = effect_candidates_read(cx1)
+        cx1 = pool_cx
+        cx1 = cerr_o(cx1, "unknown effect `" ++ name ++ "`", nlo, nhi,
+          suggest.hint(name, names))
+      }
       # the cells are still bound, and the remainder is still checked with the
       # licence: the handler is refused, but the block below it is the author's
       # code and a cascade of "undefined variable" on every cell read would

@@ -134,7 +134,7 @@ def run_session(server, root, cases):
         # typing it would be
         ids.append(req("textDocument/completion", {
             "textDocument": {"uri": uri},
-            "position": {"line": 0, "character": len(text)}}))
+            "position": {"line": text.count("\n"), "character": len(text.rsplit("\n", 1)[-1])}}))
     req("shutdown", None)
     note("exit", {})
 
@@ -193,6 +193,10 @@ def main():
         "use front/lexer as ",
         "use java ",
         "fn f() -> Int = 1 + fo",
+        "use std/io as dep\nfn f() -> Unit !dep.",
+        "use std/io as dep\nfn f() -> Unit !(io | dep.",
+        "use std/io as dep\nfn f() -> Unit = {\n with handle dep.",
+        "effect Ask { fn ask() -> Int }\nfn f() -> Int !",
     ]
     print("lsp-use-completion: server = %s" % " ".join(server))
     got = run_session(server, root, cases)
@@ -273,6 +277,15 @@ def main():
                                if any(x.endswith("/") for x in code) else ""))
 
     bad = 0
+    with open(os.path.join(root, "std/io.dawn")) as source:
+        effect_names = sorted(set(re.findall(r"(?m)^pub (?:ctl )?effect (\w+)", source.read())))
+    for case in cases[-4:-1]:
+        actual = labels(got[case])
+        expect(case, "qualified effect positions offer only exported effects",
+               bool(effect_names) and actual == effect_names, actual)
+    actual = labels(got[cases[-1]])
+    expect(cases[-1], "bare effect completion includes a local declaration",
+           actual is not None and "Ask" in actual and "io" in actual, actual)
     for case, why, ok, detail in checks:
         print("%-4s %-30s %s" % ("PASS" if ok else "FAIL", "[%s|]" % case, why))
         if not ok:

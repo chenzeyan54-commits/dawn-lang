@@ -250,6 +250,19 @@
       ]
     },
     {
+      "target": "examples/projects/qualified_effects",
+      "cases": [
+        {
+          "name": "qualified-callback-and-handler",
+          "argv": [],
+          "stdin": "",
+          "stdout": "42\n",
+          "stderr": "",
+          "exit": 0
+        }
+      ]
+    },
+    {
       "target": "examples/projects/tea_dom_counter",
       "cases": [
         {

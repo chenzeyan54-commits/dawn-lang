@@ -412,11 +412,17 @@ async function negativeControls(grammar) {
     }],
     ["parenthesized effect", candidate => {
       const pattern = candidate.repository.effects.patterns[0];
-      const optional = "(?:\\s*\\|\\s*[_\\p{L}][_\\p{L}\\p{Nd}]*)*";
-      const required = "(?:\\s*\\|\\s*[_\\p{L}][_\\p{L}\\p{Nd}]*)+";
+      const atom = "[_\\p{L}][_\\p{L}\\p{Nd}]*(?:\\.[\\p{Lu}][_\\p{L}\\p{Nd}]*)?";
+      const optional = "(?:\\s*\\|\\s*" + atom + ")*";
+      const required = "(?:\\s*\\|\\s*" + atom + ")+";
       const changed = pattern.begin.replace(optional, required);
       assert.notEqual(changed, pattern.begin, "parenthesized effect mutation did not apply");
       pattern.begin = changed;
+    }],
+    ["qualified effect omission", candidate => {
+      const count = replaceStrings(candidate.repository.effects,
+        "(?:\\.[\\p{Lu}][_\\p{L}\\p{Nd}]*)?", "");
+      assert.ok(count > 0, "qualified effect mutation did not apply");
     }],
     ["identifier Nd boundary", candidate => {
       const replacements = replaceStrings(candidate, "\\p{Nd}", "\\p{N}");

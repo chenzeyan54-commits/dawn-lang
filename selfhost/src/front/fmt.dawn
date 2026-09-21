@@ -665,6 +665,14 @@ test "a leading else aligns with its if" {
   assert fmt_of(src) == src
 }
 
+test "qualified effect rows and handlers format idempotently" {
+  let source = "fn f()->Int !(dep.Ask|T.E|io)={\nwith handle dep.Ask { ask()=>42 }\ndep.ask()\n}\n"
+  let first = match format(source) { Ok(text) -> text, Err(_) -> panic("qualified effect format") }
+  assert str.contains(first, "!(dep.Ask | T.E | io)")
+  assert str.contains(first, "with handle dep.Ask")
+  assert format(first) == Ok(first)
+}
+
 test "the associated-effect spellings keep their bang an effect marker" {
   # `!()` after an effect binding's `=` is the empty row, not a postfix unwrap
   # plus a call -- and only there: `o!()` in an expression stays tight.

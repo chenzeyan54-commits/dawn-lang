@@ -107,6 +107,17 @@
       ]
     },
     {
+      "name": "qualified effects",
+      "source": "fn f() -> Int !dep.Ask = 1\nfn g() -> Int !(dep.Ask | T.E | io) = 1",
+      "expect": [
+        { "line": 0, "text": "dep.Ask", "scope": "entity.name.type.effect.dawn" },
+        { "line": 1, "text": "!(", "scope": "meta.effect.annotation.dawn" },
+        { "line": 1, "text": "Ask", "scope": "entity.name.type.effect.dawn" },
+        { "line": 1, "text": "E", "scope": "entity.name.type.effect.dawn" },
+        { "line": 1, "text": "|", "scope": "keyword.operator.effect.union.dawn" }
+      ]
+    },
+    {
       "name": "operators",
       "source": "let shifts = a << b >> c >>> d\nlet logic = a < b > c == d != e <= f >= g && h || i\nlet math = a + b - c * d / e % f ++ g\nlet bits = a & b | c ^ ~d\nlet pipe = a |> f\nlet tagged = @tag value! ? other\nwith item <- next()\nlet arrow = x => x\nfn returns() -> Int = 0\nlet assigned = value = other",
       "expect": [

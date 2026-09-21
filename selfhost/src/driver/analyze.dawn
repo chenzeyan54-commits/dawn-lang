@@ -1999,13 +1999,7 @@ test "a consumer names a provider's effect without minting the provider's identi
     # of the provider's declaration that arrives inside the signature the
     # consumer was handed and that a join is the only way to read.
     #
-    # A module alias cannot carry the effect itself: the grammar reads `!dep`
-    # as an effect variable and then has nothing to do with the `.`, so
-    # `!dep.Ask` is a parse error ("expected `=` (function body), found `.`")
-    # and is not the spelling this asserts about. The consumer therefore
-    # names the effect through a selective import and calls the operation and
-    # the generic through the alias, which is the whole of what the surface
-    # allows a qualified effect consumer to be today.
+    # Qualified and selective spellings must name the same provider identity.
     let std = std_or_die()
     let initial = initial_carry_with_provenance(std, "provenance-test")
     let asks = "pub effect Ask { fn ask() -> Int }\n"
@@ -2039,7 +2033,10 @@ test "a consumer names a provider's effect without minting the provider's identi
       # here so that the claim about the provider's binder below is a claim
       # about that binder rather than about an empty table.
       let consumer_text = "use library as dep\nuse library.{Ask}\n" ++
-        "fn consume() -> Int !Ask = dep.twice(() => dep.ask())\n" ++
+        "fn consume() -> Int !dep.Ask = dep.twice(() => dep.ask())\n" ++
+        "fn selective() -> Int !Ask = consume()\n" ++
+        "alias Callback = fn() -> Int !dep.Ask\n" ++
+        "fn handled() -> Int = { with handle dep.Ask { ask() => 21 }\n consume() }\n" ++
         "fn relay[!f](g: fn() -> Int !f) -> Int !f = dep.twice(g)\n"
       let (consumer_ast, consumer_pd) = parser.parse_module(consumer_text)
       let consumer = LoadedModule { mod_path: "consumer", class_name: "consumer", path: "/provenance/consumer.dawn",
