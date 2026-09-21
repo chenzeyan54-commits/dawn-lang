@@ -5,12 +5,18 @@ alias Callback = fn() -> Int !dep.Ask
 
 fn consume(f: Callback) -> Int !dep.Ask = f() + dep.ask()
 
-pub fn main() -> Unit !io = {
+fn handled_answer() -> Int = {
   let answer = () => {
     with handle dep.Ask { ask() => 21 }
     consume(() => dep.ask())
   }
-  let result = answer()
-  if result != 42 { panic("qualified handler returned the wrong answer") }
-  println("${result}")
+  answer()
+}
+
+test "qualified callbacks and handlers share the provider effect" {
+  assert (handled_answer() == 42)
+}
+
+pub fn main() -> Unit !io = {
+  println("${handled_answer()}")
 }
