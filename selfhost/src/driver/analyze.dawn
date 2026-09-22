@@ -65,6 +65,7 @@ pub type LoadResult = { modules: List[LoadedModule], diags: List[LocDiag] }
 
 type PreparedModuleData = { loaded: LoadedModule, snapshot: Option[source_snapshot.Snapshot] }
 type PreparedLoadData = { result: LoadResult, proofs: Map[String, source_snapshot.Snapshot] }
+type SourceProof = { path: String, text: String, snapshot: source_snapshot.Snapshot }
 
 ## Only loader-owned parsing may certify this module's text and resolved tree.
 ## Returning the ordinary loaded value does not permit grafting it back here.
@@ -433,7 +434,7 @@ fn resolve(
   let root_abs = canon(root)
   var by_canon: Map[String, String] = map.empty()
   var by_path: Map[String, LoadedModule] = map.empty()
-  var proofs: Map[String, source_snapshot.Snapshot] = map.empty()
+  var proofs: Map[String, SourceProof] = map.empty()
   var order: List[String] = []
   var queue: List[String] = []
   # load seeds
@@ -466,7 +467,7 @@ fn resolve(
           by_canon = map.insert(by_canon, c, mod_path)
           by_path = map.insert(by_path, mod_path, mf)
           proofs = match parsed.snapshot {
-            Some(snapshot) -> map.insert(proofs, mod_path, snapshot)
+            Some(snapshot) -> map.insert(proofs, mod_path, SourceProof { path: f, text: text, snapshot: snapshot })
             None -> map.remove(proofs, mod_path)
           }
           order = order ++ [mod_path]
@@ -603,7 +604,7 @@ fn resolve(
               by_canon = map.insert(by_canon, dep_canon, mod_path)
               by_path = map.insert(by_path, mod_path, mf2)
               proofs = match parsed.snapshot {
-                Some(snapshot) -> map.insert(proofs, mod_path, snapshot)
+                Some(snapshot) -> map.insert(proofs, mod_path, SourceProof { path: dep_file, text: text, snapshot: snapshot })
                 None -> map.remove(proofs, mod_path)
               }
               order = order ++ [mod_path]
@@ -678,9 +679,16 @@ fn resolve(
   var bound: Map[String, source_snapshot.Snapshot] = map.empty()
   for raw in ordered {
     match map.get(proofs, raw.mod_path) {
-      Some(snapshot) -> match source_snapshot.resolved(snapshot, raw.m) {
-        Some(resolved) -> { bound = map.insert(bound, raw.mod_path, resolved) }
-        None -> ()
+      Some(proof) -> {
+        # A dependency can collide with a seed's module name while that seed
+        # is being visited. A final rewrite may restore the earlier loaded
+        # value, so its proof must match the actual source, not just its AST.
+        if proof.path == raw.path && proof.text == raw.text {
+          match source_snapshot.resolved(proof.snapshot, raw.m) {
+            Some(resolved) -> { bound = map.insert(bound, raw.mod_path, resolved) }
+            None -> ()
+          }
+        }
       }
       None -> ()
     }

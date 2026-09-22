@@ -102,6 +102,10 @@ The resolver shares one capture-flagged implementation with existing cold
 loaders. Capture-off parsing preserves recovered syntax and ordered diagnostics
 without building replay indexes. A proof is replaced or removed whenever its
 loaded source is replaced; missing proofs must never borrow an older entry.
+Transient proofs carry their original path and text. Final binding compares
+both with the actual loaded module before checking the resolved AST: a same-name
+dependency can replace a queued module while its final rewrite restores an
+earlier source, and equal-shaped ASTs do not prove that text/index pair agrees.
 After all package-path rewrites and topological sorting, each proof is bound to
 the final syntax through `source_snapshot.resolved` before publication.
 
