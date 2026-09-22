@@ -823,6 +823,17 @@ construct another snapshot. This is a compiling negative control, not an
 optimization mode. Semantic equality and body reuse must still be checked;
 only the independent method-entry count oracle should reject reparsing.
 
+`lsp-project-matrix.py --output <new-dir> -- <server-command>` uses the tracked
+two-module `project-edit-fixture` without changing its disk files. Eight overlay
+revisions cover provider body/signature edits, consumer and provider error
+recovery, moved source, and closing/reopening the provider. It records complete
+diagnostic publications with consumer versions and hover/definition/completion
+replies; `--compare <prior-output>` checks exact cross-policy equivalence using
+the same fixture paths and hashes. `--expect-reuse` requires exactly one body
+checked and three reused after the provider implementation edit. This is a
+small synthetic cross-module correctness/count fixture, not latency or
+real-application hit-rate evidence.
+
 单大模块错误恢复使用 `standalone-large.dawn.txt`（500个简单函数及一个入口，
 合成语料，不冒充真实大型应用）。在上述参数后加
 `--uri untitled:incremental-large --error-round 5`，entry/edit 指向同一份文件，
