@@ -11,7 +11,9 @@ deterministic modulo partitioning after `--only` selection. Empty partitions are
 rejected and every partition retains an independent positive. Three driver
 partitions contain 3/2/2 controls; the separate observer suite contains two,
 covering all nine exactly once. Self-tests verify this coverage and reject
-invalid partitions and false failure evidence.
+invalid partitions and false failure evidence. They also read the actual CI
+commands and require every control exactly once, rejecting missing driver or
+observer coverage and duplicated invocations.
 
 The transition controls pin reuse counts, module ownership, source binding,
 FFI refusal, error-cache eviction, fresh comptime evaluation, and current carry

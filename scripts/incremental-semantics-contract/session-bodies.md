@@ -16,7 +16,8 @@ each nonempty partition has its own independent positive. `--only NAME` may be
 repeated and selects controls before partitioning. The default runs all thirteen.
 `--self-test` checks unique source anchors, exact 5/4/4 coverage across three
 partitions, independent positives, invalid/empty partitions, and rejected false
-failure evidence without compiling.
+failure evidence without compiling. It reads the actual CI commands as well:
+missing partitions, duplicate controls, and an empty workflow are rejected.
 
 Each subject reports real elapsed time including compilation and the complete
 test dependency closure. These numbers size gates, not semantic-engine speedups.

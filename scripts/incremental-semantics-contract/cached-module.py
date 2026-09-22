@@ -6,6 +6,7 @@ compilation is never accepted as evidence that the owning assertion fired.
 """
 import argparse
 import re
+import shlex
 import shutil
 import tempfile
 import time
@@ -50,6 +51,27 @@ def variants():
         ('stale-export-carry', 'after: AnalysisCarry { exports: exports, impls: impls,',
          'after: AnalysisCarry { exports: if cache_bodies { before.exports } else { exports }, impls: impls,', transition),
     ]
+
+
+def workflow_inventory(controls, observers, parser, text):
+    names = []
+    for flags in re.findall(
+            r'^\s*(?:run:\s*)?python3 scripts/incremental-semantics-contract/cached-module\.py([^\n]*)$',
+            text, re.M):
+        args = parser.parse_args(shlex.split(flags))
+        if args.self_test:
+            continue
+        assert (args.shards is None) == (args.shard is None)
+        assert args.shards is None or args.suite == 'driver'
+        assert not args.only or args.suite != 'observer'
+        if args.suite in ('driver', 'all'):
+            selected = [item for item in controls if not args.only or item[0] in args.only]
+            if args.shards is not None:
+                selected = partition(selected, args.shards, args.shard)
+            names.extend(item[0] for item in selected)
+        if args.suite in ('observer', 'all'):
+            names.extend(item[0] for item in observers)
+    assert sorted(names) == sorted(item[0] for item in controls + observers), 'workflow loses or duplicates module controls'
 
 
 def main():
@@ -102,7 +124,18 @@ def main():
                                     'NoSuchMethodError', 'NoClassDefFoundError',
                                     'VerifyError', 'Exception in thread', 'panic: failed']]:
             assert not owning_failure(status, output, 'driver/analyze', 'owner')
-        print(f'OK: {len(controls) + len(observers)} unique cached-module mutation anchors')
+        workflow_inventory(controls, observers, parser, (ROOT / '.github/workflows/gates.yml').read_text())
+        command = 'python3 scripts/incremental-semantics-contract/cached-module.py'
+        workflow_inventory(controls, observers, parser, command + '\n')
+        for broken in ['', command + '\n' + command + '\n', command + ' --suite driver\n',
+                       command + ' --suite observer\n']:
+            try:
+                workflow_inventory(controls, observers, parser, broken)
+            except AssertionError:
+                pass
+            else:
+                raise AssertionError('accepted missing or duplicate workflow controls')
+        print(f'OK: {len(controls) + len(observers)} unique cached-module mutation anchors and exact workflow coverage')
         return
     selected = [c for c in controls if not args.only or c[0] in args.only]
     if args.shards is not None:

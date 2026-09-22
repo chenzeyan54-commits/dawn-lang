@@ -6,6 +6,7 @@ the shared workspace untouched; only a named assertion failure kills a mutant.
 """
 import argparse
 import re
+import shlex
 import shutil
 import tempfile
 import time
@@ -67,6 +68,19 @@ def owning_failure(status, output, owner):
     return bool(status and failure and not invalid)
 
 
+def workflow_inventory(controls, parser, text):
+    names = []
+    for flags in re.findall(
+            r'^\s*(?:run:\s*)?python3 scripts/incremental-semantics-contract/session-bodies\.py([^\n]*)$',
+            text, re.M):
+        args = parser.parse_args(shlex.split(flags))
+        if args.self_test:
+            continue
+        selected = [item for item in controls if not args.only or item[0] in args.only]
+        names.extend(item[0] for item in partition(selected, args.shards, args.shard))
+    assert sorted(names) == sorted(item[0] for item in controls), 'workflow loses or duplicates session controls'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--only', choices=[v[0] for v in variants()], action='append')
@@ -102,6 +116,16 @@ def main():
         for error in ['error: failed', 'panic: failed', 'LinkageError', 'NoSuchMethodError',
                       'NoClassDefFoundError', 'VerifyError', 'Exception in thread']:
             assert not owning_failure(1, good + error, 'owner')
+        workflow_inventory(controls, parser, (ROOT / '.github/workflows/gates.yml').read_text())
+        command = 'python3 scripts/incremental-semantics-contract/session-bodies.py'
+        workflow_inventory(controls, parser, command + '\n')
+        for broken in ['', command + '\n' + command + '\n', command + ' --shards 3 --shard 0\n']:
+            try:
+                workflow_inventory(controls, parser, broken)
+            except AssertionError:
+                pass
+            else:
+                raise AssertionError('accepted missing or duplicate workflow controls')
         print(f'OK: {len(controls)} session anchors, exact shard coverage and strict failure evidence')
         return
     started = time.monotonic()
