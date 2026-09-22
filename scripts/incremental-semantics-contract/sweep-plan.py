@@ -46,8 +46,9 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 GATES = ROOT / ".github/workflows/gates.yml"
 
-# Dedicated jobs validate every command. Other jobs contribute only contract
-# commands, so unrelated setup steps never become local sweep invocations.
+# Dedicated jobs validate every command. Other jobs contribute relevant run
+# steps, whose complete command blocks must also be supported. Unrelated setup
+# steps stay outside the sweep; setup within a relevant block fails closed.
 JOB_PREFIX = "incremental"
 CONTRACT_PATH = "scripts/incremental-semantics-contract"
 
@@ -190,8 +191,6 @@ def invocations(text=None):
             for line in run.splitlines():
                 command = line.strip()
                 if not command or command.startswith("#"):
-                    continue
-                if not dedicated and not relevant(command):
                     continue
                 if not command.startswith(COMMAND_PREFIXES):
                     raise SystemExit(
@@ -337,7 +336,7 @@ def discovery_self_test():
             {"name": "contract", "run": run}]}}}, sort_keys=False)
 
     original = fixture("incremental-body", contract)
-    relocated = fixture("ordinary-contract", "echo setup\n" + contract, [
+    relocated = fixture("ordinary-contract", "# contract invocation\n" + contract, [
         {"uses": "actions/checkout@v4"},
         {"run": "echo unrelated && echo setup"},
     ])
@@ -361,6 +360,9 @@ def discovery_self_test():
         "echo setup && " + contract, contract + " | tee result",
         contract + "; echo done", contract + " &", contract + " > result",
         "env FLAG=1 " + contract, "bash " + CONTRACT_PATH + "/probe.py",
+        "echo setup\n" + contract,
+        "cd other\n" + contract,
+        "export MODE=changed\n" + contract,
         "echo setup \\\n" + contract,
         "if true; then\n" + contract + "\nfi",
         "(\n" + contract + "\n)",
