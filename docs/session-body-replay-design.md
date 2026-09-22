@@ -22,8 +22,13 @@ On its first revision, record once and admit; on later revisions, invoke
 the existing comptime, diagnostics, exports, implementation-table fold, identity
 table, and declaration-span publication. Never restore the old module suffix.
 
-Parse failure, unavailable provenance, changed owner identity, unsupported
-snapshot binding, and disabled caching select the canonical cold branch. Header
+Parse failure, absent outer `AnalysisCarry.provenance`, unsupported snapshot
+binding, and disabled caching select the unobserved canonical cold branch. A
+changed owner identity prevents borrowing the old admission but permits a fresh
+recorded cold execution. Missing inner provenance tables do not currently gate
+this primitive producer: it reconstructs the required local/compiler header
+tables and revalidates actual query answers. Broader imported type classes must
+establish their own provenance coverage before admission expands. Header
 or body errors cannot borrow an old success. Cache renewal must describe the
 actual current execution; it must not union entries with an older generation.
 The completed checker context used by the query Program keeps the original Java
