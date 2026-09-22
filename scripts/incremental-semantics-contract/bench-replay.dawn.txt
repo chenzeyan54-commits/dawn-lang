@@ -1,40 +1,21 @@
-# Private benchmark subject: cost of cold body checking, of scheduler recording
-# and of the opt-in scalar replay executor, measured at the production entries.
-#
-# Nothing here changes checker, recorder or executor semantics. The replay phase
-# split is a fixture-local re-composition of the same public producers that
-# `check/scalar_replay` calls, validated in-process against the production
-# `scalar_replay.replay` on reused/checked counts and on total wall time.
-#
-# Driven by `bench-replay.py`; run it, not this file. Output is TSV on stdout:
-#   meta<TAB>key<TAB>value
-#   round<TAB>index<TAB>metric<TAB>nanos
+# Private benchmark of production cold, record, admit, replay and renewal APIs.
+# Checks run outside each operation timer; no private replay implementation.
+# Snapshot construction and retained-heap probes have separate units and modes.
+# Driven by bench-replay.py; stdout is strict meta/round TSV.
 use std/map
 use std/str
-use std/set
 use compiler/front/parser
-use compiler/front/ast.{Module, FnDecl, Expr, EInt, EFloat, EBool, EUnit, DFn}
 use compiler/front/token.{Diag}
 use compiler/check/checker
-use compiler/check/checker.{ModuleHeaders, ModuleBodies, BodyExecutor}
-use compiler/check/cx.{Cx, Frame, cx_new, ModExports}
+use compiler/check/checker.{ModuleHeaders, ModuleBodies}
+use compiler/check/cx.{Cx, cx_new, ModExports}
 use compiler/check/body_execution
-use compiler/check/body_execution.{Recorded, SavedFunction, FunctionInput}
-use compiler/check/body_product
-use compiler/check/body_product.{Product, BodyProduct}
 use compiler/check/scalar_replay
-use compiler/check/scalar_shape
-use compiler/check/write_journal.{SymbolKey}
 use compiler/check/identity
-use compiler/check/identity.{ModuleKey, DeclKey, Named, FunctionDecl}
-use compiler/check/allocation
+use compiler/check/identity.{ModuleKey}
 use compiler/check/source_projection
 use compiler/check/source_snapshot
 use compiler/check/source_snapshot.{Snapshot}
-use compiler/check/body_admit.{View}
-use compiler/check/semantic_reads.{AssignableType}
-use compiler/check/tast.{TFun}
-use compiler/check/types.{Ty, TyInt, TyFloat, TyBool, TyUnit, Sig, Sym, EPure}
 use compiler/jvm/jreflect.{jsig_real}
 use java "java.lang.System"
 use java "java.lang.Integer"
@@ -71,6 +52,10 @@ pub fn subject(kind: String, n: Int) -> String = {
     for i in 0..n {
       parts = parts ++ ["fn c${i}(a: Int) -> Int = helper(a) + helper2(a, ${i}) + helper(a + ${i})"]
     }
+  }
+  if kind == "primitive_inferred" {
+    parts = parts ++ ["fn seed() = 1"]
+    for i in 0..n { parts = parts ++ ["fn ip${i}() = seed() + ${i}"] }
   }
   if kind == "generic" {
     parts = parts ++ ["trait Scale[T] { fn scale(x: T, k: Int) -> Int }",
@@ -135,393 +120,150 @@ fn meta(key: String, value: String) -> Unit !io = println("meta\t${key}\t${value
 fn row(index: Int, metric: String, nanos: Int) -> Unit !io =
   println("round\t${index}\t${metric}\t${nanos}")
 
-# ---------------------------------------------------------------- phase split
-
-## The counters below mirror `check/scalar_replay`'s own steps one for one.
-## `shape` is its per-body admission guard: the header half of class
-## membership, the declaration pairing, the relocated signature, the alias
-## guard over the recorded binder names and the reserved allocation interval.
-## `proj` is its source projection plus `body_product.project`, `reval` its
-## `checker.revalidate_read` loop, `asm` its `body_product.assemble`.
-##
-## Everything the recorded revision can settle alone now lives in `admit`,
-## which runs once per recording. The mirror keeps that split: `recorded` and
-## `admitted_entries` below are the record-time half and are built outside the
-## timed region, as `record` itself is.
-##
-## This mirror is the fixture's only real obligation, and it is checked: every
-## run compares its reused/checked counts against production replay in the same
-## process. An admission rule that lands in the executor without landing here
-## makes the split panic rather than report a split of something else.
-type Acc = { checked: Int, reused: Int, shape: Int, reval: Int, proj: Int, asm: Int }
-
-type Prior = { syntax: FnDecl, signature: Sig, product: Product, declaration: Int,
-  binders: List[String], symbols: Map[Int, Sym] }
-type Prepared = { scope: ModuleKey, entries: Map[DeclKey, Prior],
-  candidates: Map[Int, (DeclKey, Int)],
-  old_tokens: source_projection.Tokens, tokens: source_projection.Tokens }
-
-fn primitive(t: Ty) -> Bool = match t {
-  TyInt -> true, TyFloat -> true, TyBool -> true, TyUnit -> true, _ -> false
-}
-
-fn parameters(d: FnDecl, s: Sig) -> Option[Set[String]] = {
-  if d.tparams != [] || d.eparams != [] || d.effs != [] || d.ret == None ||
-    s.tparams != [] || s.eparams != [] || len(s.constraints) != 0 || s.eff != EPure ||
-    s.inferring || s.is_builtin || s.trait_id != None || not primitive(s.ret) ||
-    len(d.params) != len(s.param_tys) || len(d.params) != len(s.param_names) { return None }
-  for present in s.param_defaults { if present { return None } }
-  var bound: Set[String] = set.empty()
-  var i = 0
-  for param in d.params {
-    if param.default != None || param.name != s.param_names[i] ||
-      not primitive(s.param_tys[i]) || set.has(bound, param.name) { return None }
-    bound = set.insert(bound, param.name)
-    i = i + 1
-  }
-  Some(bound)
-}
-
-fn table(scope: ModuleKey, h: ModuleHeaders) -> Option[allocation.Table] =
-  allocation.combine([allocation.compiler_headers(scope.world)?,
-    allocation.table(allocation.local_headers(scope, h.syntax, h.cx)?)?])
-
-fn snapshot_matches(h: ModuleHeaders, s: Snapshot) -> Bool = source_snapshot.syntax(s) == h.syntax
-
-## The record-time half of admission, mirrored from `scalar_replay.recorded`.
-fn recorded(prior: FnDecl, prior_sig: Sig, p: Product, declaration: Int) -> Option[Prior] = {
-  if p.tree.sig != prior_sig || p.tree.name != prior.name ||
-    p.signatures != [] || p.aliases != [] || len(p.bounds) != 0 ||
-    p.diagnostics != [] { return None }
-  let reads = p.function_reads?
-  if reads == [] { return None }
-  for read in reads {
-    match read {
-      AssignableType(a, b, true) -> if not primitive(a) || not primitive(b) { return None }
-      _ -> return None
-    }
-  }
-  var symbols: Map[Int, Sym] = map.empty()
-  for change in p.symbols {
-    let symbol = change.value?
-    if map.has(symbols, change.key) || not primitive(symbol.ty) || symbol.mutable ||
-      symbol.dict_of != None || symbol.ev_of != None || symbol.cell_of != None { return None }
-    symbols = map.insert(symbols, change.key, symbol)
-  }
-  var written: Set[Int] = set.empty()
-  for write in p.body_writes? {
-    match write {
-      SymbolKey(id) -> {
-        if not map.has(symbols, id) { return None }
-        written = set.insert(written, id)
-      }
-      _ -> return None
-    }
-  }
-  if set.len(written) != map.len(symbols) { return None }
-  let names = scalar_shape.binders(prior.body, prior_sig.param_names)?
-  Some(Prior { syntax: prior, signature: prior_sig, product: p, declaration: declaration,
-    binders: names, symbols: symbols })
-}
-
-fn admitted_entries(scope: ModuleKey, old: ModuleHeaders, saved: Recorded) -> Map[DeclKey, Prior] = {
-  var originals: Map[DeclKey, (FnDecl, Int)] = map.empty()
-  for entry in identity.declarations(scope, old.syntax) {
-    match old.syntax.decls[entry.declaration] {
-      DFn(d) -> { originals = map.insert(originals, entry.key, (d, entry.declaration)) }
-      _ -> ()
-    }
-  }
-  var entries: Map[DeclKey, Prior] = map.empty()
-  var seen: Set[DeclKey] = set.empty()
-  for entry in saved.entries {
-    match entry {
-      SavedFunction(k, FunctionInput(prior, prior_sig, false), product) -> {
-        if set.has(seen, k) {
-          entries = map.remove(entries, k)
-        } else {
-          seen = set.insert(seen, k)
-          match map.get(originals, k) {
-            Some((declared, declaration)) -> {
-              if declared == prior && map.get(old.cx.fns, prior.name) == Some(prior_sig) {
-                match recorded(prior, prior_sig, product, declaration) {
-                  Some(value) -> { entries = map.insert(entries, k, value) }
-                  None -> ()
-                }
-              }
-            }
-            None -> ()
-          }
-        }
-      }
-      _ -> ()
-    }
-  }
-  entries
-}
-
-## Per-body admission guard, split out so its cost can be read separately.
-## Returns the recorded local symbols only when every structural precondition
-## of replay holds.
-type Shaped = { prior: FnDecl, product: Product, symbols: Map[Int, Sym],
-  prior_declaration: Int, declaration_new: Int }
-
-fn shape_ok(p: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[Shaped] = {
-  if cx.diags != [] { return None }
-  let _ = parameters(d, sig)?
-  let (key, declaration) = map.get(p.candidates, d.lo)?
-  let saved = map.get(p.entries, key)?
-  let prior = saved.syntax
-  let prior_sig = saved.signature
-  if prior_sig.param_names != sig.param_names { return None }
-  for name in saved.binders {
-    if map.has(cx.module_aliases, name) { return None }
-  }
-  let no_evidence: List[Int] = []
-  if not allocation.body_relocation(prior_sig, sig, no_evidence) { return None }
-  Some(Shaped { prior: prior, product: saved.product, symbols: saved.symbols,
-    prior_declaration: saved.declaration, declaration_new: declaration })
-}
-
-fn timed_function(p: Prepared, acc: Acc, cx: Cx, d: FnDecl, sig: Sig,
-  cold: BodyExecutor[Acc]) -> (Acc, Cx, TFun) !io = {
-  let t0 = System.nanoTime()
-  let shaped = shape_ok(p, cx, d, sig)
-  let t1 = System.nanoTime()
-  var a = Acc { ..acc, shape: acc.shape + (t1 - t0) }
-  match shaped {
-    None -> cold.function(Acc { ..a, checked: a.checked + 1 }, cx, d, sig)
-    Some(saved) -> {
-      let prior = saved.prior
-      let t2 = System.nanoTime()
-      # Both revisions lexed their own declarations once; pairing them is two
-      # list comparisons, and admission then requires the declaration's own
-      # bytes, because a saved body's spans are offsets into that text.
-      let paired = source_projection.pair(p.old_tokens, p.tokens,
-        saved.prior_declaration, saved.declaration_new, prior.lo, prior.hi, d.lo, d.hi) &&
-        source_projection.same_text(p.old_tokens, p.tokens, prior.lo, prior.hi, d.lo, d.hi)
-      let absent: Option[View] = None
-      let relocated = if paired {
-        Some(View { symbols: saved.symbols,
-          callee: (owner, name, builtin, trait_id) => None })
-      } else { absent }
-      let t3 = System.nanoTime()
-      a = Acc { ..a, proj: a.proj + (t3 - t2) }
-      match relocated {
-        None -> cold.function(Acc { ..a, checked: a.checked + 1 }, cx, d, sig)
-        Some(view) -> {
-          let t4 = System.nanoTime()
-          var ok = true
-          match saved.product.function_reads {
-            None -> { ok = false }
-            Some(reads) -> {
-              for read in reads {
-                if checker.revalidate_read(cx, read) != Some(true) { ok = false }
-              }
-            }
-          }
-          let t5 = System.nanoTime()
-          a = Acc { ..a, reval: a.reval + (t5 - t4) }
-          if not ok {
-            cold.function(Acc { ..a, checked: a.checked + 1 }, cx, d, sig)
-          } else {
-            let t8 = System.nanoTime()
-            let moved = match cx.function_reads {
-              None -> body_product.project_without_reads(view, saved.product)
-              Some(_) -> body_product.project(view, saved.product)
-            }
-            let t9 = System.nanoTime()
-            a = Acc { ..a, proj: a.proj + (t9 - t8) }
-            match moved {
-              None -> cold.function(Acc { ..a, checked: a.checked + 1 }, cx, d, sig)
-              Some(product) -> {
-                let carried = BodyProduct { ..product, in_test: cx.in_test, const_cutoff: cx.const_cutoff,
-                  loop_jumps: cx.loop_jumps, take_cell: cx.take_cell,
-                  function_reads: match cx.function_reads { None -> None, Some(_) -> product.function_reads },
-                  body_writes: match cx.body_writes { None -> None, Some(_) -> product.body_writes },
-                  frame: Frame { ..product.frame, isolated: cx.frame.isolated } }
-                let t6 = System.nanoTime()
-                let assembled = body_product.assemble(cx, carried)
-                let t7 = System.nanoTime()
-                a = Acc { ..a, asm: a.asm + (t7 - t6) }
-                match assembled {
-                  Some(after) -> (Acc { ..a, reused: a.reused + 1 }, after, carried.tree)
-                  None -> cold.function(Acc { ..a, checked: a.checked + 1 }, cx, d, sig)
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-type Split = { bind: Int, pair: Int, alloc: Int, acc: Acc, total: Int, bodies: Int }
-
-fn instrumented_replay(scope: ModuleKey, old_headers: allocation.Table,
-  entries: Map[DeclKey, Prior], old_source: Snapshot, next: ModuleHeaders, source: Snapshot) -> Split !io = {
-  let start = System.nanoTime()
-  let p0 = System.nanoTime()
-  let ok = next.cx.diags == [] && snapshot_matches(next, source)
-  let p1 = System.nanoTime()
-  if not ok { panic("instrumented replay: source snapshots did not match") }
-  let a0 = System.nanoTime()
-  let next_table = table(scope, next)
-  let joined = match next_table {
-    Some(b) -> allocation.between(old_headers, b)
-    None -> false
-  }
-  let a1 = System.nanoTime()
-  if not joined { panic("instrumented replay: no allocation plan") }
-  let q0 = System.nanoTime()
-  var candidates: Map[Int, (DeclKey, Int)] = map.empty()
-  for located in identity.located(scope, next.syntax) {
-    match next.syntax.decls[located.entry.declaration] {
-      DFn(_) -> if located.entry.member == None {
-        candidates = map.insert(candidates, located.span.lo, (located.entry.key, located.entry.declaration))
-      }
-      _ -> ()
-    }
-  }
-  let q1 = System.nanoTime()
-  let prepared = Prepared { scope: scope, entries: entries, candidates: candidates,
-    old_tokens: source_snapshot.tokens(old_source), tokens: source_snapshot.tokens(source) }
-  let cold: BodyExecutor[Acc] = checker.cold_body_executor()
-  let executor: BodyExecutor[Acc] = BodyExecutor {
-    function: (acc, cx, d, sig) => timed_function(prepared, acc, cx, d, sig, cold),
-    inferred_body: (a, cx, d, sig) => cold.inferred_body(Acc { ..a, checked: a.checked + 1 }, cx, d, sig),
-    constant: (a, cx, d, ty, visible) => cold.constant(Acc { ..a, checked: a.checked + 1 }, cx, d, ty, visible),
-    method: (a, cx, tr, subject, d, sig) => cold.method(Acc { ..a, checked: a.checked + 1 }, cx, tr, subject, d, sig),
-    default_body: (a, cx, tr, d, sig, body) => cold.default_body(Acc { ..a, checked: a.checked + 1 }, cx, tr, d, sig, body),
-    test_body: (a, cx, name, body) => cold.test_body(Acc { ..a, checked: a.checked + 1 }, cx, name, body)
-  }
-  let zero = Acc { checked: 0, reused: 0, shape: 0, reval: 0, proj: 0, asm: 0 }
-  let (acc, bodies) = checker.execute_module_bodies(next, zero, executor)
-  let stop = System.nanoTime()
-  Split { bind: p1 - p0, pair: q1 - q0, alloc: a1 - a0, acc: acc,
-    total: stop - start, bodies: body_count(bodies) }
-}
-
 # ---------------------------------------------------------------- modes
 
 fn edited(text: String) -> String = "# edited elsewhere in the file\n" ++ text
 
+fn require(condition: Bool, label: String) -> Unit =
+  if not condition { panic("benchmark invariant: " ++ label) }
+
+# Compare actual scheduler outputs, not another implementation of checking.
+fn equal_bodies(actual: ModuleBodies, expected: ModuleBodies) -> Bool =
+  actual.functions == expected.functions && actual.constants == expected.constants &&
+    actual.impl_methods == expected.impl_methods && actual.trait_defaults == expected.trait_defaults &&
+    actual.tests == expected.tests && actual.cx.diags == expected.cx.diags &&
+    actual.cx.syms == expected.cx.syms && actual.cx.decl_slots == expected.cx.decl_slots &&
+    actual.cx.frame == expected.cx.frame && actual.cx.fns == expected.cx.fns &&
+    actual.cx.alias_resolved == expected.cx.alias_resolved &&
+    actual.cx.current_tparams == expected.cx.current_tparams &&
+    actual.cx.current_eff_vars == expected.cx.current_eff_vars &&
+    actual.cx.current_tparam_bounds == expected.cx.current_tparam_bounds &&
+    actual.cx.function_reads == expected.cx.function_reads && actual.cx.body_writes == expected.cx.body_writes &&
+    actual.cx.owner == expected.cx.owner && actual.cx.owner_lo == expected.cx.owner_lo &&
+    actual.cx.owner_decl == expected.cx.owner_decl && actual.cx.in_test == expected.cx.in_test &&
+    actual.cx.const_cutoff == expected.cx.const_cutoff && actual.cx.loop_jumps == expected.cx.loop_jumps &&
+    actual.cx.take_cell == expected.cx.take_cell
+
+# Fixture expectations, not admission rules. The original inference-heavy
+# lambda class remains unsupported; primitive inference has its own workload.
+fn expected_hits(kind: String, n: Int) -> Int =
+  if kind == "scalar" || kind == "arith" { n }
+  else { if kind == "calls" { n + 2 }
+  else { if kind == "primitive_inferred" { n + 1 } else { 0 } } }
+
+fn checked_cold(headers: ModuleHeaders) -> ModuleBodies !io = {
+  let result = checker.check_module_body_products(headers)
+  if result.cx.diags != [] { panic("cold fixture: ${show_diags(result.cx.diags)}") }
+  result
+}
+
+fn verify_replay(result: scalar_replay.Replayed, cold: ModuleBodies, hits: Int) -> Unit = {
+  require(equal_bodies(result.bodies, cold), "equal_bodies(result.bodies, cold)")
+  require(result.reused == hits, "result.reused == hits")
+  require(result.checked == body_count(cold) - hits, "result.checked == body_count(cold) - hits")
+  require(result.checked == result.cold_unadmitted + result.cold_rejected, "result.checked == result.cold_unadmitted + result.cold_rejected")
+  require(result.cold_rejected == 0, "result.cold_rejected == 0")
+}
+
 fn run_cold(kind: String, n: Int, rounds: Int) -> Unit !io = {
   let text = subject(kind, n)
   let headers = headers_of(text)
-  var executed = 0
+  let expected = checked_cold(headers)
   for r in 0..rounds {
     let t0 = System.nanoTime()
     let bodies = checker.check_module_body_products(headers)
     let t1 = System.nanoTime()
-    if bodies.cx.diags != [] { panic("cold bodies: ${show_diags(bodies.cx.diags)}") }
-    executed = body_count(bodies)
+    require(equal_bodies(bodies, expected), "equal_bodies(bodies, expected)")
     row(r, "cold", t1 - t0)
   }
-  meta("bodies", "${executed}")
+  meta("bodies", "${body_count(expected)}")
   meta("source_bytes", "${str.len(text)}")
 }
 
-fn run_record(kind: String, n: Int, rounds: Int) -> Unit !io = {
-  let text = subject(kind, n)
-  let snapshot = snapshot_of(text)
+fn run_record(kind: String, n: Int, rounds: Int, only_admit: Bool) -> Unit !io = {
+  let snapshot = snapshot_of(subject(kind, n))
   let headers = headers_of_snapshot(snapshot)
   let scope = scope_key()
-  var executed = 0
-  var refused = 0
+  let expected = checked_cold(headers)
+  let initial = body_execution.record(scope, headers)
+  require(equal_bodies(initial.bodies, expected) && initial.refused == 0, "equal_bodies(initial.bodies, expected) && initial.refused == 0")
+  require(initial.checked == body_count(expected), "initial.checked == body_count(expected)")
   for r in 0..rounds {
-    let t0 = System.nanoTime()
-    let saved = body_execution.record(scope, headers)
-    let t1 = System.nanoTime()
-    let admitted = scalar_replay.admit(scope, headers, snapshot, saved)
-    let t2 = System.nanoTime()
-    if saved.bodies.cx.diags != [] { panic("record bodies: ${show_diags(saved.bodies.cx.diags)}") }
-    if scalar_replay.admitted_count(admitted) < 0 { panic("admission verdict") }
-    executed = body_count(saved.bodies)
-    refused = saved.refused
-    row(r, "record", t1 - t0)
-    row(r, "admit", t2 - t1)
+    if only_admit {
+      let t0 = System.nanoTime()
+      let admitted = scalar_replay.admit(scope, headers, snapshot, initial)
+      let t1 = System.nanoTime()
+      require(scalar_replay.admitted_count(admitted) == expected_hits(kind, n), "scalar_replay.admitted_count(admitted) == expected_hits(kind, n)")
+      verify_replay(scalar_replay.replay(admitted, headers, snapshot), expected, expected_hits(kind, n))
+      row(r, "admit", t1 - t0)
+    } else {
+      let t0 = System.nanoTime()
+      let saved = body_execution.record(scope, headers)
+      let t1 = System.nanoTime()
+      require(equal_bodies(saved.bodies, expected), "equal_bodies(saved.bodies, expected)")
+      require(saved.checked == body_count(expected) && saved.refused == 0, "saved.checked == body_count(expected) && saved.refused == 0")
+      let admitted = scalar_replay.admit(scope, headers, snapshot, saved)
+      require(scalar_replay.admitted_count(admitted) == expected_hits(kind, n), "scalar_replay.admitted_count(admitted) == expected_hits(kind, n)")
+      verify_replay(scalar_replay.replay(admitted, headers, snapshot), expected, expected_hits(kind, n))
+      row(r, "record", t1 - t0)
+    }
   }
-  meta("bodies", "${executed}")
-  meta("refused", "${refused}")
+  meta("bodies", "${body_count(expected)}")
+  meta("admitted", "${expected_hits(kind, n)}")
+  meta("capture_refused", "0")
 }
 
-type Setup = { scope: ModuleKey, old: ModuleHeaders, before: Snapshot, saved: Recorded,
-  admitted: scalar_replay.Admitted, entries: Map[DeclKey, Prior], old_headers: allocation.Table,
-  next: ModuleHeaders, after: Snapshot }
-
-## One revision pair: the same module, edited only by a leading comment. Every
-## body keeps its text and its declaration identity, and every byte offset moves.
-## Both snapshots are built here, outside the timed region: each is the single
-## parse its own revision's headers were checked from.
-fn replay_setup(kind: String, n: Int) -> Setup !io = {
+# Prebuild both revision inputs once. Neither parsing nor header checking is
+# part of the body-operation timer; renewal alternates actual cache generations.
+fn run_replay(kind: String, n: Int, rounds: Int, renew: Bool) -> Unit !io = {
   let before = snapshot_of(subject(kind, n))
   let after = snapshot_of(edited(subject(kind, n)))
-  let scope = scope_key()
   let old = headers_of_snapshot(before)
-  let saved = body_execution.record(scope, old)
-  if saved.refused != 0 { panic("replay setup: ${saved.refused} refused recordings") }
-  Setup { scope: scope, old: old, before: before, saved: saved,
-    admitted: scalar_replay.admit(scope, old, before, saved),
-    entries: admitted_entries(scope, old, saved),
-    old_headers: match table(scope, old) { Some(t) -> t, None -> panic("replay setup: no old table") },
-    next: headers_of_snapshot(after), after: after }
-}
-
-fn run_replay(kind: String, n: Int, rounds: Int) -> Unit !io = {
-  let s = replay_setup(kind, n)
-  var reused = 0
-  var checked = 0
+  let next = headers_of_snapshot(after)
+  let old_cold = checked_cold(old)
+  let next_cold = checked_cold(next)
+  let saved = body_execution.record(scope_key(), old)
+  require(equal_bodies(saved.bodies, old_cold) && saved.refused == 0, "equal_bodies(saved.bodies, old_cold) && saved.refused == 0")
+  var admitted = scalar_replay.admit(scope_key(), old, before, saved)
+  let hits = expected_hits(kind, n)
+  require(scalar_replay.admitted_count(admitted) == hits, "scalar_replay.admitted_count(admitted) == hits")
   for r in 0..rounds {
-    let t0 = System.nanoTime()
-    let result = scalar_replay.replay(s.admitted, s.next, s.after)
-    let t1 = System.nanoTime()
-    reused = result.reused
-    checked = result.checked
-    row(r, "replay", t1 - t0)
-  }
-  meta("reused", "${reused}")
-  meta("checked", "${checked}")
-}
-
-## The phase split runs in its own JVM so it gets the same warmup treatment as
-## the production entry it decomposes; the two totals are then comparable.
-fn run_split(kind: String, n: Int, rounds: Int) -> Unit !io = {
-  let s = replay_setup(kind, n)
-  let control = scalar_replay.replay(s.admitted, s.next, s.after)
-  var bodies = 0
-  for r in 0..rounds {
-    let split = instrumented_replay(s.scope, s.old_headers, s.entries, s.before, s.next, s.after)
-    if split.acc.reused != control.reused || split.acc.checked != control.checked {
-      panic("instrumented split disagrees: ${split.acc.reused}/${split.acc.checked} vs ${control.reused}/${control.checked}")
+    let backwards = renew && r % 2 == 1
+    let headers = if backwards { old } else { next }
+    let snapshot = if backwards { before } else { after }
+    let expected = if backwards { old_cold } else { next_cold }
+    if renew {
+      let t0 = System.nanoTime()
+      let result = scalar_replay.replay_and_record(admitted, headers, snapshot)
+      let t1 = System.nanoTime()
+      verify_replay(result.replayed, expected, hits)
+      require(result.visited == body_count(expected) && result.capture_refused == 0, "result.visited == body_count(expected) && result.capture_refused == 0")
+      require(scalar_replay.admitted_count(result.admitted) == hits, "scalar_replay.admitted_count(result.admitted) == hits")
+      admitted = result.admitted
+      row(r, "renew", t1 - t0)
+    } else {
+      let t0 = System.nanoTime()
+      let result = scalar_replay.replay(admitted, headers, snapshot)
+      let t1 = System.nanoTime()
+      verify_replay(result, expected, hits)
+      row(r, "replay", t1 - t0)
     }
-    bodies = split.bodies
-    row(r, "split_total", split.total)
-    row(r, "split_bind", split.bind)
-    row(r, "split_pair", split.pair)
-    row(r, "split_alloc", split.alloc)
-    row(r, "split_shape", split.acc.shape)
-    row(r, "split_reval", split.acc.reval)
-    row(r, "split_proj", split.acc.proj)
-    row(r, "split_asm", split.acc.asm)
   }
-  meta("reused", "${control.reused}")
-  meta("checked", "${control.checked}")
-  meta("bodies", "${bodies}")
+  meta("bodies", "${body_count(next_cold)}")
+  meta("reused", "${hits}")
+  meta("checked", "${body_count(next_cold) - hits}")
+  meta("cold_unadmitted", "${body_count(next_cold) - hits}")
+  meta("cold_rejected", "0")
+  if renew {
+    meta("visited", "${body_count(next_cold)}")
+    meta("capture_refused", "0")
+    meta("renewed_admitted", "${scalar_replay.admitted_count(admitted)}")
+  }
 }
 
-## The two halves of snapshot provenance, priced apart.
-##
-## `snapshot_of` is what the revision's owner pays once, and it parses; it is
-## not replay's cost, because the owner had to parse the revision anyway to
-## check its headers. `bind_pair` is what replay still pays before it looks at
-## a single body: two tree comparisons against the headers each snapshot
-## accompanies. `parse` is that parse timed alone, and it is also what a
-## reparsing replay used to pay twice per call. `index` is the separate decode
-## of the same text: the snapshot no longer makes it, because the parse hands
-## back the code points and the tokens it already had, so this row is the pass
-## that construction dropped rather than a part of it.
+## Parse, historical standalone index construction, syntax comparison and the
+## actual single-parse snapshot constructor are timed independently. None is
+## included in replay's body timer; no synthetic multiple is a production phase.
 fn run_parse(kind: String, n: Int, rounds: Int) -> Unit !io = {
   let text = subject(kind, n)
   let headers = headers_of(text)
@@ -546,7 +288,6 @@ fn run_parse(kind: String, n: Int, rounds: Int) -> Unit !io = {
     row(r, "index", t2 - t1)
     row(r, "compare", t3 - t2)
     row(r, "snapshot_of", t5 - t4)
-    row(r, "bind_pair", 2 * (t3 - t2))
   }
   meta("source_bytes", "${str.len(text)}")
   meta("decls", "${len(headers.syntax.decls)}")
@@ -555,12 +296,10 @@ fn run_parse(kind: String, n: Int, rounds: Int) -> Unit !io = {
 ## Retained cost, attributed rather than estimated: settle the heap, read used
 ## bytes, retain one more value, settle and read again.
 ##
-## Two metrics, because only one of them is new memory. `retained_index` is the
-## code-point index, which nothing retained before: replay built it per call
-## and dropped it. `retained_snapshot` also builds a fresh tree, which the real
-## owner does not: there the snapshot holds the same tree the headers hold, so
-## the index is the whole marginal cost and the difference between the two
-## numbers is the tree this fixture parsed a second time.
+## These metrics retain fresh indexes and whole snapshots, respectively.
+## A whole snapshot includes syntax, code points and token facts. Their
+## difference is not a measured marginal semantic-cache cost: ownership and
+## sharing differ from a production session. GC deltas may include noise.
 fn used_heap() -> Int !io = {
   let rt = Runtime.getRuntime().expect("runtime")
   var i = 0
@@ -591,7 +330,7 @@ fn run_memory(kind: String, n: Int, rounds: Int) -> Unit !io = {
   meta("source_bytes", "${str.len(text)}")
 }
 
-## Cost of the nanoTime pairs the split adds, so the split can be discounted.
+## Clock-pair probe only; do not subtract it from whole-operation medians.
 fn run_timer(kind: String, n: Int, rounds: Int) -> Unit !io = {
   for r in 0..rounds {
     let t0 = System.nanoTime()
@@ -610,22 +349,26 @@ fn run_timer(kind: String, n: Int, rounds: Int) -> Unit !io = {
 
 pub fn main() -> Unit !io = {
   let a = args()
-  if len(a) < 3 { panic("usage: <cold|record|replay|split|parse|memory|timer> <class> <n> [rounds]") }
+  if len(a) != 4 { panic("usage: <cold|record|admit|replay|renew|parse|memory|timer> <class> <n> <rounds>") }
   let mode = a[0]
   let kind = a[1]
   let n = Integer.parseInt(a[2])
-  let rounds = if len(a) > 3 { Integer.parseInt(a[3]) } else { 11 }
+  let rounds = Integer.parseInt(a[3])
+  require(n > 0 && rounds > 0, "n > 0 && rounds > 0")
   meta("mode", mode)
   meta("class", kind)
   meta("n", "${n}")
   meta("rounds", "${rounds}")
   meta("java", match System.getProperty("java.version") { Some(v) -> v, None -> "unknown" })
-  if mode == "cold" { run_cold(kind, n, rounds) }
-  else { if mode == "record" { run_record(kind, n, rounds) }
-  else { if mode == "replay" { run_replay(kind, n, rounds) }
-  else { if mode == "split" { run_split(kind, n, rounds) }
-  else { if mode == "parse" { run_parse(kind, n, rounds) }
-  else { if mode == "memory" { run_memory(kind, n, rounds) }
-  else { if mode == "timer" { run_timer(kind, n, rounds) }
-  else { panic("unknown mode ${mode}") } } } } } } }
+  match mode {
+    "cold" -> run_cold(kind, n, rounds)
+    "record" -> run_record(kind, n, rounds, false)
+    "admit" -> run_record(kind, n, rounds, true)
+    "replay" -> run_replay(kind, n, rounds, false)
+    "renew" -> run_replay(kind, n, rounds, true)
+    "parse" -> run_parse(kind, n, rounds)
+    "memory" -> run_memory(kind, n, rounds)
+    "timer" -> run_timer(kind, n, rounds)
+    _ -> panic("unknown mode ${mode}")
+  }
 }

@@ -232,8 +232,8 @@ def main():
          'Unadmitted -> cold.function(unadmitted(stepped), cx, d, sig)',
          'Unadmitted -> cold.function(stepped, cx, d, sig)'),
         ('cold-remainder-inferred-body',
-         'inferred_body: (n, cx, d, sig) => cold.inferred_body(unadmitted(n), cx, d, sig),',
-         'inferred_body: (n, cx, d, sig) => cold.inferred_body(n, cx, d, sig),'),
+         'Unadmitted -> cold.inferred_body(unadmitted(stepped), cx, d, sig)',
+         'Unadmitted -> cold.inferred_body(stepped, cx, d, sig)'),
         ('cold-remainder-constant',
          'constant: (n, cx, d, ty, visible) => cold.constant(unadmitted(n), cx, d, ty, visible),',
          'constant: (n, cx, d, ty, visible) => cold.constant(n, cx, d, ty, visible),'),
@@ -254,8 +254,10 @@ def main():
          'Rejected -> cold.function(rejected(stepped), cx, d, sig)',
          'Rejected -> cold.function(unadmitted(stepped), cx, d, sig)'),
         ('count-reused-column',
-         'Some(after) -> (reused(stepped), after, product.tree)',
-         'Some(after) -> (stepped, after, product.tree)'),
+         'Some(after) -> (reused(stepped), after, product.tree)\n'
+         '          None -> cold.function(rejected(stepped), cx, d, sig)',
+         'Some(after) -> (stepped, after, product.tree)\n'
+         '          None -> cold.function(rejected(stepped), cx, d, sig)'),
         ('count-checked-sum',
          'checked: outcome.counts.cold_unadmitted + outcome.counts.cold_rejected,',
          'checked: outcome.counts.cold_unadmitted,'),

@@ -2045,8 +2045,11 @@ jobs:
     # 2026-09-22: replay core shard 2's subject times sum to 148.74s,
     # including its positive. With 5s invocation overhead and doubled rounded
     # headroom: 341 + 2 * 154 = 649s. Derived, not separately observed.
-    # budget: 3x 649s planning value (prior baseline plus core replay shard 2)
-    timeout-minutes: 33
+    # Callee publication's positive and eleven compiling controls measured
+    # 117.67s locally on 2026-09-22. Add doubled rounded headroom to the
+    # existing allocation: 649 + 2 * 118 = 885s, below the 950s run pole.
+    # budget: 3x 885s planning value (prior allocation plus callee publication controls)
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -2055,6 +2058,9 @@ jobs:
 
       - name: Scalar replay core controls shard 2
         run: python3 scripts/incremental-semantics-contract/scalar-replay.py --suite core --shards 3 --shard 2
+
+      - name: Callee publication controls
+        run: python3 scripts/incremental-semantics-contract/callee-publication.py
 
       # A version is a name; the checksum is the identity. The bytes GitHub
       # serves under a tag can be re-uploaded, and this runner then executes
@@ -2617,8 +2623,11 @@ jobs:
     # Its positive and twelve compiling controls took 193.84s locally under
     # concurrent validation load. Preserve that reading and existing baseline:
     # 205 + 2 * 194 = 593s. This is planning, not a runner observation.
-    # budget: 3x 593s planning value (prior baseline plus expanded recording controls)
-    timeout-minutes: 30
+    # Inferred replay's positive and twelve compiling controls measured
+    # 104.34s locally on 2026-09-22. Add doubled rounded headroom to the
+    # existing allocation: 593 + 2 * 105 = 803s, below the 950s run pole.
+    # budget: 3x 803s planning value (prior allocation plus inferred replay controls)
+    timeout-minutes: 41
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -2628,6 +2637,8 @@ jobs:
         run: ./scripts/std-version-contract/run.sh
       - name: Opt-in body recording contracts
         run: python3 scripts/incremental-semantics-contract/body-recording.py
+      - name: Inferred body replay controls
+        run: python3 scripts/incremental-semantics-contract/inferred-replay.py
 
   # N vs N-1 (scripts/selfhost-prev-diff.sh): the previous release and HEAD
   # compile the same corpus and any byte difference must be declared in a
