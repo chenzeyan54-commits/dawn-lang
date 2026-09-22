@@ -7,14 +7,15 @@
 # it because finding a callee is not translating one.
 use std/map
 use check/cx.{Cx, cx_new}
-use check/types.{Sig, TyInt, TyUnit, EPure}
+use check/types.{Sig, TyInt, TyUnit, TyError, EPure, EIo}
 
 ## What one (owner, name) key resolves to across the three function tables.
 ## Two different signatures under one key is exactly the observation the scan
 ## below refuses; recording the refusal keeps it without rescanning.
 type CalleeEntry = CalleeUnique(sig: Sig) | CalleeConflict
 
-type CalleeTable = { by_key: CalleeKeys }
+type CalleeTable = { by_key: CalleeKeys, observations: Observations,
+  local_functions: Map[String, Sig] }
 
 ## The non-builtin, non-trait function signatures of one revision, keyed by
 ## the pair a call site names. Opaque because the guarantee is the pairing:
@@ -22,6 +23,26 @@ type CalleeTable = { by_key: CalleeKeys }
 pub opaque type CalleeIndex = CalleeTable
 
 alias CalleeKeys = Map[(Option[String], String), CalleeEntry]
+alias Observations = Map[(Option[String], String), Map[Sig, Int]]
+
+# The answer alone cannot remove one contributor: a local spelling and two
+# imported aliases may all name the same signature. Count the full signatures,
+# including conflicts, while keeping the query-facing answer a single lookup.
+fn observe(into: Observations, sig: Sig) -> Observations = {
+  if sig.is_builtin || sig.trait_id != None { return into }
+  let slot = (sig.owner, sig.name)
+  let bucket = map.get(into, slot).unwrap_or(map.empty())
+  let count = map.get(bucket, sig).unwrap_or(0)
+  map.insert(into, slot, map.insert(bucket, sig, count + 1))
+}
+
+fn observations(cx: Cx) -> Observations = {
+  var out: Observations = map.empty()
+  for (_, sig) in map.entries(cx.fns) { out = observe(out, sig) }
+  for (_, sig) in map.entries(cx.std_fns) { out = observe(out, sig) }
+  for (_, sig) in map.entries(cx.module_fn_sigs) { out = observe(out, sig) }
+  out
+}
 
 fn index_signature(into: CalleeKeys, sig: Sig) -> CalleeKeys = {
   if sig.is_builtin || sig.trait_id != None { return into }
@@ -34,9 +55,10 @@ fn index_signature(into: CalleeKeys, sig: Sig) -> CalleeKeys = {
   }
 }
 
-## One pass over the three tables a call site can name, for a whole revision.
+## Linear preparation of the three tables a call site can name, once per revision.
 ## The scan it replaces is per call site, so a module with n functions and m
-## named calls paid n*m; this pays n once and a hash lookup per call. The
+## named calls paid n*m; the answer and contribution views each pay n once,
+## followed by a hash lookup per call. The
 ## answer is order-free: a key is unique when every signature filed under it
 ## is the same value, and conflicting when two differ, which is what the scan
 ## reports whichever table it meets first.
@@ -45,7 +67,50 @@ pub fn of(cx: Cx) -> CalleeIndex = {
   for (_, sig) in map.entries(cx.fns) { by_key = index_signature(by_key, sig) }
   for (_, sig) in map.entries(cx.std_fns) { by_key = index_signature(by_key, sig) }
   for (_, sig) in map.entries(cx.module_fn_sigs) { by_key = index_signature(by_key, sig) }
-  CalleeTable { by_key: by_key }
+  CalleeTable { by_key: by_key, observations: observations(cx), local_functions: cx.fns }
+}
+
+fn remove_observation(table: CalleeTable, sig: Sig) -> Option[CalleeTable] = {
+  if sig.is_builtin || sig.trait_id != None { return Some(table) }
+  let slot = (sig.owner, sig.name)
+  let bucket = map.get(table.observations, slot)?
+  let count = map.get(bucket, sig)?
+  if count < 1 { return None }
+  let remaining = if count == 1 { map.remove(bucket, sig) }
+  else { map.insert(bucket, sig, count - 1) }
+  if map.len(remaining) == 0 {
+    return Some(CalleeTable { ..table, by_key: map.remove(table.by_key, slot),
+      observations: map.remove(table.observations, slot) })
+  }
+  let answer = if map.len(remaining) == 1 { CalleeUnique(map.keys(remaining)[0]) }
+  else { CalleeConflict }
+  Some(CalleeTable { ..table, by_key: map.insert(table.by_key, slot, answer),
+    observations: map.insert(table.observations, slot, remaining) })
+}
+
+## Publish exactly one changed cx.fns spelling after a scheduler callback.
+## The expected old value is checked even for a no-op and even for signatures
+## filtered out of ordinary-call lookup. Fixed std/module observations and
+## other local spellings keep their own multiplicities. Only the old and new
+## canonical keys are touched; callers must keep the other tables unchanged.
+pub fn replace_local(ix: CalleeIndex, name: String, before: Option[Sig], after: Option[Sig]) -> Option[CalleeIndex] = {
+  let original: CalleeTable = ix
+  if map.get(original.local_functions, name) != before { return None }
+  if before == after { return Some(ix) }
+  var table = original
+  match before {
+    Some(sig) -> { table = remove_observation(table, sig)? }
+    None -> ()
+  }
+  match after {
+    Some(sig) -> {
+      table = CalleeTable { ..table, by_key: index_signature(table.by_key, sig),
+        observations: observe(table.observations, sig),
+        local_functions: map.insert(table.local_functions, name, sig) }
+    }
+    None -> { table = CalleeTable { ..table, local_functions: map.remove(table.local_functions, name) } }
+  }
+  Some(table)
 }
 
 ## Calls carry the declaring owner, not the alias used to reach it. Reading
@@ -201,4 +266,114 @@ test "callee index answers exactly what the linear scan answers" {
     module_fn_sigs: map.from([(("dep", "f"), imported), (("other_alias", "f"), imported),
       (("conflict", "f"), Sig { ..imported, ret: TyUnit })]) }
   assert callee_answers_agree(aliases)
+}
+
+# Query old keys too: a deleted or re-owned last contributor must disappear,
+# and looking only at the candidate tables would never ask its former key.
+fn publication_agrees(ix: CalleeIndex, cx: Cx, seen: List[Sig]) -> Bool = {
+  let actual: CalleeTable = ix
+  let rebuilt: CalleeTable = of(cx)
+  if actual != rebuilt { return false }
+  for sig in seen {
+    for owner in [None, sig.owner, Some("absent_owner")] {
+      for name in [sig.name, "absent_name"] {
+        for tr in [None, Some(-7)] {
+          for builtin in [false, true] {
+            if signature(ix, cx, owner, name, builtin, tr) !=
+              scanned_signature(cx, owner, name, builtin, tr) { return false }
+          }
+        }
+      }
+    }
+  }
+  true
+}
+
+fn published(cx: Cx, name: String, after: Option[Sig]) -> Cx = match after {
+  Some(sig) -> Cx { ..cx, fns: map.insert(cx.fns, name, sig) }
+  None -> Cx { ..cx, fns: map.remove(cx.fns, name) }
+}
+
+test "callee publication replaces one spelling through sealing filtering and deletion" {
+  let placeholder = Sig { ..fixture_signature(), owner: Some("consumer"), ret: TyError, eff: EIo, inferring: true }
+  let sealed = Sig { ..placeholder, ret: TyInt, eff: EPure, inferring: false }
+  let moved = Sig { ..sealed, name: "renamed", owner: Some("provider") }
+  let builtin = Sig { ..moved, is_builtin: true }
+  let method = Sig { ..moved, trait_id: Some(-7) }
+  let seen = [placeholder, sealed, moved, builtin, method]
+  var cx = Cx { ..cx_new(Some("consumer"), None), fns: map.from([("spelling", placeholder)]) }
+  var ix = of(cx)
+  for after in [Some(sealed), Some(sealed), None, Some(moved), Some(builtin), Some(method), Some(sealed), None, None] {
+    let before = map.get(cx.fns, "spelling")
+    assert replace_local(ix, "spelling", before, after) != None
+    let next = replace_local(ix, "spelling", before, after).expect("publication")
+    assert publication_agrees(ix, cx, seen)
+    cx = published(cx, "spelling", after)
+    ix = next
+    assert publication_agrees(ix, cx, seen)
+  }
+  assert signature(ix, cx, Some("consumer"), "f", false, None) == None
+  assert signature(ix, cx, Some("provider"), "renamed", false, None) == None
+}
+
+test "callee publication preserves every independent duplicate and conflicting observation" {
+  let common = Sig { ..fixture_signature(), owner: Some("provider") }
+  let other = Sig { ..common, ret: TyInt }
+  let moved = Sig { ..other, owner: Some("consumer"), name: "elsewhere" }
+  let seen = [common, other, moved]
+  var cx = Cx { ..cx_new(Some("consumer"), None),
+    fns: map.from([("first", common), ("second", common)]),
+    std_fns: map.from([("standard", common)]),
+    module_fn_sigs: map.from([(("a", "f"), common), (("b", "f"), common)]) }
+  var ix = of(cx)
+  for (name, after) in [("first", Some(other)), ("second", Some(other)),
+    ("first", None), ("second", None), ("first", Some(common)),
+    ("second", Some(other)), ("first", Some(other)), ("second", Some(common)),
+    ("first", Some(common)), ("first", Some(moved)), ("second", None)] {
+    let old = map.get(cx.fns, name)
+    assert replace_local(ix, name, old, after) != None
+    let next = replace_local(ix, name, old, after).expect("duplicate publication")
+    assert publication_agrees(ix, cx, seen)
+    cx = published(cx, name, after)
+    ix = next
+    assert publication_agrees(ix, cx, seen)
+  }
+  assert signature(ix, cx, common.owner, common.name, false, None) == Some(common)
+  assert signature(ix, cx, moved.owner, moved.name, false, None) == Some(moved)
+  # Exhaust the transition matrix against the same fixed observations. This
+  # includes no-op conflict answers and filtered entries at a different owner.
+  let builtin = Sig { ..other, is_builtin: true }
+  let method = Sig { ..other, trait_id: Some(-7) }
+  let choices = [None, Some(common), Some(other), Some(moved), Some(builtin), Some(method)]
+  for before in choices {
+    let base = published(cx, "target", before)
+    let old_ix = of(base)
+    for after in choices {
+      assert replace_local(old_ix, "target", before, after) != None
+      let next = replace_local(old_ix, "target", before, after).expect("transition matrix")
+      assert publication_agrees(next, published(base, "target", after), seen ++ [builtin, method])
+      assert publication_agrees(old_ix, base, seen)
+    }
+  }
+}
+
+test "callee publication checks exact indexed local state even for filtered noops" {
+  let sig = Sig { ..fixture_signature(), owner: Some("provider") }
+  let changed = Sig { ..sig, ret: TyInt }
+  let builtin = Sig { ..sig, is_builtin: true }
+  let method = Sig { ..sig, trait_id: Some(-7) }
+  let cx = Cx { ..cx_new(Some("consumer"), None), fns: map.from([("local", sig), ("builtin", builtin), ("method", method)]),
+    std_fns: map.from([("standard", sig)]), module_fn_sigs: map.from([(("dep", "f"), sig)]) }
+  let ix = of(cx)
+  assert replace_local(ix, "absent", Some(sig), None) == None
+  assert replace_local(ix, "standard", Some(sig), Some(sig)) == None
+  assert replace_local(ix, "local", None, Some(sig)) == None
+  assert replace_local(ix, "local", Some(changed), Some(changed)) == None
+  assert replace_local(ix, "local", Some(changed), None) == None
+  assert replace_local(ix, "builtin", None, None) == None
+  assert replace_local(ix, "builtin", Some(sig), Some(sig)) == None
+  assert replace_local(ix, "method", Some(builtin), None) == None
+  assert replace_local(ix, "builtin", Some(builtin), Some(builtin)) != None
+  assert replace_local(ix, "method", Some(method), Some(method)) != None
+  assert publication_agrees(ix, cx, [sig, changed, builtin, method])
 }
