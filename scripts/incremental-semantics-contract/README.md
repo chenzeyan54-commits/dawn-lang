@@ -760,6 +760,16 @@ owning FAIL 后是断言失败，不把 JVM 链接错误算作成功。三个是
 hover/definition/completion，并保存原始回复和 RSS。示例参数：
 `--entry <path> --edit <path> --needle <reference> --output <new-dir> -- <server-command>`。
 
+Latency summaries retain the existing median fields and also report sync and
+query p95 values using the nearest-rank definition, `ceil(0.95 * n)`. Both use
+only clean samples after the three warmup rounds. Raw samples, sample count,
+and the percentile definition are retained for auditing. With the default
+small sample count, p95 is the maximum observed sample, not strong evidence of
+a stable tail distribution; formal value-gate runs need an explicit sampling
+plan. Percentile reporting does not add body-edit/signature/reorder workloads,
+prove cold equivalence, or measure retained semantic-cache memory. Self-tests
+also check percentile ordering and reject empty, negative, and nonfinite samples.
+
 单大模块错误恢复使用 `standalone-large.dawn.txt`（500个简单函数及一个入口，
 合成语料，不冒充真实大型应用）。在上述参数后加
 `--uri untitled:incremental-large --error-round 5`，entry/edit 指向同一份文件，

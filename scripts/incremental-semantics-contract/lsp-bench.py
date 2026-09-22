@@ -8,6 +8,7 @@ Linux RSS is process memory, not a claim about retained semantic-cache bytes.
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -28,6 +29,15 @@ def rss(pid):
             for line in path.read_text().splitlines() if line.startswith(("VmRSS:", "VmHWM:"))}
 
 
+def latency_summary(values):
+    """Keep the raw sample count beside an explicitly defined tail estimate."""
+    values = sorted(values)
+    if not values or any(not math.isfinite(value) or value < 0 for value in values):
+        raise ValueError("latency samples must be finite, nonnegative and nonempty")
+    return {"samples": len(values), "median_ms": statistics.median(values) / 1e6,
+            "p95_ms": values[math.ceil(0.95 * len(values)) - 1] / 1e6}
+
+
 def validate_diagnostics(publishes, uri, version, expected_error, error_line):
     own = [item for item in publishes if item.get("uri") == uri]
     if not own or own[-1].get("version") != version:
@@ -43,6 +53,17 @@ def validate_diagnostics(publishes, uri, version, expected_error, error_line):
 
 
 def selftest():
+    assert latency_summary([1_000_000]) == {
+        "samples": 1, "median_ms": 1.0, "p95_ms": 1.0}
+    assert latency_summary(reversed([n * 1_000_000 for n in range(1, 21)])) == {
+        "samples": 20, "median_ms": 10.5, "p95_ms": 19.0}
+    assert latency_summary([0, 0, 0])["p95_ms"] == 0
+    for invalid in ([], [-1], [float("nan")], [float("inf")]):
+        try:
+            latency_summary(invalid)
+        except ValueError:
+            continue
+        raise AssertionError("latency summary accepted invalid samples")
     clean = {"uri": "untitled:test", "version": 2, "diagnostics": []}
     error = {"uri": "untitled:test", "version": 2, "diagnostics": [{
         "message": "benchmark_type_error returns Bool, expected Int",
@@ -63,7 +84,7 @@ def selftest():
         except RuntimeError:
             continue
         raise AssertionError("diagnostic validation accepted a negative control")
-    print("OK: benchmark diagnostic validation and 6 negative controls")
+    print("OK: benchmark diagnostic validation and 6 negative controls; latency percentiles and 4 invalid-sample controls")
 
 
 def main():
@@ -97,6 +118,7 @@ def main():
     metadata = {
         "command": command, "cwd": str(ROOT), "platform": platform.platform(),
         "warmup_rounds": 3, "rounds": args.rounds,
+        "latency_percentiles": "median; p95 nearest rank ceil(0.95*n); post-warmup clean samples only",
         "uri": args.uri, "error_round": args.error_round,
         "sources": {str(path): hashlib.sha256(text.encode()).hexdigest() for path, text in texts.items()},
         "note": "overlay-only comment edits and optional type-error recovery; barrier excludes debounce; RSS is process-wide",
@@ -165,13 +187,17 @@ def main():
     for path in args.edit:
         samples = [row for row in rows if row["edited"] == str(path.resolve())
                    and row["round"] >= 3 and not row["expected_error"]]
+        sync = latency_summary(row["sync_ns"] for row in samples)
+        queries = {method: latency_summary(row["query_ns"][method] for row in samples)
+                   for method in ("hover", "definition", "completion")}
         summary.append({
             "edited": str(path.resolve()), "samples": len(samples),
             "error_sync_ms": [row["sync_ns"] / 1e6 for row in rows
                               if row["edited"] == str(path.resolve()) and row["expected_error"]],
-            "sync_median_ms": statistics.median(row["sync_ns"] for row in samples) / 1e6,
-            "query_median_ms": {method: statistics.median(row["query_ns"][method] for row in samples) / 1e6
-                                for method in ("hover", "definition", "completion")},
+            "sync_median_ms": sync["median_ms"],
+            "sync_p95_ms": sync["p95_ms"],
+            "query_median_ms": {method: value["median_ms"] for method, value in queries.items()},
+            "query_p95_ms": {method: value["p95_ms"] for method, value in queries.items()},
         })
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2))
