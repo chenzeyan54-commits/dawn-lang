@@ -3,7 +3,7 @@
 # declaration's own bytes have to be unchanged, so it parses to the recorded
 # tree, and what remains to ask is whether that tree is in the class at all.
 use front/ast.{Expr, EInt, EFloat, EBool, EUnit, EVar, EUnary, EBinary, EIf, EBlock, SLet, OpNeg,
-  OpAdd, TNamed }
+  OpAdd, TNamed, EApply, EMethod, Arg }
 
 ## checker.declare reports a binder that shadows an imported module alias, and
 ## that read of the alias table leaves no journal entry. Collect every name the
@@ -18,6 +18,8 @@ pub fn binders(e: Expr, into: List[String]) -> Option[List[String]] = match e {
   EBool(_, _, _) -> Some(into)
   EUnit(_, _) -> Some(into)
   EVar(_, _, _) -> Some(into)
+  EApply(EVar(_, _, _), args, _, _) -> argument_binders(args, into)
+  EMethod(EVar(_, _, _), _, args, _, _, _, _) -> argument_binders(args, into)
   EUnary(_, x, _, _) -> binders(x, into)
   EBinary(_, x, y, _, _, _, _) -> binders(y, binders(x, into)?)
   EIf(c, x, y, _, _) -> optional_binders(y, binders(x, binders(c, into)?)?)
@@ -38,6 +40,47 @@ pub fn binders(e: Expr, into: List[String]) -> Option[List[String]] = match e {
     optional_binders(tail, out)
   }
   _ -> None
+}
+
+# Only the syntax of direct calls is admitted here. Namespace facts and the
+# typed callee guard distinguish a module receiver from an ordinary method.
+fn argument_binders(args: List[Arg], into: List[String]) -> Option[List[String]] = {
+  var out = into
+  for arg in args {
+    if arg.name != None || arg.trailing { return None }
+    out = binders(arg.e, out)?
+  }
+  Some(out)
+}
+
+## A dotted call shares its syntax with receiver methods. Only a recorded
+## successful module lookup licenses this spelling for the first call class.
+pub fn module_calls(e: Expr, qualified: fn(String, String) -> Bool) -> Bool = match e {
+  EMethod(EVar(qualifier, _, _), name, args, _, _, _, _) ->
+    qualified(qualifier, name) && call_arguments(args, qualified)
+  EApply(_, args, _, _) -> call_arguments(args, qualified)
+  EUnary(_, x, _, _) -> module_calls(x, qualified)
+  EBinary(_, x, y, _, _, _, _) -> module_calls(x, qualified) && module_calls(y, qualified)
+  EIf(c, x, y, _, _) -> module_calls(c, qualified) && module_calls(x, qualified) && optional_calls(y, qualified)
+  EBlock(xs, tail, _, _) -> {
+    for s in xs {
+      match s {
+        SLet(_, _, _, init, _, _) -> if not module_calls(init, qualified) { return false }
+        _ -> return false
+      }
+    }
+    optional_calls(tail, qualified)
+  }
+  _ -> true
+}
+
+fn optional_calls(e: Option[Expr], qualified: fn(String, String) -> Bool) -> Bool = match e {
+  None -> true, Some(x) -> module_calls(x, qualified)
+}
+
+fn call_arguments(args: List[Arg], qualified: fn(String, String) -> Bool) -> Bool = {
+  for arg in args { if not module_calls(arg.e, qualified) { return false } }
+  true
 }
 
 fn optional_binders(e: Option[Expr], into: List[String]) -> Option[List[String]] = match e {
