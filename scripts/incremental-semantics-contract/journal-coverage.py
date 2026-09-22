@@ -31,6 +31,12 @@ EXPECTED = Counter({
     ('check/passes.dawn', 'pass_register_impls', 'current_tparam_bounds'): 1,
     ('check/passes.dawn', 'pass_fn_signatures', 'current_tparam_bounds'): 1,
     ('check/passes.dawn', 'inject_selective', 'alias_resolved'): 1,
+    # The callee-index publication oracle constructs insertion/deletion Cx
+    # revisions independently of the index under test. Its top-level helper
+    # is called only by the publication tests, but lexical test exclusion does
+    # not (and must not pretend to) prove a top-level helper's call graph.
+    # Inventory both writes explicitly rather than ignoring helper names.
+    ('check/callee_index.dawn', 'published', 'fns'): 2,
 })
 
 
