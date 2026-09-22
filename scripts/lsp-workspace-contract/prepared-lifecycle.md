@@ -16,6 +16,24 @@ do not count as successful controls. `--self-test` exercises that rejection
 oracle; `--check-anchors` validates all production replacements without
 invoking the compiler.
 
+`--shards N --shard I` runs one modulo partition, always with an independent
+unchanged positive first. Partitions must be nonempty; invalid bounds are
+rejected before invoking the compiler. Five shards contain 2, 2, 1, 1, and 1
+controls respectively. The default remains the complete seven-control run.
+Self-tests verify every control appears exactly once across each partition
+count from one through seven, and reject invalid partition arguments.
+The CI inventory check requires all five shards and the self-test exactly once;
+its own controls remove a shard, duplicate one, and change the partition width.
+This family lives outside the incremental sweep's discovery namespace and
+must be validated separately rather than counted in that sweep's total.
+
+The five existing CI jobs are prev-diff, dependency-heap-contract,
+native-selfhost-tests, pipe-contract, and export-surface respectively. Using
+the rounded 52s maximum local subject and twofold planning allowance gives
+892s, 909s, 912s, 859s, and 852s including their previous allocations. Every
+shard includes its own positive. These are planning allowances, not observed
+runner times; no runner job was added and the 950s run pole is unchanged.
+
 The exact owners are `lsp/server :: prepared standalone LSP owners preserve
 queries counts and shared lease lifetime` (S) and `lsp/server :: prepared
 project LSP owners drop conflicts and recreate leases on reopen` (P).
