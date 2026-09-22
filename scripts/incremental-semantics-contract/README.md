@@ -1,5 +1,16 @@
 # 增量语义契约夹具
 
+## Raw source equality controls
+
+`source-equality.py` runs the source projection positive and four private
+compiling controls for negative ranges, valid empty ranges, equal-width trivia
+and unreachable source boundaries. Each control must fail its named assertion;
+compile/link errors, panics and timeout are not acceptance. `--self-test` checks
+the failure classifier without a compiler. These controls complement the JVM
+and native inline range oracles and the existing parse/index invocation counts.
+See [the source equality design](../../docs/source-equality-oracle-design.md)
+for the exact raw-range cache contract and pending performance acceptance.
+
 ## Prepared source proof boundaries
 
 `prepared-proofs.py` compiles one positive subject and two isolated controls.
