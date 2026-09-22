@@ -92,6 +92,27 @@ integrated, and all original production activation gates remain in force.
 
 ## Session ownership and eviction
 
+### Prepared loader proof
+
+An opaque `PreparedLoad` owns the canonical `LoadResult` together with the
+optional snapshots produced at its actual seed/dependency parse sites. Its
+public accessors expose the ordinary result and opaque prepared modules, but
+there is no constructor from caller-supplied loaded syntax or snapshot maps.
+The resolver shares one capture-flagged implementation with existing cold
+loaders. Capture-off parsing preserves recovered syntax and ordered diagnostics
+without building replay indexes. A proof is replaced or removed whenever its
+loaded source is replaced; missing proofs must never borrow an older entry.
+After all package-path rewrites and topological sorting, each proof is bound to
+the final syntax through `source_snapshot.resolved` before publication.
+
+Standalone preparation shares filename diagnostics and the proposed `main`
+identity with cold standalone analysis; the analysis transition still settles
+standard-library identity. Prepared values are transient update inputs, not
+additional fields retained in a Session. Tests must compare complete cold and
+prepared loader results on package rewrites, overlays, recovered sources and
+loader errors. Actual invocation instrumentation remains required to prove the
+cost claim; semantic equality alone does not establish one parse per source.
+
 Keep exact-prefix module hits as their existing distinct optimization. Add a
 separate bounded current-generation module-to-body-cache table inside the opaque
 session. A prefix mismatch ends whole-module reuse, but does not prevent current
