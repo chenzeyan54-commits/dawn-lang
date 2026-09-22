@@ -113,9 +113,20 @@ def main():
             (".{Key, BoundsKey, SymbolKey}", ".{Key, BoundsKey, SymbolKey, SignatureKey}"),
         ]:
             text = edit(text, old, new)
-        (fixture / "src/reference.dawn").write_text(text + "\n" + (HERE / "bounded-entry-proof.dawn.txt").read_text())
+        reference = text + "\n" + (HERE / "bounded-entry-proof.dawn.txt").read_text()
         for name, subject, owner in subjects:
-            (root / "selfhost/src/check/function_entry_proof.dawn").write_text(subject)
+            # The body-check mutant adds !io to a deliberately pure API. Once
+            # production admission calls that API, mutating it in place fails
+            # effect checking before the runtime counter can observe anything.
+            # Exercise that one mutation through a private proof-module copy;
+            # keep the real admission path pure and the counter owner unchanged.
+            isolated = name == "body-check"
+            (root / "selfhost/src/check/function_entry_proof.dawn").write_text(source if isolated else subject)
+            if isolated:
+                (root / "selfhost/src/check/function_entry_probe.dawn").write_text(subject)
+            (fixture / "src/reference.dawn").write_text(edit(reference,
+                'use compiler/check/function_entry_proof as proof',
+                'use compiler/check/function_entry_probe as proof') if isolated else reference)
             status, output = run("build", "--cp", oracle, fixture, "-o", root / "subject.jar")
             if status:
                 raise RuntimeError(f"Bounded entry {name} failed to compile\n{output}")
