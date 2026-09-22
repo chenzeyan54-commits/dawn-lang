@@ -28,11 +28,18 @@ def main():
     original = (ROOT / 'selfhost/src/check/scalar_replay.dawn').read_text()
     variants = [
         ('disguised-cold',
-         'Some(after) -> (reused(stepped), after, product.tree)',
+         'Some(after) -> (reused(stepped), after, product.tree)\n'
+         '          None -> cold.function(rejected(stepped), cx, d, sig)',
          'Some(after) -> {\n            let (ignored, checked, tree) = cold.function(stepped, cx, d, sig)\n'
-         '            (reused(stepped), checked, tree)\n          }'),
-        ('lost-current-symbols', '(reused(stepped), after, product.tree)',
-         '(reused(stepped), Cx { ..after, syms: map.empty() }, product.tree)'),
+         '            (reused(stepped), checked, tree)\n          }\n'
+         '          None -> cold.function(rejected(stepped), cx, d, sig)'),
+        # The inferred executor has a separate publication exit. Keep these
+        # explicit-function controls at the entry this fixture actually uses.
+        ('lost-current-symbols',
+         'Some(after) -> (reused(stepped), after, product.tree)\n'
+         '          None -> cold.function(rejected(stepped), cx, d, sig)',
+         'Some(after) -> (reused(stepped), Cx { ..after, syms: map.empty() }, product.tree)\n'
+         '          None -> cold.function(rejected(stepped), cx, d, sig)'),
         # `stale-source` stood here and turned the projection off, leaving the
         # recorded product where the projected one belongs. A product is
         # coordinate-free now -- every reference in it is the same integer in
