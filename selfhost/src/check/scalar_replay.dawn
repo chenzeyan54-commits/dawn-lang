@@ -11,14 +11,14 @@ use check/cx.{Cx, Frame, cx_new}
 use check/types.{Ty, TyInt, TyFloat, TyBool, TyUnit, TyVar, Sig, Sym, Eff, EffVar, EPure}
 use check/tast.{TFun}
 use check/body_execution
-use check/body_execution.{Recorded, SavedFunction, FunctionInput}
+use check/body_execution.{Recorded, Saved, SavedFunction, FunctionInput}
 use check/body_product
 use check/body_product.{Product, BodyProduct}
 use check/identity
 use check/identity.{ModuleKey, DeclKey}
 use check/allocation
 use check/scalar_shape
-use check/write_journal.{SymbolKey, BoundsKey}
+use check/write_journal.{SymbolKey, BoundsKey, SignatureKey}
 use check/source_projection
 use check/source_snapshot
 use check/source_snapshot.{Snapshot}
@@ -36,6 +36,12 @@ use front/ast.{FnDecl, DFn}
 ## a caller that only wants "how much was not reused" asks for.
 pub type Replayed = { bodies: ModuleBodies, checked: Int, reused: Int,
   cold_unadmitted: Int, cold_rejected: Int }
+
+## The next cache contains only products captured in this execution. Visits
+## count both hits and cold callbacks; capture refusal only affects the next
+## revision, never the correctness of the current result.
+pub type Renewed = { replayed: Replayed, admitted: Admitted,
+  visited: Int, capture_refused: Int }
 
 ## The three ways a declaration leaves this pass, counted apart because they
 ## answer different questions. `reused` came back from the recording.
@@ -347,7 +353,7 @@ fn recorded(prior: FnDecl, prior_sig: Sig, p: Product, declaration: Int,
     binders: names, symbols: symbols })
 }
 
-fn ready(scope: ModuleKey, old: ModuleHeaders, old_source: Snapshot, saved: Recorded) -> Option[Ready] = {
+fn ready(scope: ModuleKey, old: ModuleHeaders, old_source: Snapshot, entries_saved: List[Saved]) -> Option[Ready] = {
   if old.cx.diags != [] || not snapshot_matches(old, old_source) { return None }
   let headers = table(scope, old)?
   let callees = callee_index.of(old.cx)
@@ -360,7 +366,7 @@ fn ready(scope: ModuleKey, old: ModuleHeaders, old_source: Snapshot, saved: Reco
   }
   var entries: Map[DeclKey, Prior] = map.empty()
   var seen: Set[DeclKey] = set.empty()
-  for entry in saved.entries {
+  for entry in entries_saved {
     match entry {
       SavedFunction(k, FunctionInput(prior, prior_sig, false), product) -> {
         if set.has(seen, k) {
@@ -391,7 +397,7 @@ fn ready(scope: ModuleKey, old: ModuleHeaders, old_source: Snapshot, saved: Reco
 ## half of admission: it runs once per recorded revision, not once per replay,
 ## and never per candidate body.
 pub fn admit(scope: ModuleKey, old: ModuleHeaders, old_source: Snapshot, saved: Recorded) -> Admitted =
-  AdmittedData { scope: scope, ready: ready(scope, old, old_source, saved) }
+  AdmittedData { scope: scope, ready: ready(scope, old, old_source, saved.entries) }
 
 ## How many recorded bodies this admission settled. Observable so a caller
 ## can tell "nothing was admitted" from "nothing was offered"; it grants no
@@ -588,10 +594,29 @@ pub fn replay(admitted: Admitted, next: ModuleHeaders, source: Snapshot) -> Repl
   let prepared: Option[Prepared] = if valid { prepare(data, next, source) } else { None }
   let (outcome, bodies) = checker.execute_module_bodies(next,
     Pass { counts: zero_counts(), prepared: prepared }, pass_executor())
+  replay_result(outcome, bodies)
+}
+
+fn replay_result(outcome: Pass, bodies: ModuleBodies) -> Replayed =
   Replayed { bodies: bodies,
     checked: outcome.counts.cold_unadmitted + outcome.counts.cold_rejected,
     reused: outcome.counts.reused, cold_unadmitted: outcome.counts.cold_unadmitted,
     cold_rejected: outcome.counts.cold_rejected }
+
+## Renew from the actual scheduler transitions, including cold replacements
+## and newly added declarations. Recording observes replay installation before
+## absolute positions are materialized, retaining its dependency/write journals.
+## Only current pre-body headers and current source may bind the next cache.
+pub fn replay_and_record(admitted: Admitted, next: ModuleHeaders, source: Snapshot) -> Renewed !io = {
+  let data: AdmittedData = admitted
+  let valid = next.cx.diags == [] && snapshot_matches(next, source)
+  let prepared: Option[Prepared] = if valid { prepare(data, next, source) } else { None }
+  let (outcome, captured) = body_execution.record_using(data.scope, next,
+    Pass { counts: zero_counts(), prepared: prepared }, pass_executor())
+  let renewed = AdmittedData { scope: data.scope,
+    ready: ready(data.scope, next, source, captured.entries) }
+  Renewed { replayed: replay_result(outcome, captured.bodies), admitted: renewed,
+    visited: captured.visited, capture_refused: captured.capture_refused }
 }
 
 ## The executor the pass runs. It is named rather than built inside `replay`
@@ -647,6 +672,99 @@ fn call_result_equal(actual: Replayed, expected: ModuleBodies) -> Bool =
   actual.bodies.cx.owner_decl == expected.cx.owner_decl && actual.bodies.cx.in_test == expected.cx.in_test &&
   actual.bodies.cx.const_cutoff == expected.cx.const_cutoff && actual.bodies.cx.loop_jumps == expected.cx.loop_jumps &&
   actual.bodies.cx.take_cell == expected.cx.take_cell
+
+test "scalar replay renews hits replacements and additions across three revisions" {
+  let scope = identity.module_key("renewal", "sample", "sample", "sample.dawn")
+  let caller = "fn caller() -> Int = leaf()\n"
+  let fresh = "fn fresh() -> Int = caller()\n"
+  let replacement = "fn leaf() -> Int = { let value = 2\n value }\n"
+  let first = source_snapshot.of("fn leaf() -> Int = 1\n" ++ caller).expect("first revision")
+  let second = source_snapshot.of("# shifted\n" ++ replacement ++ caller ++ fresh).expect("second revision")
+  for observing in [false, true] {
+    let base = Cx { ..cx_new(Some("sample"), Some("sample.dawn")),
+      function_reads: if observing { Some([semantic_reads.ScopedEffectVariable("outer", None)]) } else { None },
+      body_writes: if observing { Some([SignatureKey("outer")]) } else { None } }
+    let old = checker.check_module_headers(base, source_snapshot.syntax(first), map.empty())
+    let admitted = admit(scope, old, first, body_execution.record(scope, old))
+    let next = checker.check_module_headers(base, source_snapshot.syntax(second), map.empty())
+    let renewed = replay_and_record(admitted, next, second)
+    assert renewed.replayed.reused == 1 && renewed.replayed.checked == 2
+    assert renewed.visited == 3 && renewed.capture_refused == 0
+    assert admitted_count(renewed.admitted) == 3
+    assert call_result_equal(renewed.replayed, checker.check_module_body_products(next))
+    for (text, hits, count) in [
+      (fresh ++ "# moved again\n" ++ caller ++ replacement, 3, 3),
+      (fresh ++ caller ++ "fn leaf() -> Bool = true\n", 1, 3),
+      (replacement, 1, 1)
+    ] {
+      let third = source_snapshot.of(text).expect("third revision")
+      let current = checker.check_module_headers(base, source_snapshot.syntax(third), map.empty())
+      let actual = replay_and_record(renewed.admitted, current, third)
+      assert actual.replayed.reused == hits && actual.visited == count
+      assert actual.visited == actual.replayed.reused + actual.replayed.checked
+      assert call_result_equal(actual.replayed, checker.check_module_body_products(current))
+      if count == 1 { assert admitted_count(actual.admitted) == 1 }
+      if hits == 3 {
+        assert actual.replayed.checked == 0 && admitted_count(actual.admitted) == 3
+        let stable = replay(actual.admitted, current, third)
+        assert stable.reused == 3 && stable.checked == 0
+        assert call_result_equal(stable, checker.check_module_body_products(current))
+      }
+    }
+    # A snapshot from another revision cannot authorize replay or seed a cache.
+    let mismatched = replay_and_record(admitted, next, first)
+    assert mismatched.replayed.reused == 0 && mismatched.replayed.checked == 3
+    assert admitted_count(mismatched.admitted) == 0
+    assert call_result_equal(mismatched.replayed, checker.check_module_body_products(next))
+  }
+}
+
+test "scalar replay renews valid cold replacements after dependency rejection" {
+  let scope = identity.module_key("renewal", "sample", "sample", "sample.dawn")
+  let caller = "fn caller() -> Int = { let argument = 1\n leaf(argument) }\n"
+  let before = source_snapshot.of("fn leaf(x: Int) -> Int = x\n" ++ caller).expect("original callee")
+  let changed = source_snapshot.of(caller ++ "fn leaf(y: Int) -> Int = y\n").expect("renamed parameter")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(before), map.empty())
+  let next = checker.check_module_headers(base, source_snapshot.syntax(changed), map.empty())
+  let first = admit(scope, old, before, body_execution.record(scope, old))
+  let second = replay_and_record(first, next, changed)
+  assert second.replayed.reused == 0 && second.replayed.checked == 2
+  assert second.replayed.cold_rejected == 1 && second.replayed.cold_unadmitted == 1
+  assert second.replayed.bodies.cx.diags == [] && second.capture_refused == 0
+  assert admitted_count(second.admitted) == 2
+  assert call_result_equal(second.replayed, checker.check_module_body_products(next))
+  let third = replay_and_record(second.admitted, next, changed)
+  assert third.replayed.reused == 2 && third.replayed.checked == 0
+  assert third.visited == 2 && third.capture_refused == 0
+  assert call_result_equal(third.replayed, checker.check_module_body_products(next))
+  let fourth = replay(third.admitted, next, changed)
+  assert fourth.reused == 2 && fourth.checked == 0
+  assert call_result_equal(fourth, checker.check_module_body_products(next))
+}
+
+test "scalar replay recovers renewal after header capture refusal" {
+  let scope = identity.module_key("renewal", "sample", "sample", "sample.dawn")
+  let valid = source_snapshot.of("fn answer() -> Int = 42\n").expect("valid revision")
+  let broken = source_snapshot.of("fn answer() -> Missing = 42\n").expect("broken header")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let good = checker.check_module_headers(base, source_snapshot.syntax(valid), map.empty())
+  let bad = checker.check_module_headers(base, source_snapshot.syntax(broken), map.empty())
+  assert bad.cx.diags != []
+  let first = admit(scope, good, valid, body_execution.record(scope, good))
+  let refused = replay_and_record(first, bad, broken)
+  assert refused.visited > 0 && refused.capture_refused == refused.visited
+  assert refused.replayed.reused == 0 && refused.replayed.checked == refused.visited
+  assert admitted_count(refused.admitted) == 0
+  assert call_result_equal(refused.replayed, checker.check_module_body_products(bad))
+  let recovered = replay_and_record(refused.admitted, good, valid)
+  assert recovered.replayed.reused == 0 && recovered.replayed.checked == 1
+  assert recovered.capture_refused == 0 && admitted_count(recovered.admitted) == 1
+  assert call_result_equal(recovered.replayed, checker.check_module_body_products(good))
+  let hit = replay(recovered.admitted, good, valid)
+  assert hit.reused == 1 && hit.checked == 0
+  assert call_result_equal(hit, checker.check_module_body_products(good))
+}
 
 test "scalar replay direct calls keep implementations separate from signatures" {
   let scope = identity.module_key("calls", "sample", "sample", "sample.dawn")
