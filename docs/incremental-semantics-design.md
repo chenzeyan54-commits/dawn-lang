@@ -1336,6 +1336,23 @@ Default, generic, trait, effect, builtin, dynamic and receiver-method calls
 remain cold, as do named and trailing arguments. This is admission widening,
 not production session wiring or a claim of measured acceleration.
 
+### Single-pass cache renewal
+
+The opt-in replay path also offers a recording execution that captures both
+reused products and cold replacements at the canonical scheduler boundary.
+Each callback executes once. Its actual relative-position product is captured
+before final absolute-position materialization; no second cold pass is needed.
+The next admission binds only those new entries to the current pre-body headers
+and current source snapshot. It never retains a previous admission or merges
+deleted declarations back into the new cache.
+
+Execution counts remain separate from capture counts: visits include both cold
+and reused bodies, while capture refusal removes only future eligibility. A
+three-generation edit sequence must prove that edited and newly added bodies
+become reusable and that dependency changes still reject recaptured products.
+This seam does not itself enable caching in driver or editor sessions and makes
+no performance claim; production ownership, eviction, and budgets follow.
+
 ## 七、不做的
 
 不新增语法、改变推断/可见性、扩展comptime语言能力；不做磁盘缓存、跨进程共享、

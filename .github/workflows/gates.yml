@@ -1510,8 +1510,10 @@ jobs:
     # 153s of its 497s observation, for 736 + 153 = 889s.
     # 2026-09-22: move the complete scalar suite into four existing jobs.
     # Remove only its documented 2 * 59s term; preserve other headroom.
-    # budget: 3x 771s planning value (889s less the relocated scalar suite's 118s term)
-    timeout-minutes: 39
+    # The expanded recorder moves intact to std-version below. Remove only
+    # its documented 2 * 55s term: 771 - 110 = 661s; retain other headroom.
+    # budget: 3x 661s planning value (prior baseline less the relocated recorder's 110s term)
+    timeout-minutes: 34
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -1521,8 +1523,6 @@ jobs:
         run: python3 scripts/incremental-semantics-contract/body-executor.py
       - name: Full-product frozen body scheduler oracle
         run: python3 scripts/incremental-semantics-contract/body-scheduler.py
-      - name: Opt-in body recording contracts
-        run: python3 scripts/incremental-semantics-contract/body-recording.py
       - name: Body write journal contracts
         run: python3 scripts/incremental-semantics-contract/write-journal.py
       - name: Body table writer ownership inventory
@@ -2562,8 +2562,11 @@ jobs:
     # 2026-09-22: seven call controls and their independent positive took
     # 141.18s locally under concurrent validation load. Preserve that loaded
     # observation and prior headroom: 397 + 2 * 142 = 681s.
-    # budget: 3x 681s planning value (prior baseline plus explicit-call replay controls)
-    timeout-minutes: 35
+    # Single-pass cache renewal adds six compiling controls and a positive.
+    # Their complete local run took 86.65s: 681 + 2 * 87 = 855s.
+    # This remains a planning value until a complete runner observation.
+    # budget: 3x 855s planning value (prior baseline plus cache renewal controls)
+    timeout-minutes: 43
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -2575,6 +2578,8 @@ jobs:
         run: python3 scripts/incremental-semantics-contract/scalar-replay.py --self-test
       - name: Explicit-call replay contracts
         run: python3 scripts/incremental-semantics-contract/scalar-replay.py --suite calls
+      - name: Single-pass body cache renewal contracts
+        run: python3 scripts/incremental-semantics-contract/body-renewal.py
 
   # Phase 2 measures process semantics, not runner hardware. The complete
   # contract measured 60s locally, and the reused toolchain setup has a 29s
@@ -2608,8 +2613,12 @@ jobs:
     # corrupts the compiled-in std. 63s locally. java-member-dispatch's ten
     # builds cost 158s locally and 292s on the runner, which puts this one at
     # about 205s here; restate the number from the first run that carries it.
-    # budget: 3x 205s predicted from java-member-dispatch's local/runner ratio
-    timeout-minutes: 11
+    # 2026-09-22: the complete expanded recorder moves from body execution.
+    # Its positive and twelve compiling controls took 193.84s locally under
+    # concurrent validation load. Preserve that reading and existing baseline:
+    # 205 + 2 * 194 = 593s. This is planning, not a runner observation.
+    # budget: 3x 593s planning value (prior baseline plus expanded recording controls)
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -2617,6 +2626,8 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Std version contract
         run: ./scripts/std-version-contract/run.sh
+      - name: Opt-in body recording contracts
+        run: python3 scripts/incremental-semantics-contract/body-recording.py
 
   # N vs N-1 (scripts/selfhost-prev-diff.sh): the previous release and HEAD
   # compile the same corpus and any byte difference must be declared in a
