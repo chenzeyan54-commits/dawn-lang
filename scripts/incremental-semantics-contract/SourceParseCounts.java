@@ -29,6 +29,8 @@ public final class SourceParseCounts {
         PROJECTION + ".tokens_from(" + INDEXED + "Lstd/pvec$Vec;Lstd/pvec$Vec;)LOption;", 2);
 
     public static void hit(int index) { COUNTS[index]++; }
+    /** External fixtures may exclude setup explicitly; never production code. */
+    public static void begin() { Arrays.fill(COUNTS, 0); }
 
     private static final class ObservedLoader extends URLClassLoader {
         private final Set<String> seen = new HashSet<>();
@@ -77,14 +79,20 @@ public final class SourceParseCounts {
 
     public static void main(String[] args) throws Exception {
         if (args.length != 1) throw new IllegalArgumentException("Expected subject jar");
-        Path jar = Path.of(args[0]);
         String[] samples = {"clean_on", "clean_off", "recovered", "lexer_error", "delegated_of"};
+        long[][] expected = {{1, 1, 1}, {1, 0, 0}, {1, 0, 0}, {1, 0, 0}, {1, 1, 1}};
+        verify(Path.of(args[0]), "source_parse_counts", OWNER, samples, expected);
+    }
+
+    public static void verify(Path jar, String fixtureName, String owner,
+                              String[] samples, long[][] expected) throws Exception {
+        if (samples.length != expected.length) throw new IllegalArgumentException("Sample/count shape mismatch");
         // Independently execute the unmodified bytes before adding counters.
         // Each mutant must preserve all fixture outcomes, not just the first
         // sample whose measured count will reject it.
         try (URLClassLoader plain = new URLClassLoader(new URL[]{jar.toUri().toURL()},
                                                        SourceParseCounts.class.getClassLoader())) {
-            Class<?> fixture = Class.forName("source_parse_counts", true, plain);
+            Class<?> fixture = Class.forName(fixtureName, true, plain);
             for (String sample : samples) {
                 if (!Boolean.TRUE.equals(fixture.getMethod(sample).invoke(null))) {
                     throw new AssertionError("Uninstrumented semantic sample failed " + sample);
@@ -94,11 +102,10 @@ public final class SourceParseCounts {
         try (ObservedLoader loader = new ObservedLoader(jar)) {
             Class.forName(PARSER.replace('/', '.'), true, loader);
             Class.forName(PROJECTION.replace('/', '.'), true, loader);
-            Class<?> fixture = Class.forName("source_parse_counts", true, loader);
+            Class<?> fixture = Class.forName(fixtureName, true, loader);
             if (!loader.seen.equals(TARGETS.keySet())) {
                 throw new IllegalStateException("Counter targets drifted: " + loader.seen);
             }
-            long[][] expected = {{1, 1, 1}, {1, 0, 0}, {1, 0, 0}, {1, 0, 0}, {1, 1, 1}};
             for (int index = 0; index < samples.length; index++) {
                 Method sample = fixture.getMethod(samples[index]);
                 if (sample.getReturnType() != boolean.class || sample.getParameterCount() != 0) {
@@ -108,14 +115,14 @@ public final class SourceParseCounts {
                 Object valid = sample.invoke(null);
                 if (!Boolean.TRUE.equals(valid)) throw new AssertionError("Semantic sample failed " + samples[index]);
                 if (!Arrays.equals(COUNTS, expected[index])) {
-                    System.out.println("FAIL  source_parse_counts :: " + OWNER);
+                    System.out.println("FAIL  " + fixtureName + " :: " + owner);
                     System.out.println("  assertion failed: " + samples[index] + " expected=" +
                                        Arrays.toString(expected[index]) + " actual=" + Arrays.toString(COUNTS));
                     System.exit(1);
                 }
                 System.out.println("COUNT " + samples[index] + " " + Arrays.toString(COUNTS));
             }
-            System.out.println("PASS  source_parse_counts :: " + OWNER);
+            System.out.println("PASS  " + fixtureName + " :: " + owner);
         }
     }
 }

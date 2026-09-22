@@ -55,13 +55,14 @@ resolved syntax. The actual header/query facts continue to establish whether
 the newly resolved imports mean the same thing. Negative controls must reject
 changed bodies, spans, declaration order, and import aliases/selections.
 
-Initially the driver can construct this snapshot explicitly from current text;
-that duplicate parse must be included in session measurements, not hidden in a
-body-only timer. The final loader integration should produce an optional clean
-snapshot beside its existing parse result, propagate the checked import rewrite,
-and preserve recovered syntax/diagnostics without reparsing. Cold CLI callers
-must not pay for an unused token index. This loader work is required before
-claiming efficient production integration.
+The legacy cached entry reconstructs a snapshot from arbitrary loaded text;
+that duplicate parse must be included whenever measuring that entry. The opt-in
+prepared loader now produces an optional clean snapshot beside its parse result,
+propagates the checked import rewrite, and preserves recovered syntax/diagnostics.
+Its prepared Session consumer does not recreate a missing proof. Cold CLI callers
+use capture-off parsing and must not pay for an unused replay token index.
+This is parse sharing within one load/check update, not an incremental parser or
+a claim that unchanged dependencies remain parsed across separate loader calls.
 
 ### Single-parse source input
 
@@ -85,10 +86,12 @@ constructed or retained. It does not mean the parser avoids ordinary lexing or
 temporary code points/tokens. The initial slice leaves all loader, Session and
 LSP callers unchanged. Semantic tests compare recovered syntax, diagnostic
 ordering and captured fields with the existing independently indexed oracle.
-Actual invocation-count instrumentation is still pending: source inspection
-alone is not a measured parse/index-count result, nor evidence of end-to-end
-speedup. The duplicate loader/check parse remains until prepared inputs are
-integrated, and all original production activation gates remain in force.
+Actual API method-entry instrumentation now observes one parser/index/projection
+for clean capture and `of`, and one parser with zero indexes/projections for
+capture-off and lexer/parser errors. Three independently compiled duplicate/eager
+controls change the exact expected vectors. This is not evidence of end-to-end
+speedup. Loader/consumer invocation counts require their own intervals and
+controls, and all original production activation gates remain in force.
 
 ## Session ownership and eviction
 
@@ -114,8 +117,14 @@ identity with cold standalone analysis; the analysis transition still settles
 standard-library identity. Prepared values are transient update inputs, not
 additional fields retained in a Session. Tests must compare complete cold and
 prepared loader results on package rewrites, overlays, recovered sources and
-loader errors. Actual invocation instrumentation remains required to prove the
-cost claim; semantic equality alone does not establish one parse per source.
+loader errors. Host method-entry instrumentation observes `(parse,index,
+projection) = (3,3,3)` for the three-module prepared loader, `(3,0,0)` for its
+cold counterpart, and `(1,1,1)` for standalone preparation. A separate prepared
+Session interval, excluding explicitly marked setup, observes `(0,0,0)` even
+after eviction. Four compiling controls independently duplicate seed/dependency
+parses, eagerly capture cold input, or reparse in the consumer; each preserves
+semantic samples and fails its exact count vector. These are invocation proofs,
+not latency or retained-memory measurements.
 
 `analyze_module_step_prepared` consumes an opaque prepared module and never
 falls back to reparsing when that module has no proof. The legacy cached-module
