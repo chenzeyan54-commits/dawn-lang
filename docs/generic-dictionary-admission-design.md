@@ -388,3 +388,13 @@ unbound output, unnormalized products, repeated cold execution and stale
 inferred publication. All eleven controls reached their named runtime failure
 on 2026-09-23 (86.07 seconds locally). These results do not replace integrated
 Core, full-family or performance acceptance.
+
+After integration with exact source-range caching and current main, the JVM
+selfhost suite passes 907 tests. An independent exact-method counter on the
+frozen original 1,000-function Scale benchmark observes three actual renewal
+operations: each installs 1,000 certified products and calls strict environment
+comparison exactly once, for the cold implementation. The ordinary benchmark
+also retains 1,001 visits, 1,000 renewed admissions and zero capture refusals.
+This verifies eliminated repeated environment work, not end-to-end latency,
+CPU, memory or complete G3 acceptance. Instrumented and concurrent smoke times
+are not performance evidence.
