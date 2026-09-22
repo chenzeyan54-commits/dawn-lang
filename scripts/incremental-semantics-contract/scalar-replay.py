@@ -10,6 +10,7 @@ diagnostic order are the shared scheduler's and cannot be broken from inside the
 replay module: a control for either one has to reach where the order is made,
 and the assertion it reddens is still a replay assertion.
 """
+import argparse
 import re
 import shutil
 import tempfile
@@ -25,7 +26,32 @@ CONTEXT = 'selfhost/src/check/cx.dawn'
 SHAPE = 'selfhost/src/check/scalar_shape.dawn'
 
 
+def select_variants(variants, suite):
+    if suite == 'all':
+        return variants
+    return [variant for variant in variants
+            if variant[0].startswith('call-') == (suite == 'calls')]
+
+
+def selection_selftest(variants):
+    core = select_variants(variants, 'core')
+    calls = select_variants(variants, 'calls')
+    assert select_variants(variants, 'all') == variants
+    assert len(core) == 41 and len(calls) == 7
+    names = [variant[0] for variant in core + calls]
+    assert len(names) == len(set(names))
+    assert sorted(names) == sorted(variant[0] for variant in variants)
+    assert all(variant[1] == SUBJECT for variant in calls)
+    # Both suites always execute the unchanged positive subject before mutants.
+    assert core and calls
+    print('OK: scalar replay suite partition preserves all 48 controls')
+
+
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--suite', choices=('all', 'core', 'calls'), default='all')
+    parser.add_argument('--self-test', action='store_true')
+    args = parser.parse_args()
     started = time.monotonic()
     own = [
         ('call-header-lifecycle',
@@ -202,6 +228,10 @@ def main():
          'SLet(name, false, None, init, _, _) -> { out = binders(init, out)? ++ [name] }'),
     ]
     variants = [(name, SUBJECT, old, new) for name, old, new in own] + shared
+    if args.self_test:
+        selection_selftest(variants)
+        return
+    variants = select_variants(variants, args.suite)
     originals = {p: (ROOT / p).read_text() for p in {v[1] for v in variants}}
     with tempfile.TemporaryDirectory(prefix='dawn-scalar-replay-') as temp:
         root = Path(temp)
