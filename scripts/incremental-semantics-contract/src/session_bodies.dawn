@@ -139,6 +139,22 @@ test "session body cache shares capacity with prefix representations" {
     assert checkdump.render(moved.program) == checkdump.render(cold)
     assert moved.program.modules[0].tm == cold.modules[0].tm
     assert moved.program.modules[1].tm == cold.modules[1].tm
+    # Multiple admitted modules must charge earlier body and prefix entries
+    # before either representation can retain another module.
+    let one = source("one", "fn value() -> Int = 1\n")
+    let two = source("two", one.text)
+    let three = source("three", one.text)
+    let repeated = LoadResult { modules: [one, two, three], diags: [] }
+    let charge = str.len(one.text)
+    for limits in [(2, 10000, 2), (10, charge * 3, 3)] {
+      let (modules, text, expected) = limits
+      let result = incremental.analyze(incremental.new_with_body_cache(std, ct_default(),
+        jsig_refused(), refused_probe, modules, text, 20), repeated)
+      assert result.stats.retained_total_modules == expected
+      assert result.stats.retained_total_text_units == expected * charge
+      assert result.stats.retained_total_modules <= modules
+      assert result.stats.retained_total_text_units <= text
+    }
   }))
 }
 
