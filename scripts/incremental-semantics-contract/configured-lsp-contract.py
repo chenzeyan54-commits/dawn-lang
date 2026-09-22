@@ -11,9 +11,11 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = Path(__file__).resolve().parent
@@ -81,6 +83,15 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def log_tail(path):
+    # Fixed synthetic fixtures only. Bound both very long lines and line count;
+    # never dump the complete compiler tree or artifact into CI output.
+    with path.open("rb") as stream:
+        stream.seek(max(0, path.stat().st_size - 8192))
+        text = stream.read(8192).decode("utf-8", errors="replace")
+    return "\n".join(text.splitlines()[-40:])[-4000:]
+
+
 def stop_tree(proc):
     # LspClient gives its server a new session. A process-group kill alone
     # would leave that server alive after a matrix timeout. Resolve only this
@@ -105,7 +116,7 @@ class Run:
     def __init__(self, output, timeout):
         self.output, self.timeout, self.commands = output, timeout, []
 
-    def execute(self, label, command, expected=None):
+    def execute(self, label, command, expected=None, detail_log=None):
         log = self.output / (label + ".log")
         started = time.monotonic()
         timed_out = False
@@ -125,7 +136,16 @@ class Run:
                               "log": log.name, "log_sha256": digest(log),
                               "expected_rejection": expected})
         save(self.output / "commands.json", self.commands)
-        verify_exit(status, log.read_text(), expected, timed_out)
+        try:
+            verify_exit(status, log.read_text(), expected, timed_out)
+        except (RuntimeError, UnicodeError):
+            print(f"FAIL {label}: status={status} timeout={timed_out} log={log} "
+                  f"sha256={self.commands[-1]['log_sha256']}", file=sys.stderr, flush=True)
+            for evidence in (log, detail_log):
+                if evidence is not None and evidence.is_file():
+                    print(f"Bounded log tail: {evidence}\n{log_tail(evidence)}",
+                          file=sys.stderr, flush=True)
+            raise
         print(f"PASS {label}: {elapsed:.2f}s", flush=True)
 
 
@@ -158,6 +178,23 @@ def check_complete(directory, scope, variant):
         raise RuntimeError("matrix did not complete every expected revision")
     for sample in samples:
         check_observation(sample, scope, variant)
+
+
+def verify_workflow(text):
+    script = "scripts/incremental-semantics-contract/configured-lsp-contract.py"
+    actual = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("#") or script not in line:
+            continue
+        if line.startswith("run: "):
+            line = line[5:]
+        actual.append(shlex.split(line))
+    expected = [["python3", script, "--self-test"]] + [
+        ["python3", script, "--suite", scope, "--output",
+         "$RUNNER_TEMP/configured-lsp-" + scope] for scope in SCOPES]
+    if sorted(actual) != sorted(expected):
+        raise RuntimeError("configured LSP CI must run self-test and both independent suites exactly once")
 
 
 def main():
@@ -224,7 +261,7 @@ def main():
                 command.append("--uninstrumented")
             if control:
                 command.extend(("--reparse-control", control))
-            run.execute("build-" + name, command)
+            run.execute("build-" + name, command, detail_log=destination / "build.log")
             artifact = destination / "compiler.jar"
             built = json.loads((destination / "metadata.json").read_text())
             if (built["compiler_sha256"] != digest(artifact) or built["mode"] != mode or
@@ -285,6 +322,13 @@ def main():
 
 
 def selftest():
+    with tempfile.TemporaryDirectory(prefix="configured-lsp-log-tail-") as directory:
+        path = Path(directory) / "sample.log"
+        for content in (b"", b"x" * 20000, b"row\n" * 2000, b"\xff" * 10000):
+            path.write_bytes(content)
+            tail = log_tail(path)
+            assert len(tail) <= 4000 and len(tail.splitlines()) <= 40
+    print("OK: four bounded failure-log tail cases")
     all_steps = plan("all")
     assert len(all_steps) == 22
     for scope in SCOPES:
@@ -335,6 +379,22 @@ def selftest():
             continue
         raise AssertionError("wrong private observation accepted")
     print("OK: independent suite plans, complete control ordering, and 38 rejection cases")
+    script = "scripts/incremental-semantics-contract/configured-lsp-contract.py"
+    lines = [f"python3 {script} --self-test"] + [
+        f'run: python3 {script} --suite {scope} --output "$RUNNER_TEMP/configured-lsp-{scope}"'
+        for scope in SCOPES]
+    verify_workflow("\n".join(lines))
+    for broken in (lines[:-1], lines + [lines[-1]],
+                   [line.replace("--suite project", "--suite standalone") for line in lines],
+                   [line.replace("--suite project", "--suite all") for line in lines],
+                   [line.replace("--suite project", "--functions 2 --suite project") for line in lines]):
+        try:
+            verify_workflow("\n".join(broken))
+        except RuntimeError:
+            continue
+        raise AssertionError("invalid configured LSP CI inventory accepted")
+    verify_workflow((ROOT / ".github/workflows/gates.yml").read_text())
+    print("OK: configured LSP CI inventory and five missing/duplicate/changed-suite controls")
 
 
 if __name__ == "__main__":

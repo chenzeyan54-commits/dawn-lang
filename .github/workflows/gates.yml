@@ -821,8 +821,11 @@ jobs:
     # 103s over the 567s claim. This is the one line the 2026-09-11 batch's
     # first commit could not restate: 670s was over the 660s pole, so it
     # waited for the pole to move.
-    # budget: 3x 670s worst observed
-    timeout-minutes: 34
+    # Configured standalone LSP: shared fresh-build setup plus this scope's
+    # complete matrices/control summed to 118.98s in the local all-suite run.
+    # Double rounded headroom: 670 + 2 * 119 = 908s; no job is added.
+    # budget: 3x 908s planning value (prior baseline plus configured standalone LSP)
+    timeout-minutes: 46
     steps:
       - uses: actions/checkout@v4
 
@@ -859,6 +862,9 @@ jobs:
       # manifest/MVS/source-input planning boundary and must run explicitly.
       - name: compiler Planner tests
         run: ./bin/dawn test compiler-plan
+
+      - name: configured standalone LSP protocol and parse counts
+        run: python3 scripts/incremental-semantics-contract/configured-lsp-contract.py --suite standalone --output "$RUNNER_TEMP/configured-lsp-standalone"
 
       # source packages (packages/, docs/package-design.md 项目 B): every
       # package with a suite of its own, plus playground consuming them via
@@ -1485,6 +1491,8 @@ jobs:
           python3 scripts/incremental-semantics-contract/lsp-bench.py --self-test
           python3 scripts/incremental-semantics-contract/lsp-configured.py --self-test
           python3 scripts/incremental-semantics-contract/lsp-edit-matrix.py --self-test
+          python3 scripts/incremental-semantics-contract/lsp-project-matrix.py --self-test
+          python3 scripts/incremental-semantics-contract/configured-lsp-contract.py --self-test
           python3 scripts/incremental-semantics-contract/probe.py
           python3 scripts/incremental-semantics-contract/cold.py
           python3 scripts/incremental-semantics-contract/lsp-prefix.py
@@ -1529,8 +1537,11 @@ jobs:
     # Remove only its documented 2 * 59s term; preserve other headroom.
     # The expanded recorder moves intact to std-version below. Remove only
     # its documented 2 * 55s term: 771 - 110 = 661s; retain other headroom.
-    # budget: 3x 661s planning value (prior baseline less the relocated recorder's 110s term)
-    timeout-minutes: 34
+    # Configured project LSP: shared fresh-build setup plus this scope's
+    # complete matrices/control summed to 119.11s in the local all-suite run.
+    # Double rounded headroom: 661 + 2 * 120 = 901s; no job is added.
+    # budget: 3x 901s planning value (prior baseline plus configured project LSP)
+    timeout-minutes: 46
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -1538,6 +1549,8 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Stateful body executor contracts
         run: python3 scripts/incremental-semantics-contract/body-executor.py
+      - name: configured project LSP protocol and parse counts
+        run: python3 scripts/incremental-semantics-contract/configured-lsp-contract.py --suite project --output "$RUNNER_TEMP/configured-lsp-project"
       - name: Full-product frozen body scheduler oracle
         run: python3 scripts/incremental-semantics-contract/body-scheduler.py
       - name: Body write journal contracts

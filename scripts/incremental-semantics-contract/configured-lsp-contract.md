@@ -31,11 +31,24 @@ directories must not exist, so canonical runs cannot silently reuse artifacts.
 Artifact hashes, builder metadata, matrix samples, stderr, and command logs are
 retained, including on failure. Self-tests exercise orchestration order and
 strict rejection classification without launching a compiler.
+Failed subprocesses print their identity, status, timeout flag, log hash and a
+bounded log tail; builder failures also expose the private build log tail.
+This makes CI failures diagnosable without printing complete artifacts, and
+does not change which failures are accepted as negative-control evidence.
 
 This is not a latency benchmark, a per-source attribution proof for the
 two-module aggregate parse counts, retained-memory measurement, or default
-activation evidence. Source-attributed project counters and CI placement remain
-separate work. No existing `/tmp` artifact is accepted by the canonical runner.
+activation evidence. Source-attributed project counters remain separate work.
+No existing `/tmp` artifact is accepted by the canonical runner.
+
+CI runs standalone in the existing `test` job and project in
+`incremental-body-execution`. Each suite builds its own independent artifacts;
+the runner self-test checks both invocations and itself appear exactly once.
+No job is added. The measured all-suite command sums, including shared setup
+and each scope's own control, are 118.98s and 119.11s. Doubling their rounded
+values gives planning budgets of 908s and 901s including the prior job baselines,
+below the unchanged 950s run pole. These are local planning figures, not whole
+CI-job observations or performance acceptance.
 
 Example (use the actual local JDK path, and a nonexistent output directory):
 
