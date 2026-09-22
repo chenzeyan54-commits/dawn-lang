@@ -8,12 +8,15 @@ Linux RSS is process memory, not a claim about retained semantic-cache bytes.
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
 import statistics
 import sys
 import time
+
+from lsp_stats import FIELDS, decode
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts/lsp-workspace-contract"))
@@ -26,6 +29,15 @@ def rss(pid):
         return None
     return {line.split(":")[0]: line.split(":", 1)[1].strip()
             for line in path.read_text().splitlines() if line.startswith(("VmRSS:", "VmHWM:"))}
+
+
+def latency_summary(values):
+    """Keep the raw sample count beside an explicitly defined tail estimate."""
+    values = sorted(values)
+    if not values or any(not math.isfinite(value) or value < 0 for value in values):
+        raise ValueError("latency samples must be finite, nonnegative and nonempty")
+    return {"samples": len(values), "median_ms": statistics.median(values) / 1e6,
+            "p95_ms": values[math.ceil(0.95 * len(values)) - 1] / 1e6}
 
 
 def validate_diagnostics(publishes, uri, version, expected_error, error_line):
@@ -43,6 +55,31 @@ def validate_diagnostics(publishes, uri, version, expected_error, error_line):
 
 
 def selftest():
+    assert decode("LSP_BODY_STATS\tstandalone\tunobserved") == {
+        "scope": "standalone", "observed": False, "counts": None}
+    assert decode("LSP_BODY_STATS\tproject\t" + "\t".join(["0"] * len(FIELDS))) == {
+        "scope": "project", "observed": True, "counts": dict.fromkeys(FIELDS, 0)}
+    for invalid in ("", "LSP_BODY_STATS\tunknown\tunobserved",
+                    "LSP_BODY_STATS\tproject\t0", "LSP_BODY_STATS\tproject\tunobserved\t0",
+                    "LSP_BODY_STATS\tproject\t" + "\t".join(["-1"] * len(FIELDS)),
+                    "LSP_BODY_STATS\tproject\t" + "\t".join(["NaN"] * len(FIELDS))):
+        try:
+            decode(invalid)
+        except ValueError:
+            continue
+        raise AssertionError("analysis trace accepted invalid counters")
+    assert latency_summary([1_000_000]) == {
+        "samples": 1, "median_ms": 1.0, "p95_ms": 1.0}
+    assert latency_summary(reversed([n * 1_000_000 for n in range(1, 21)])) == {
+        "samples": 20, "median_ms": 10.5, "p95_ms": 19.0}
+    assert latency_summary([0, 0, 0])["p95_ms"] == 0
+    assert latency_summary([n * 1_000_000 for n in range(1, 22)])["p95_ms"] == 20
+    for invalid in ([], [-1], [float("nan")], [float("inf")]):
+        try:
+            latency_summary(invalid)
+        except ValueError:
+            continue
+        raise AssertionError("latency summary accepted invalid samples")
     clean = {"uri": "untitled:test", "version": 2, "diagnostics": []}
     error = {"uri": "untitled:test", "version": 2, "diagnostics": [{
         "message": "benchmark_type_error returns Bool, expected Int",
@@ -63,7 +100,7 @@ def selftest():
         except RuntimeError:
             continue
         raise AssertionError("diagnostic validation accepted a negative control")
-    print("OK: benchmark diagnostic validation and 6 negative controls")
+    print("OK: benchmark diagnostics (6 controls), latency percentiles (4 controls), analysis traces (6 controls)")
 
 
 def main():
@@ -97,6 +134,7 @@ def main():
     metadata = {
         "command": command, "cwd": str(ROOT), "platform": platform.platform(),
         "warmup_rounds": 3, "rounds": args.rounds,
+        "latency_percentiles": "median; p95 nearest rank ceil(0.95*n); post-warmup clean samples only",
         "uri": args.uri, "error_round": args.error_round,
         "sources": {str(path): hashlib.sha256(text.encode()).hexdigest() for path, text in texts.items()},
         "note": "overlay-only comment edits and optional type-error recovery; barrier excludes debounce; RSS is process-wide",
@@ -138,6 +176,11 @@ def main():
                 trace = client.stderr_text()[stderr_mark:].splitlines()
                 orders = [line.split("\t")[1:] for line in trace if line.startswith("LSP_INPUTS\t")]
                 counts = [line.split("\t")[1:] for line in trace if line.startswith("LSP_PREFIX_STATS\t")]
+                body_counts = [decode(line) for line in trace if line.startswith("LSP_BODY_STATS\t")]
+                if body_counts:
+                    if len(body_counts) != 1:
+                        raise RuntimeError("expected one analysis-count trace per edit")
+                    row["analysis_counts"] = body_counts[0]
                 if orders:
                     if len(orders) != 1:
                         raise RuntimeError("expected one analysis input trace per edit")
@@ -165,13 +208,17 @@ def main():
     for path in args.edit:
         samples = [row for row in rows if row["edited"] == str(path.resolve())
                    and row["round"] >= 3 and not row["expected_error"]]
+        sync = latency_summary(row["sync_ns"] for row in samples)
+        queries = {method: latency_summary(row["query_ns"][method] for row in samples)
+                   for method in ("hover", "definition", "completion")}
         summary.append({
             "edited": str(path.resolve()), "samples": len(samples),
             "error_sync_ms": [row["sync_ns"] / 1e6 for row in rows
                               if row["edited"] == str(path.resolve()) and row["expected_error"]],
-            "sync_median_ms": statistics.median(row["sync_ns"] for row in samples) / 1e6,
-            "query_median_ms": {method: statistics.median(row["query_ns"][method] for row in samples) / 1e6
-                                for method in ("hover", "definition", "completion")},
+            "sync_median_ms": sync["median_ms"],
+            "sync_p95_ms": sync["p95_ms"],
+            "query_median_ms": {method: value["median_ms"] for method, value in queries.items()},
+            "query_p95_ms": {method: value["p95_ms"] for method, value in queries.items()},
         })
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2))

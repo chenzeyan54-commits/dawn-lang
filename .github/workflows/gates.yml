@@ -821,8 +821,11 @@ jobs:
     # 103s over the 567s claim. This is the one line the 2026-09-11 batch's
     # first commit could not restate: 670s was over the 660s pole, so it
     # waited for the pole to move.
-    # budget: 3x 670s worst observed
-    timeout-minutes: 34
+    # Configured standalone LSP: shared fresh-build setup plus this scope's
+    # complete matrices/control summed to 118.98s in the local all-suite run.
+    # Double rounded headroom: 670 + 2 * 119 = 908s; no job is added.
+    # budget: 3x 908s planning value (prior baseline plus configured standalone LSP)
+    timeout-minutes: 46
     steps:
       - uses: actions/checkout@v4
 
@@ -859,6 +862,9 @@ jobs:
       # manifest/MVS/source-input planning boundary and must run explicitly.
       - name: compiler Planner tests
         run: ./bin/dawn test compiler-plan
+
+      - name: configured standalone LSP protocol and parse counts
+        run: python3 scripts/incremental-semantics-contract/configured-lsp-contract.py --suite standalone --output "$RUNNER_TEMP/configured-lsp-standalone"
 
       # source packages (packages/, docs/package-design.md 项目 B): every
       # package with a suite of its own, plus playground consuming them via
@@ -1483,6 +1489,10 @@ jobs:
       - name: incremental semantic observation and cold reference
         run: |
           python3 scripts/incremental-semantics-contract/lsp-bench.py --self-test
+          python3 scripts/incremental-semantics-contract/lsp-configured.py --self-test
+          python3 scripts/incremental-semantics-contract/lsp-edit-matrix.py --self-test
+          python3 scripts/incremental-semantics-contract/lsp-project-matrix.py --self-test
+          python3 scripts/incremental-semantics-contract/configured-lsp-contract.py --self-test
           python3 scripts/incremental-semantics-contract/probe.py
           python3 scripts/incremental-semantics-contract/cold.py
           python3 scripts/incremental-semantics-contract/lsp-prefix.py
@@ -1527,8 +1537,11 @@ jobs:
     # Remove only its documented 2 * 59s term; preserve other headroom.
     # The expanded recorder moves intact to std-version below. Remove only
     # its documented 2 * 55s term: 771 - 110 = 661s; retain other headroom.
-    # budget: 3x 661s planning value (prior baseline less the relocated recorder's 110s term)
-    timeout-minutes: 34
+    # Configured project LSP: shared fresh-build setup plus this scope's
+    # complete matrices/control summed to 119.11s in the local all-suite run.
+    # Double rounded headroom: 661 + 2 * 120 = 901s; no job is added.
+    # budget: 3x 901s planning value (prior baseline plus configured project LSP)
+    timeout-minutes: 46
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -1536,6 +1549,8 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Stateful body executor contracts
         run: python3 scripts/incremental-semantics-contract/body-executor.py
+      - name: configured project LSP protocol and parse counts
+        run: python3 scripts/incremental-semantics-contract/configured-lsp-contract.py --suite project --output "$RUNNER_TEMP/configured-lsp-project"
       - name: Full-product frozen body scheduler oracle
         run: python3 scripts/incremental-semantics-contract/body-scheduler.py
       - name: Body write journal contracts
@@ -2268,8 +2283,10 @@ jobs:
     # 2026-09-11, N=2 -> N=1. Worst observations 358s and 329s; unsharded
     # that is 687 - 36 = 651s. The note above about a third shard is void:
     # the pole is 950s now and this claim is 299s under it.
-    # budget: 3x 651s planning value (two merged shards' worst observations)
-    timeout-minutes: 33
+    # Prepared LSP: one control plus positive at rounded local max 52s.
+    # Planning allowance: 651 + 2 * (2 * 52) = 859s.
+    # budget: 3x 859s planning value (prior baseline plus prepared LSP shard 3)
+    timeout-minutes: 43
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -2277,6 +2294,8 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: general pipe contract
         run: ./scripts/pipe-contract/run.sh
+      - name: prepared LSP lifecycle shard 3
+        run: python3 scripts/lsp-workspace-contract/prepared-lifecycle.py --shards 5 --shard 3
 
   # SYN-09: which Java member `recv.name(args)` reaches. Its own job for the
   # same reason java-target-classpath is: the subject is a javac-built fixture
@@ -2532,8 +2551,10 @@ jobs:
     # Scalar replay's separate 394-test closure took 55.20s on 2026-09-12
     # using the same current-source native driver. Add 2*56s to the existing
     # allowance without discarding prior runner headroom: 592 + 112 = 704s.
-    # budget: 3x 704s planning value (existing baseline plus replay closure)
-    timeout-minutes: 36
+    # Prepared LSP: one control plus positive at rounded local max 52s.
+    # Planning allowance: 704 + 2 * (2 * 52) = 912s.
+    # budget: 3x 912s planning value (prior baseline plus prepared LSP shard 2)
+    timeout-minutes: 46
     steps:
       - uses: actions/checkout@v4
 
@@ -2546,6 +2567,8 @@ jobs:
       # header carries the rest of the reasoning.
       - name: selfhost tests on the native backend
         run: ./scripts/native-selfhost-tests.sh
+      - name: prepared LSP lifecycle shard 2
+        run: python3 scripts/lsp-workspace-contract/prepared-lifecycle.py --shards 5 --shard 2
 
   # The hardware baseline itself stays local. CI exercises only the strict
   # JSON reader, the synthetic Linux process tree and the two source mutants.
@@ -2648,8 +2671,10 @@ jobs:
     # 13s over the 94s claim.
     # 2026-09-22: four Session controls and an independent positive, using
     # the rounded 48.95s maximum subject: 107 + 2 * (5 * 49) = 597s.
-    # budget: 3x 597s planning value (prior baseline plus session body shard 2)
-    timeout-minutes: 30
+    # Prepared LSP: two controls plus positive at rounded local max 52s.
+    # Planning allowance: 597 + 2 * (3 * 52) = 909s.
+    # budget: 3x 909s planning value (prior baseline plus prepared LSP shard 1)
+    timeout-minutes: 46
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -2660,6 +2685,8 @@ jobs:
         run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/dependency-heap-contract/run.py
       - name: Session body-cache controls shard 2
         run: python3 scripts/incremental-semantics-contract/session-bodies.py --shards 3 --shard 2
+      - name: prepared LSP lifecycle shard 1
+        run: python3 scripts/lsp-workspace-contract/prepared-lifecycle.py --shards 5 --shard 1
 
   # What a toolchain says when the std it loaded is not the std it shipped
   # with (#226). Every failure used to be one sentence, and on the native
@@ -2727,8 +2754,10 @@ jobs:
     # no pre-move run left in it.
     # 2026-09-22: two cached-module controls and an independent positive,
     # at the rounded 54.59s local maximum: 250 + 2 * (3 * 55) = 580s.
-    # budget: 3x 580s planning value (prior baseline plus cached module shard 2)
-    timeout-minutes: 29
+    # Prepared LSP: two controls plus positive at rounded local max 52s.
+    # Planning allowance: 580 + 2 * (3 * 52) = 892s.
+    # budget: 3x 892s planning value (prior baseline plus prepared LSP shard 0)
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -2744,6 +2773,10 @@ jobs:
 
       - name: N vs N-1 differential
         run: ./scripts/selfhost-prev-diff.sh
+      - name: prepared LSP lifecycle partition and oracle
+        run: python3 scripts/lsp-workspace-contract/prepared-lifecycle.py --self-test
+      - name: prepared LSP lifecycle shard 0
+        run: python3 scripts/lsp-workspace-contract/prepared-lifecycle.py --shards 5 --shard 0
       - name: cached module transition controls shard 2
         run: python3 scripts/incremental-semantics-contract/cached-module.py --suite driver --shards 3 --shard 2
 
@@ -2787,8 +2820,10 @@ jobs:
     # in a row locally, which is under the rounding of every observation the
     # 644s is made of. It is counted in the claim below and the number is
     # unchanged.
-    # budget: 3x 644s planning value (three merged shards' worst observations)
-    timeout-minutes: 33
+    # Prepared LSP: one control plus positive at rounded local max 52s.
+    # Planning allowance: 644 + 2 * (2 * 52) = 852s.
+    # budget: 3x 852s planning value (prior baseline plus prepared LSP shard 4)
+    timeout-minutes: 43
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -2806,6 +2841,8 @@ jobs:
 
       - name: public API surface contract
         run: ./scripts/export-surface-contract/run.sh
+      - name: prepared LSP lifecycle shard 4
+        run: python3 scripts/lsp-workspace-contract/prepared-lifecycle.py --shards 5 --shard 4
 
   # The union guard for the sharded mutant matrices. Sharding introduced
   # exactly one new way to be wrong — a mutant no shard runs — and nothing

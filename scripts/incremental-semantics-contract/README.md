@@ -771,6 +771,118 @@ owning FAIL 后是断言失败，不把 JVM 链接错误算作成功。三个是
 hover/definition/completion，并保存原始回复和 RSS。示例参数：
 `--entry <path> --edit <path> --needle <reference> --output <new-dir> -- <server-command>`。
 
+Latency summaries retain the existing median fields and also report sync and
+query p95 values using the nearest-rank definition, `ceil(0.95 * n)`. Both use
+only clean samples after the three warmup rounds. Raw samples, sample count,
+and the percentile definition are retained for auditing. With the default
+small sample count, p95 is the maximum observed sample, not strong evidence of
+a stable tail distribution; formal value-gate runs need an explicit sampling
+plan. Percentile reporting does not add body-edit/signature/reorder workloads,
+prove cold equivalence, or measure retained semantic-cache memory. Self-tests
+also check percentile ordering and reject empty, negative, and nonfinite samples.
+
+`lsp-configured.py --source <configured-worktree> --output <new-dir> --mode
+PreparedBodies` builds a private compiler using the real `run_lsp_configured`
+entry. `Legacy` and `Cold` select the other immutable policies; cache budgets
+are explicit arguments. The source must already contain the configured entry.
+No production CLI flag or wire method is added. Exact source fingerprints,
+policy, budgets, observer schema, and artifact hash are recorded. Launch the
+resulting `compiler.jar` with the ordinary `lsp` command.
+
+`configured-lsp-contract.py --output <new-dir> --suite all` composes fresh
+plain/observed Cold and PreparedBodies builds, both edit matrices, and both
+compiling legacy-reparse controls. `--suite standalone` and `--suite project`
+retain independent positives for future CI placement. Each control must first
+pass its complete semantic/body-count matrix, then fail the exact parse-count
+assertion; compilation, linkage, timeout, and unrelated failures never count as
+success. See [the runner design](configured-lsp-contract.md) for evidence and
+scope. `--self-test` validates orchestration and fail-closed classification
+without a compiler. This is correctness coverage, not performance evidence.
+
+`playground-session-contract.py --subjects <manifest.json> --output <new-dir>`
+drives the unchanged real Playground WebSocket gateway with explicitly selected,
+fingerprinted configured JVM children. It compares plain/observed Cold and
+PreparedBodies replies, exact standalone body counts, two-client isolation and
+close/reconnect cold ownership. Per-PID private stderr logs cannot be borrowed
+between clients. See [the contract design](playground-session-contract.md) for
+the manifest and evidence boundary. This does not complete native sandbox or
+HTTP `/check` acceptance, and does not change deployment or default policy.
+
+The private configured builder also accepts `--backend native`, using fresh
+normal `__emitc` + C-runtime builds rather than a JVM substitute. The gateway
+contract's explicit `--backend native` checks executable ELF/hash/PID and the
+same four-policy protocol/count matrix; `--compare <JVM-output>` keeps complete
+cross-backend semantic equality separate and explicit. JVM defaults are
+unchanged. Unsandboxed native protocol evidence does not establish production
+systemd resource limits or `/check` reuse; see the design's native section.
+
+The optional private observer emits all Session counters on stderr, and
+`lsp-bench.py` preserves them per edit as `analysis_counts`. Cold standalone
+analysis has no Session counter: it is recorded as unobserved, never as zero
+work. `--uninstrumented` builds the same configured policy without observation;
+protocol equivalence and timing runs must distinguish these artifacts. Body
+reuse counts alone cannot prove parse avoidance: the legacy Session entry can
+reparse safely while reusing the same bodies. The builder's `--self-test`
+checks policy injection and fail-closed anchors, not compiler semantics.
+
+`lsp-edit-matrix.py --functions 1000 --output <new-dir> -- <server-command>`
+exercises ten real untitled-document revisions: initial analysis, whitespace,
+body edit, inferred signature change, reorder, deletion, insertion, error,
+recovery, and an identical revision. This is synthetic correctness/count
+coverage, not a latency experiment or a real-application hit-rate corpus.
+`--expect-reuse` requires exact checked/reused/rejected body and prefix-hit
+counts on every revision, including full cold recovery after the error and a
+whole-module hit on the identical revision. Counts are derived from the actual
+preceding revision, not a separate baseline comparison. The count oracle's
+`--self-test` rejects absent, duplicated, unobserved, and changed observations.
+`--compare <prior-output>` requires identical source hashes and complete
+diagnostics/hover/definition/completion responses across independently selected
+policies. Counts are stored separately and excluded from semantic equality;
+uninstrumented servers can therefore use the same comparison. Generic,
+method/default, project dependency, and retained-memory acceptance remain
+separate requirements.
+
+The shared `contract.SourceParseCounts` host observer also accepts `--lsp
+<compiler.jar>` to count actual parser/index/projection method entries in an
+executable compiler. Compile it with ASM 9.7.1; launch it with that observer
+directory and ASM on the classpath, not the compiler jar (the observer loads
+the compiler privately). Include `--add-exports=java.base/jdk.internal.vm=ALL-UNNAMED`,
+matching the compiler manifest's export that `java -jar` normally applies.
+Executable modules and imported selfhost fixtures have distinct namespace
+prefixes; both variants require the complete exact descriptor set.
+`lsp-edit-matrix.py --expect-parse-counts prepared` requires `(1, 1, 1)` per
+revision; `cold` requires `(1, 0, 0)`. Startup parsing is outside each edit's
+interval. Protocol replies still compare to the uninstrumented reference.
+These counts prove invocation behavior for this matrix, not parser latency,
+project dependency behavior, or default activation readiness.
+The private builder's `--reparse-control standalone` (or `project`) keeps the
+prepared loader but calls the safe legacy Session consumer, forcing it to
+construct another snapshot. This is a compiling negative control, not an
+optimization mode. Semantic equality and body reuse must still be checked;
+only the independent method-entry count oracle should reject reparsing.
+
+`lsp-project-matrix.py --output <new-dir> -- <server-command>` uses the tracked
+two-module `project-edit-fixture` without changing its disk files. Eight overlay
+revisions cover provider body/signature edits, consumer and provider error
+recovery, moved source, and closing/reopening the provider. It records complete
+diagnostic publications with consumer versions and hover/definition/completion
+replies; `--compare <prior-output>` checks exact cross-policy equivalence using
+the same fixture paths, hashes, and generated operation/version/overlay history.
+`--expect-reuse` requires the exact body/prefix/refusal/retention census on all
+eight revisions, including unobserved downstream work after provider errors.
+Both open document versions are checked; closing the provider must send an
+unversioned diagnostic clear. `--self-test` exercises these publication and
+count oracles. `--expect-parse-counts prepared` requires aggregate `(2,2,2)`
+project parse/index/projection entries per revision; `cold` requires `(2,0,0)`.
+These are project totals, not source-attributed proof that each module is
+processed once. This is a
+small synthetic cross-module correctness/count fixture, not latency or
+real-application hit-rate evidence.
+Edit substitutions require exactly one anchor. Metadata also records hashes
+of explicit launch executables, jar arguments, and classpath files; this is
+not a transitive runtime-classpath attestation. Supply independently configured
+cold and prepared artifacts and retain their builder metadata alongside runs.
+
 单大模块错误恢复使用 `standalone-large.dawn.txt`（500个简单函数及一个入口，
 合成语料，不冒充真实大型应用）。在上述参数后加
 `--uri untitled:incremental-large --error-round 5`，entry/edit 指向同一份文件，

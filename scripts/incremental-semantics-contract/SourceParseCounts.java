@@ -7,8 +7,10 @@ import java.net.URLClassLoader;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.jar.JarFile;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
@@ -18,6 +20,7 @@ import org.objectweb.asm.Opcodes;
 /** Count real method entries without adding host dependencies to shared Dawn. */
 public final class SourceParseCounts {
     private static final long[] COUNTS = new long[3];
+    private static boolean stream;
     private static final String OWNER = "source parse invocation counts";
     private static final String PARSER = "dawn$pkg$selfhost/front/parser";
     private static final String PROJECTION = "dawn$pkg$selfhost/check/source_projection";
@@ -28,20 +31,38 @@ public final class SourceParseCounts {
         PROJECTION + ".index_cps(Ljava/lang/String;Lstd/pvec$Vec;)" + INDEXED, 1,
         PROJECTION + ".tokens_from(" + INDEXED + "Lstd/pvec$Vec;Lstd/pvec$Vec;)LOption;", 2);
 
-    public static void hit(int index) { COUNTS[index]++; }
+    public static void hit(int index) {
+        COUNTS[index]++;
+        if (stream) System.err.println("LSP_PARSE_ENTRY\t" + index);
+    }
     /** External fixtures may exclude setup explicitly; never production code. */
     public static void begin() { Arrays.fill(COUNTS, 0); }
 
     private static final class ObservedLoader extends URLClassLoader {
         private final Set<String> seen = new HashSet<>();
+        private final Map<String, Integer> targets = new HashMap<>();
+        private final String parser;
+        private final String projection;
 
         ObservedLoader(Path jar) throws IOException {
+            this(jar, false);
+        }
+
+        ObservedLoader(Path jar, boolean executable) throws IOException {
             super(new URL[]{jar.toUri().toURL()}, SourceParseCounts.class.getClassLoader());
+            // Library fixtures import selfhost under its package prefix;
+            // executable selfhost artifacts put these exact modules at root.
+            String prefix = executable ? "dawn$pkg$selfhost/" : "";
+            parser = executable ? PARSER.replace(prefix, "") : PARSER;
+            projection = executable ? PROJECTION.replace(prefix, "") : PROJECTION;
+            for (var target : TARGETS.entrySet()) {
+                targets.put(executable ? target.getKey().replace(prefix, "") : target.getKey(), target.getValue());
+            }
         }
 
         @Override protected Class<?> findClass(String name) throws ClassNotFoundException {
             String internal = name.replace('.', '/');
-            if (!internal.equals(PARSER) && !internal.equals(PROJECTION)) {
+            if (!internal.equals(parser) && !internal.equals(projection)) {
                 return super.findClass(name);
             }
             URL resource = findResource(internal + ".class");
@@ -54,7 +75,7 @@ public final class SourceParseCounts {
                                                                String signature, String[] exceptions) {
                         MethodVisitor downstream = super.visitMethod(access, method, descriptor, signature, exceptions);
                         String key = internal + "." + method + descriptor;
-                        Integer counter = TARGETS.get(key);
+                        Integer counter = targets.get(key);
                         if (counter == null) return downstream;
                         if ((access & Opcodes.ACC_STATIC) == 0 || !seen.add(key)) {
                             throw new IllegalStateException("Invalid or repeated counter target " + key);
@@ -78,10 +99,37 @@ public final class SourceParseCounts {
     }
 
     public static void main(String[] args) throws Exception {
+        if (args.length == 2 && args[0].equals("--lsp")) {
+            runLsp(Path.of(args[1]));
+            return;
+        }
         if (args.length != 1) throw new IllegalArgumentException("Expected subject jar");
         String[] samples = {"clean_on", "clean_off", "recovered", "lexer_error", "delegated_of"};
         long[][] expected = {{1, 1, 1}, {1, 0, 0}, {1, 0, 0}, {1, 0, 0}, {1, 1, 1}};
         verify(Path.of(args[0]), "source_parse_counts", OWNER, samples, expected);
+    }
+
+    /** Observe a real protocol server; the client separates startup and edits. */
+    private static void runLsp(Path jar) throws Exception {
+        String mainClass;
+        try (JarFile archive = new JarFile(jar.toFile())) {
+            mainClass = archive.getManifest().getMainAttributes().getValue("Main-Class");
+        }
+        if (mainClass == null) throw new IllegalArgumentException("Missing compiler Main-Class");
+        try (ObservedLoader loader = new ObservedLoader(jar, true)) {
+            Class.forName(loader.parser.replace('/', '.'), true, loader);
+            Class.forName(loader.projection.replace('/', '.'), true, loader);
+            if (!loader.seen.equals(loader.targets.keySet())) {
+                throw new IllegalStateException("Counter targets drifted: " + loader.seen);
+            }
+            stream = true;
+            try {
+                Class.forName(mainClass, true, loader).getMethod("main", String[].class)
+                    .invoke(null, (Object) new String[]{"lsp"});
+            } finally {
+                stream = false;
+            }
+        }
     }
 
     public static void verify(Path jar, String fixtureName, String owner,

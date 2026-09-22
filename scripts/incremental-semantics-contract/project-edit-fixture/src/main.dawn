@@ -1,0 +1,4 @@
+# Keep both a dependent caller and an unrelated body in the consuming module.
+use lib.{exported}
+pub fn probe(x: Int) -> Int = exported(x)
+pub fn local(x: Int) -> Int = x + 3
