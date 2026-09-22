@@ -147,7 +147,7 @@ fn equal_bodies(actual: ModuleBodies, expected: ModuleBodies) -> Bool =
 # Fixture expectations, not admission rules. The original inference-heavy
 # lambda class remains unsupported; primitive inference has its own workload.
 fn expected_hits(kind: String, n: Int) -> Int =
-  if kind == "scalar" || kind == "arith" { n }
+  if kind == "scalar" || kind == "arith" || kind == "generic" { n }
   else { if kind == "calls" { n + 2 }
   else { if kind == "primitive_inferred" { n + 1 } else { 0 } } }
 

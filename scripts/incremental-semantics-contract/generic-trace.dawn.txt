@@ -1,5 +1,5 @@
 # Preserve the original trait-bound workload while inspecting the production
-# recording and refusal boundary. The Java oracle compares every Cx field and
+# recording and replay boundary. The Java oracle compares every Cx field and
 # counts canonical checker calls independently of reported replay statistics.
 use std/map
 use compiler/check/checker
@@ -115,14 +115,14 @@ fn trial(label: String, support: String, functions: String, reordered: String,
   }
   if len(products) != generic_count { panic("generic trace function denominator") }
   var admitted = scalar_replay.admit(scope, headers, first, saved)
-  if scalar_replay.admitted_count(admitted) != 0 { panic("generic trace unexpectedly admitted bounds") }
+  if scalar_replay.admitted_count(admitted) != generic_count { panic("generic trace bounded admission count") }
   let cold = checker.check_module_body_products(headers)
   var pairs = [Pair { cold: cold, actual: saved.bodies }]
   GenericTrace.reset()
   let same = scalar_replay.replay(admitted, headers, first)
-  if GenericTrace.count() != total || same.reused != 0 || same.checked != total ||
-    same.cold_unadmitted != total || same.cold_rejected != 0 {
-    panic("generic trace actual replay refusal count")
+  if GenericTrace.count() != total - generic_count || same.reused != generic_count || same.checked != total - generic_count ||
+    same.cold_unadmitted != total - generic_count || same.cold_rejected != 0 {
+    panic("generic trace actual bounded replay count")
   }
   pairs = pairs ++ [Pair { cold: cold, actual: same.bodies }]
   for text in ["# shifted generic body\n" ++ support ++ functions,
@@ -131,11 +131,11 @@ fn trial(label: String, support: String, functions: String, reordered: String,
     let current = checker.check_module_headers(base, source_snapshot.syntax(snapshot), map.empty())
     GenericTrace.reset()
     let renewed = scalar_replay.replay_and_record(admitted, current, snapshot)
-    if GenericTrace.count() != total || renewed.visited != total || renewed.capture_refused != 0 ||
-      renewed.replayed.reused != 0 || renewed.replayed.checked != total ||
-      renewed.replayed.cold_unadmitted != total || renewed.replayed.cold_rejected != 0 ||
-      scalar_replay.admitted_count(renewed.admitted) != 0 {
-      panic("generic trace actual renewal refusal count")
+    if GenericTrace.count() != total - generic_count || renewed.visited != total || renewed.capture_refused != 0 ||
+      renewed.replayed.reused != generic_count || renewed.replayed.checked != total - generic_count ||
+      renewed.replayed.cold_unadmitted != total - generic_count || renewed.replayed.cold_rejected != 0 ||
+      scalar_replay.admitted_count(renewed.admitted) != generic_count {
+      panic("generic trace actual bounded renewal count")
     }
     let expected = checker.check_module_body_products(current)
     if expected.cx.diags != [] { panic("generic trace revision diagnostics") }

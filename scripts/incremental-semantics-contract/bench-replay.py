@@ -171,6 +171,7 @@ def main():
     if args.warmup < 0 or (not args.smoke and args.rounds - args.warmup < 8):
         raise SystemExit("at least 8 measured rounds are required")
     java = args.java_home.resolve() / "bin/java"
+    compiler = Path(os.environ.get("DAWN_BIN", str(ROOT / "bin/dawn"))).resolve()
     if not java.exists():
         raise SystemExit("no java under " + str(args.java_home))
     sizes = [int(value) for value in args.sizes.split(",")]
@@ -209,6 +210,7 @@ def main():
         "java": subprocess.run([str(java), "-version"], text=True, capture_output=True,
                                check=True).stderr.strip(),
         "jvm_flags": JVM_FLAGS,
+        "compiler_launcher": str(compiler),
         "rounds": args.rounds, "warmup_rounds": args.warmup,
         "memory_rounds": MEMORY_ROUNDS,
         "measured_rounds": args.rounds - args.warmup,
@@ -241,7 +243,7 @@ def main():
             f'compiler = "{ROOT / "selfhost"}"\ncompiler_plan = "{ROOT / "compiler-plan"}"\n')
         jar = output / "bench-replay.jar"
         with (output / "build.log").open("w") as log:
-            subprocess.run([str(ROOT / "bin/dawn"), "build", str(fixture), "-o", str(jar)],
+            subprocess.run([str(compiler), "build", str(fixture), "-o", str(jar)],
                            cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True,
                            timeout=1800, env={**os.environ, "JAVA_HOME": str(args.java_home.resolve())})
 

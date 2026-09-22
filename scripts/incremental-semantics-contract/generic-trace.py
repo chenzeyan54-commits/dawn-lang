@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trace the original bounded generic class without widening admission.
+"""Trace actual replay of the original bounded generic class.
 
 Instrument only a private checker copy to measure actual cold entries, and use
 the existing independent structural oracle for every body/context comparison.

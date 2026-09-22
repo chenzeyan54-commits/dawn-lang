@@ -78,6 +78,7 @@ public final class GenericTrace {
     }
 
     public static void main(String[] args) throws Exception {
+        boolean quiet = Arrays.asList(args).contains("--quiet");
         Class<?> reference = Class.forName("reference");
         Object samples = method(reference, "samples").invoke(null);
         long count = (Long) method(reference, "sample_count").invoke(null, samples);
@@ -96,12 +97,12 @@ public final class GenericTrace {
             long p = (Long) method(reference, "product_count").invoke(null, sample);
             for (long j = 0; j < p; j++) {
                 Object product = method(reference, "product_at").invoke(null, sample, j);
-                System.out.println("TRACE " + label + "/" + j + " " + dump(product, new IdentityHashMap<>()));
+                if (!quiet) System.out.println("TRACE " + label + "/" + j + " " + dump(product, new IdentityHashMap<>()));
                 products++;
             }
-            System.out.println("PASS: generic refusal " + label + ", " + n + " full-body/context pairs");
+            if (!quiet) System.out.println("PASS: generic replay " + label + ", " + n + " full-body/context pairs");
         }
         if (pairs != 12 || products != 4) throw new AssertionError("Trace denominator changed");
-        System.out.println("PASS: generic trace 4 bounded products, 12 full-body/context pairs, actual cold entry counts");
+        if (!quiet) System.out.println("PASS: generic trace 4 bounded products, 12 full-body/context pairs, actual cold entry counts");
     }
 }

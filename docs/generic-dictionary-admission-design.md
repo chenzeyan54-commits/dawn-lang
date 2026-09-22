@@ -276,3 +276,55 @@ signature, frame, symbol and journal comparisons remain; so do temporary
 entry allocation and their runtime costs. No zero-overhead claim is made.
 No golden was re-recorded, and production replay does not call this module
 yet. Integrated workload cost remains acceptance work before introducing it.
+
+## Pure bounded trait-call replay
+
+The next implementation enables the original `Scale[T]`, multiple-bound and
+two-type-parameter workloads as a separately validated replay class. Ordinary
+callee indexing and shared-query memo rules remain unchanged. Admission pairs
+source and signatures exactly as before, reconstructs a temporary canonical
+entry, and validates every retained call against its current trait signature.
+Argument types determine a fresh ordered unification; instantiated result and
+every forwarded dictionary must match the retained typed call exactly. An
+existing dictionary ID, or independently valid but unattached query facts,
+cannot establish that call's correctness.
+
+Only pure explicit integer-valued bounded functions without defaults, effects
+or body-local allocations are in scope. Typed arguments are integers or the declaration's
+own type binders. Concrete/recursive witnesses, inferred bodies, lambdas,
+dynamic calls and unsupported query families remain cold. All newly supported
+facts are validated per body under the proven entry; no function memo sharing
+is added. Proof contexts are discarded and only the existing projected product
+is installed, preserving current observation prefixes and scheduler state.
+
+Acceptance requires real hits with zero body execution on those hits, three
+generations of record/admit/replay/renew on all original workloads, prepared
+Session versus full cold products, and strict compiling controls for swapped
+dictionary roles, call substitutions, stale trait signatures and lost renewal.
+After correctness, measure the original 1,000-function bounded value workload
+across cold, record, admit, replay and renewal. Fixture time and isolated
+measurements are not a production speed claim or completion of the G3 gate.
+
+The first actual replay fixture passed on 2026-09-22: four captured bounded
+products and twelve complete cold body/context pairs, with twelve real generic
+hits over same-source replay and two renewed source generations. Canonical
+trait methods intentionally store an empty parameter-default vector; requiring
+the ordinary padded-false convention initially refused every call. The trait
+guard now requires that canonical empty vector without changing ordinary
+callee or source-default rules.
+
+The expanded positive and all ten compiling controls passed in 70.99s. Fifteen
+additional full-body histories cover nine targeted malformed products and six
+observed/unobserved renewals with enclosing log prefixes. Four prepared Session
+histories compare every returned Program and CheckedMod field, including full
+Cx, syntax, typed output, comptime output, diagnostics and position views.
+Counters independently measure checker entries, so executing a cold body while
+reporting a hit fails. Mutants also cover root result type, dictionary order,
+argument unification and symbol roles, callee owner, full fact validation,
+entry frame, unknown families and lost renewal. These are targeted product
+defenses, not an AST-to-TAST rechecker or proof against arbitrary fabrication.
+
+The original 1,000-function `Scale[T]` benchmark keeps its exact source and
+1,001-body denominator, including its unsupported implementation method. Its
+generic hit expectation is now 1,000. Measurements and integrated acceptance
+remain pending; no production speedup is claimed by these correctness results.

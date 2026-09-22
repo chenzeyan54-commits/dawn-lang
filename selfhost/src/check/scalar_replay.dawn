@@ -1,15 +1,15 @@
 # Exercise cross-revision admission at the real scheduler boundary before
 # general queries have reconstructible local contexts. This deliberately
-# producer class has primitive compatibility observations and lexically proven
-# local references and explicit pure primitive callees. Unsupported bodies stay cold.
-# This is an opt-in module executor, not the incremental session entry point.
+# producer has primitive scalar bodies and a separate integer-valued bounded
+# trait-call class with fresh entry, substitution and dictionary proofs.
+# Unsupported bodies stay cold. Body-cache-enabled sessions opt into this executor.
 use std/map
 use std/set
 use check/checker
 use check/checker.{ModuleHeaders, ModuleBodies, BodyExecutor}
 use check/cx.{Cx, Frame, cx_new}
 use check/types.{Ty, TyInt, TyFloat, TyBool, TyUnit, TyError, TyVar, Sig, Sym, Eff, EffVar, EPure, EIo}
-use check/tast.{TFun}
+use check/tast.{TFun, tex_ty}
 use check/body_execution
 use check/body_execution.{Recorded, Saved, SavedFunction, FunctionInput}
 use check/body_product
@@ -18,6 +18,8 @@ use check/identity
 use check/identity.{ModuleKey, DeclKey}
 use check/allocation
 use check/scalar_shape
+use check/bounded_replay
+use check/function_entry_proof
 use check/write_journal.{SymbolKey, BoundsKey, SignatureKey}
 use check/source_projection
 use check/source_snapshot
@@ -76,7 +78,7 @@ fn new_memo() -> Memo = query_runtime.new((a, b) => a == b)
 ## any of these, so they are settled once beside the recording rather than
 ## once per replay per body.
 type Prior = { syntax: FnDecl, signature: Sig, product: Product, declaration: Int,
-  binders: List[String], symbols: Map[Int, Sym] }
+  binders: List[String], symbols: Map[Int, Sym], bounded: Bool }
 
 type Ready = { headers: allocation.Table, source: Snapshot, entries: Map[DeclKey, Prior] }
 type AdmittedData = { scope: ModuleKey, ready: Option[Ready] }
@@ -261,6 +263,11 @@ fn snapshot_matches(h: ModuleHeaders, s: Snapshot) -> Bool = source_snapshot.syn
 ## body: an unadmitted body is checked cold like any other.
 fn recorded(prior: FnDecl, prior_sig: Sig, p: Product, declaration: Int,
   headers: Cx, callees: callee_index.CalleeIndex) -> Option[Prior] = {
+  if len(prior_sig.constraints) != 0 {
+    let symbols = bounded_replay.recorded(prior, prior_sig, p)?
+    return Some(Prior { syntax: prior, signature: prior_sig, product: p, declaration: declaration,
+      binders: prior_sig.param_names, symbols: symbols, bounded: true })
+  }
   let _ = parameters(prior, prior_sig)?
   # Class membership of the recorded declaration is settled by
   # `scalar_shape.binders` below, which fails closed on every node this class
@@ -366,7 +373,7 @@ fn recorded(prior: FnDecl, prior_sig: Sig, p: Product, declaration: Int,
   let names = scalar_shape.binders(prior.body, prior_sig.param_names)?
   if not scalar_shape.module_calls(prior.body, (qualifier, name) => qualified_call(reads, qualifier, name)) { return None }
   Some(Prior { syntax: prior, signature: prior_sig, product: p, declaration: declaration,
-    binders: names, symbols: symbols })
+    binders: names, symbols: symbols, bounded: false })
 }
 
 fn ready(scope: ModuleKey, old: ModuleHeaders, old_source: Snapshot, entries_saved: List[Saved],
@@ -507,7 +514,9 @@ fn revalidated(memo: Memo, cx: Cx, scoped: Cx, read: FunctionRead) -> (Memo, Opt
 ## path builds.
 fn relocation(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[(Prior, View)] = {
   if cx.diags != [] { return None }
-  let _ = parameters(d, sig)?
+  if len(sig.constraints) != 0 {
+    if not bounded_replay.header(d, sig) { return None }
+  } else { let _ = parameters(d, sig)? }
   # The product is retained under the key of the declaration that produced it,
   # so this is the whole of finding it: ask the candidate revision which
   # declaration this is, and look the product up under that. A declaration
@@ -548,6 +557,7 @@ fn relocation(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[(Prior,
     prior.lo, prior.hi, d.lo, d.hi) { return None }
   let view = View { symbols: saved.symbols,
     callee: (owner, name, builtin, trait_id) => {
+      if saved.bounded { return bounded_replay.callee(cx, owner, name, builtin, trait_id) }
       if builtin || trait_id != None { return None }
       let found = callee_index.signature(prepared.callees, cx, owner, name, false, None)?
       if not ordinary_callee(found) { return None }
@@ -577,9 +587,23 @@ fn candidate(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> (Prepared, Verd
   # candidate coordinates to be compared and thrown away. The rebuilt log is
   # only what an observing caller installs, so it is built only when the
   # caller is observing.
-  let scoped = binder_context(cx, sig)
+  let scoped = if saved.bounded {
+    match function_entry_proof.prove(cx, d, sig, p) {
+      Some(proof) -> function_entry_proof.context(proof)
+      None -> return (prepared, Rejected)
+    }
+  } else { binder_context(cx, sig) }
+  if saved.bounded && tex_ty(p.tree.body) != sig.ret { return (prepared, Rejected) }
+  if saved.bounded && not bounded_replay.expression(scoped, sig, p.tree.body) { return (prepared, Rejected) }
+  let candidate_view = if saved.bounded { View { ..view, symbols: scoped.syms } } else { view }
   var memo = prepared.memo
   for read in reads {
+    if saved.bounded {
+      if not bounded_replay.read_allowed(read) || checker.revalidate_read(scoped, read) != Some(true) {
+        return (Prepared { ..prepared, memo: memo }, Rejected)
+      }
+      continue
+    }
     if not call_header_fact(prepared.callees, cx, read) { return (Prepared { ..prepared, memo: memo }, Rejected) }
     let (next_memo, verdict) = revalidated(memo, cx, scoped, read)
     memo = next_memo
@@ -587,8 +611,8 @@ fn candidate(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> (Prepared, Verd
   }
   let carried = Prepared { ..prepared, memo: memo }
   let projected = match cx.function_reads {
-    None -> body_product.project_without_reads(view, p)
-    Some(_) -> body_product.project(view, p)
+    None -> body_product.project_without_reads(candidate_view, p)
+    Some(_) -> body_product.project(candidate_view, p)
   }
   let moved = match projected {
     Some(product) -> product
