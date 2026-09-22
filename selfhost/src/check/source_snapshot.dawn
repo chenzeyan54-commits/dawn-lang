@@ -176,6 +176,7 @@ test "source snapshot resolution changes only import paths" {
     _ -> panic("import fixture")
   }
   let target = Module { decls: [rewritten, body] }
+  assert resolved(source, target) != None
   let bound = resolved(source, target).expect("resolved import")
   assert syntax(bound) == target
   assert indexed(bound) == indexed(source)
@@ -183,6 +184,7 @@ test "source snapshot resolution changes only import paths" {
   assert resolved(source, original) != None
   assert resolved(bound, original) != None
   assert resolved(source, Module { decls: [rewritten] }) == None
+  assert resolved(source, Module { decls: [rewritten, body, body] }) == None
   assert resolved(source, Module { decls: [body, rewritten] }) == None
   let other = syntax(of("use helper\nfn answer() -> Int = helper.other()\n").expect("changed body"))
   assert resolved(source, Module { decls: [rewritten, other.decls[1]] }) == None
