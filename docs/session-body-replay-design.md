@@ -63,6 +63,33 @@ and preserve recovered syntax/diagnostics without reparsing. Cold CLI callers
 must not pay for an unused token index. This loader work is required before
 claiming efficient production integration.
 
+### Single-parse source input
+
+The first additive API is `source_snapshot.parse(text, capture) -> Parsed`, where
+`Parsed` contains `syntax: Module`, ordered `diagnostics: List[Diag]`, and
+`snapshot: Option[Snapshot]`. It always returns the canonical parser's recovered
+syntax and diagnostics. It calls `parse_module_lexed` once; only clean input with
+capture enabled proceeds to replay index/token projection construction. A
+projection refusal removes only the optional snapshot, never the syntax or
+diagnostics. `of(text)` delegates to `parse(text, true).snapshot`.
+
+The result record is not itself a source-binding capability: callers can copy
+or alter its public fields. Only the opaque snapshot certifies its own syntax,
+index and tokens. There is no unchecked public constructor from separately
+provided text, syntax, code points or tokens. Later prepared loader inputs must
+preserve this proof through checked import resolution; arbitrary LoadedModule
+values must retain the existing safe binding checks.
+
+Capture disabled means no replay index or per-function token projection is
+constructed or retained. It does not mean the parser avoids ordinary lexing or
+temporary code points/tokens. The initial slice leaves all loader, Session and
+LSP callers unchanged. Semantic tests compare recovered syntax, diagnostic
+ordering and captured fields with the existing independently indexed oracle.
+Actual invocation-count instrumentation is still pending: source inspection
+alone is not a measured parse/index-count result, nor evidence of end-to-end
+speedup. The duplicate loader/check parse remains until prepared inputs are
+integrated, and all original production activation gates remain in force.
+
 ## Session ownership and eviction
 
 Keep exact-prefix module hits as their existing distinct optimization. Add a
