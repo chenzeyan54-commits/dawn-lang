@@ -174,10 +174,41 @@ its entry; changing canonical path prevents borrowing either representation.
 
 ## Consumers and acceptance
 
+### Explicit LSP configuration and lifetime
+
+`run_lsp` keeps its existing CLI and delegates to `run_lsp_configured` with
+`legacy_analysis_config()`. The immutable `LspAnalysisConfig` selects `Legacy`,
+`PreparedBodies`, or `Cold` and supplies nonnegative `max_modules`,
+`max_text_units`, and `max_products`. Legacy preserves prefix-only projects and
+cold standalone documents. PreparedBodies is explicitly opt-in: projects use
+prepared loading and `new_with_body_cache`; each standalone Doc retains its
+own Session and stats, while all standalone documents still borrow the existing
+shared Java lease. Cold uses capture-off loaders and permanently disabled
+project Sessions; it must not reacquire a cache on its next revision.
+
+Limits charge both retained prefix/body representations. The legacy default
+remains 128 modules and 1048576 text units, with no body products; opt-in callers
+must provide product limits explicitly. No new default budget or activation is
+claimed before G3 measurements. A one-module standalone file can occupy two
+representations. Configuration is fixed for a server lifetime; changes to std,
+options, captured project plan, configuration, or lease require new owners.
+
+Program, returned owner, execution stats, source view and document version are
+committed together. Project conflict evicts both cache tables; last close drops
+the workspace before closing its lease. Standalone close drops only that Doc's
+owner, never the shared lease. Shutdown clears documents and workspace owners
+before lease disposal, preserving exactly-once close and close-failure isolation.
+Close/reopen starts a fresh document lifetime; repeated didOpen of an existing
+URI retains the existing update behavior. Analysis remains synchronous and the
+existing pending-message flush semantics are unchanged. Lower/equal document
+versions are not currently rejected; this opt-in must not be described as
+providing a stale-version guard or change version policy implicitly.
+
 Project LSP sessions already own `driver/incremental.Session`; standalone and
 untitled buffers currently call cold `analyze_standalone`. Give those buffers an
 owner with the same lifecycle, preserving path checks, standard-library identity,
-document version, lease disposal, and stale-result rejection. Normal Playground
+document version publication and lease disposal. The synchronous server does not
+currently reject lower/equal versions. Normal Playground
 editing uses this persistent LSP path. Do not invent cross-request identity or
 global caching for the stateless HTTP `/check` fallback.
 
