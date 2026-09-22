@@ -358,3 +358,33 @@ environment comparisons. The adjacent uninstrumented/instrumented medians
 differ by about 4.1% for replay and 1.5% for renewal; instrumentation and JIT
 effects preclude treating phase sums as uninstrumented latency. Preserve every
 proof and the original workload while addressing these measured costs.
+
+## Assembly-owned renewal capture
+
+The next optimization targets measured repeated environment comparisons on
+renewed hits. A renewal callback requests installation with a product, not a
+saved context or certificate. The recording owner installs against its actual
+observed scheduler input and receives one opaque assembly/output/capture result.
+Only this local constructor may omit comparison of environment fields it
+provably never changes; all slot, frame, diagnostic, read/write prefix and
+touched-change checks remain. Arbitrary Checked callbacks and existing
+`record_using` remain strict. A successful installation with refused capture
+keeps its output and does not execute the body again. Inferred index publication
+runs after the actual chosen output and can update only pass state.
+
+Acceptance requires field-for-field agreement with strict capture on real hits,
+compiling refusal controls, unchanged source/body equivalence and current
+observer prefixes. Original Scale renewal should retain 1,001 visits and 1,000
+hits, with full environment comparison for its one cold implementation. New
+opaque-result allocation and callback costs need measurement; no speed claim
+or G3 completion follows from this design.
+
+The initial assembly-owned implementation passes 456 focused tests on both JVM
+and native backends. The strict/certified oracle compares saved products, full
+cold body results and real hit counts across three chained generations, with
+both absent and nonempty enclosing observer logs. The renewal harness retains
+six existing compiling controls and adds five for unchecked environments,
+unbound output, unnormalized products, repeated cold execution and stale
+inferred publication. All eleven controls reached their named runtime failure
+on 2026-09-23 (86.07 seconds locally). These results do not replace integrated
+Core, full-family or performance acceptance.

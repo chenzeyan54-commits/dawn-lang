@@ -6,12 +6,13 @@ use std/map
 use std/set
 use check/checker
 use check/checker.{ModuleHeaders, ModuleBodies, BodyExecutor}
-use check/cx.{Cx, cx_new}
+use check/cx.{Cx, Frame, cx_new}
 use check/body_product
-use check/body_product.{Product, ConstantProduct}
+use check/body_product.{Product, ConstantProduct, BodyProduct}
 use check/identity
 use check/identity.{ModuleKey, DeclKey, Named, FunctionDecl, ConstDecl, TestDecl, MethodDecl, TraitDecl, ImplHead}
 use check/types.{Sig, Sym, Ty, TyVar}
+use check/tast.{TFun}
 use front/ast.{FnDecl, ConstView, TraitMethod, Expr, TypeRef}
 use front/parser
 use check/semantic_reads
@@ -33,6 +34,35 @@ pub type Recorded = { bodies: ModuleBodies, entries: List[Saved], checked: Int, 
 ## Visits include replayed bodies; they are not a count of cold checks.
 ## Refusals describe capture, independently of the executor's reuse verdicts.
 pub type Captured = { bodies: ModuleBodies, entries: List[Saved], visited: Int, capture_refused: Int }
+
+## An installation request carries no context or historical certificate. Only
+## the recording wrapper may assemble it against the actual scheduler input.
+pub type FunctionDecision[S] =
+  | Checked(state: S, cx: Cx, tree: TFun)
+  | Install(hit_state: S, fallback_state: S, product: Product)
+
+pub type ReplayDecisions[S] = {
+  function: fn(S, Cx, FnDecl, Sig) -> FunctionDecision[S] !io,
+  inferred_body: fn(S, Cx, FnDecl, Sig) -> FunctionDecision[S] !io,
+  after_inferred: fn(S, Cx, Cx, FnDecl, Sig) -> S
+}
+
+fn decided[S](decision: FunctionDecision[S], start: Cx, d: FnDecl, sig: Sig,
+  cold: fn(S, Cx, FnDecl, Sig) -> (S, Cx, TFun) !io) -> (S, Cx, TFun, Option[Product]) !io = {
+  match decision {
+    Checked(state, next, tree) -> (state, next, tree, body_product.capture_journaled(start, next, tree))
+    Install(hit, fallback, product) -> match body_product.assemble_captured(start, product) {
+      Some(value) -> {
+        let (next, tree, captured) = body_product.installation_output(value)
+        (hit, next, tree, captured)
+      }
+      None -> {
+        let (state, next, tree) = cold(fallback, start, d, sig)
+        (state, next, tree, body_product.capture_journaled(start, next, tree))
+      }
+    }
+  }
+}
 
 fn named(scope: ModuleKey, name: String, kind: identity.Kind) -> DeclKey =
   DeclKey { scope: scope, path: [Named(kind, name)] }
@@ -92,6 +122,18 @@ pub fn record(scope: ModuleKey, headers: ModuleHeaders) -> Recorded !io = {
 ## callback again or discards its current result.
 pub fn record_using[S](scope: ModuleKey, headers: ModuleHeaders, initial: S,
   supplied: BodyExecutor[S]) -> (S, Captured) !io = {
+  record_with_decisions(scope, headers, initial, supplied, None)
+}
+
+## Only renewal candidates use this request seam. Other body categories and
+## arbitrary executed callbacks retain the independent strict capture path.
+pub fn record_replaying[S](scope: ModuleKey, headers: ModuleHeaders, initial: S,
+  decisions: ReplayDecisions[S], other: BodyExecutor[S]) -> (S, Captured) !io = {
+  record_with_decisions(scope, headers, initial, other, Some(decisions))
+}
+
+fn record_with_decisions[S](scope: ModuleKey, headers: ModuleHeaders, initial: S,
+  supplied: BodyExecutor[S], decisions: Option[ReplayDecisions[S]]) -> (S, Captured) !io = {
   var allowed: Set[DeclKey] = set.empty()
   let path_matches = match headers.cx.src_path { Some(path) -> scope.source == path && path != "", None -> scope.source == "" }
   if headers.cx.diags == [] && headers.cx.owner_class == Some(scope.emission_owner) && path_matches {
@@ -102,17 +144,36 @@ pub fn record_using[S](scope: ModuleKey, headers: ModuleHeaders, initial: S,
     function: (pair, cx, d, sig) => {
       let (inner, state) = pair
       let start = observed(cx)
-      let (after, next, tree) = supplied.function(inner, start, d, sig)
+      let (after, next, tree, product) = match decisions {
+        None -> {
+          let (after, next, tree) = supplied.function(inner, start, d, sig)
+          (after, next, tree, body_product.capture_journaled(start, next, tree))
+        }
+        Some(callbacks) -> {
+          let cold: BodyExecutor[S] = checker.cold_body_executor()
+          decided(callbacks.function(inner, start, d, sig), start, d, sig, cold.function)
+        }
+      }
       let saved = save_function(state, admitted, Some(named(scope, d.name, FunctionDecl)),
-        FunctionInput(d, sig, false), body_product.capture_journaled(start, next, tree))
+        FunctionInput(d, sig, false), product)
       ((after, saved), restore_log(cx, next), tree)
     },
     inferred_body: (pair, cx, d, sig) => {
       let (inner, state) = pair
       let start = observed(cx)
-      let (after, next, tree) = supplied.inferred_body(inner, start, d, sig)
+      let (after, next, tree, product) = match decisions {
+        None -> {
+          let (after, next, tree) = supplied.inferred_body(inner, start, d, sig)
+          (after, next, tree, body_product.capture_journaled(start, next, tree))
+        }
+        Some(callbacks) -> {
+          let cold: BodyExecutor[S] = checker.cold_body_executor()
+          let (after, next, tree, product) = decided(callbacks.inferred_body(inner, start, d, sig), start, d, sig, cold.inferred_body)
+          (callbacks.after_inferred(after, start, next, d, sig), next, tree, product)
+        }
+      }
       let saved = save_function(state, admitted, Some(named(scope, d.name, FunctionDecl)),
-        FunctionInput(d, sig, true), body_product.capture_journaled(start, next, tree))
+        FunctionInput(d, sig, true), product)
       ((after, saved), restore_log(cx, next), tree)
     },
     constant: (pair, cx, d, ty, visible) => {
@@ -216,6 +277,37 @@ test "record using preserves six role order state and cold products" {
   assert reads[0] == semantic_reads.ScopedEffectVariable("outer", None)
   assert writes[0] == write_journal.SignatureKey("outer")
   assert len(reads) > 1 && len(writes) > 1
+}
+
+test "renewal decisions preserve strict callbacks and single assembly output" {
+  let (syntax, ds) = parser.parse_module("fn scalar(x: Int) -> Int = x + 1\n")
+  assert ds == []
+  let scope = identity.module_key("decisions", "sample", "sample", "sample.dawn")
+  let headers = checker.check_module_headers(cx_new(Some("sample"), Some("sample.dawn")), syntax, map.empty())
+  let recorded = record(scope, headers)
+  let (d, sig, product) = match recorded.entries[0] {
+    SavedFunction(_, FunctionInput(d, sig, _), p) -> (d, sig, p)
+    _ -> panic("renewal decision fixture")
+  }
+  let start = observed(headers.cx)
+  let cold: BodyExecutor[List[String]] = checker.cold_body_executor()
+  let (_, checked, tree) = cold.function([], start, d, sig)
+  let (_, changed, _, refused) = decided(Checked(["checked"], Cx { ..checked, owner_class: Some("foreign") }, tree), start, d, sig, cold.function)
+  assert changed.owner_class == Some("foreign") && refused == None
+  let invalid_frame = BodyProduct { ..product, frame: Frame { ..product.frame, loop_stack: [1] } }
+  let (kept, installed, _, capture_refused) = decided(Install(["hit"], ["fallback"], invalid_frame), start, d, sig,
+    (state, cx, declaration, signature) => panic("renewal decision repeated successful assembly"))
+  assert kept == ["hit"] && installed.frame.loop_stack == [1] && capture_refused == None
+  # Assembly can fail before capture: the fallback is called exactly once and
+  # its chosen context, tree and strict product are retained.
+  let occupied = Cx { ..start, decl_slots: map.insert(start.decl_slots, product.owner_decl, product.owner_slots + 1) }
+  let (fallback, actual, fallback_tree, saved) = decided(Install(["hit"], ["fallback"], product), occupied, d, sig,
+    (state, cx, declaration, signature) => {
+      let (_, next, function) = cold.function(state, cx, declaration, signature)
+      (state ++ ["cold"], next, function)
+    })
+  assert fallback == ["fallback", "cold"]
+  assert saved == body_product.capture_journaled(occupied, actual, fallback_tree)
 }
 
 test "record using refuses capture without retrying or losing callback output" {

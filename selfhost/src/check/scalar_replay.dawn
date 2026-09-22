@@ -11,7 +11,7 @@ use check/cx.{Cx, Frame, cx_new}
 use check/types.{Ty, TyInt, TyFloat, TyBool, TyUnit, TyError, TyVar, Sig, Sym, Eff, EffVar, EPure, EIo}
 use check/tast.{TFun, tex_ty}
 use check/body_execution
-use check/body_execution.{Recorded, Saved, SavedFunction, FunctionInput}
+use check/body_execution.{Recorded, Saved, SavedFunction, FunctionInput, FunctionDecision, ReplayDecisions, Checked, Install}
 use check/body_product
 use check/body_product.{Product, BodyProduct, Change}
 use check/identity
@@ -654,12 +654,57 @@ pub fn replay_and_record(admitted: Admitted, next: ModuleHeaders, source: Snapsh
   let data: AdmittedData = admitted
   let valid = next.cx.diags == [] && snapshot_matches(next, source)
   let prepared: Option[Prepared] = if valid { prepare(data, next, source) } else { None }
-  let (outcome, captured) = body_execution.record_using(data.scope, next,
-    Pass { counts: zero_counts(), prepared: prepared }, pass_executor())
+  let (outcome, captured) = body_execution.record_replaying(data.scope, next,
+    Pass { counts: zero_counts(), prepared: prepared }, renewal_decisions(), pass_executor())
   let renewed = AdmittedData { scope: data.scope,
     ready: ready(data.scope, next, source, captured.entries, captured.bodies.cx) }
   Renewed { replayed: replay_result(outcome, captured.bodies), admitted: renewed,
     visited: captured.visited, capture_refused: captured.capture_refused }
+}
+
+# A renewal hit requests installation but cannot supply the context against
+# which it will be captured. The recorder owns that actual scheduler input.
+fn renewal_decision(state: Pass, cx: Cx, d: FnDecl, sig: Sig,
+  cold: fn(Pass, Cx, FnDecl, Sig) -> (Pass, Cx, TFun) !io) -> FunctionDecision[Pass] !io = {
+  let (stepped, verdict) = match state.prepared {
+    Some(p) -> {
+      let (after, hit) = candidate(p, cx, d, sig)
+      (Pass { ..state, prepared: Some(after) }, hit)
+    }
+    None -> (state, Unadmitted)
+  }
+  match verdict {
+    Reused(product) -> Install(reused(stepped), rejected(stepped), product)
+    Rejected -> {
+      let (after, next, tree) = cold(rejected(stepped), cx, d, sig)
+      Checked(after, next, tree)
+    }
+    Unadmitted -> {
+      let (after, next, tree) = cold(unadmitted(stepped), cx, d, sig)
+      Checked(after, next, tree)
+    }
+  }
+}
+
+fn renewal_decisions() -> ReplayDecisions[Pass] = {
+  let cold: BodyExecutor[Pass] = checker.cold_body_executor()
+  ReplayDecisions {
+    function: (state, cx, d, sig) => renewal_decision(state, cx, d, sig, cold.function),
+    inferred_body: (state, cx, d, sig) => renewal_decision(state, cx, d, sig, cold.inferred_body),
+    after_inferred: (state, before, after, d, sig) => refresh_inferred(state, before, after, d)
+  }
+}
+
+fn refresh_inferred(outcome: Pass, cx: Cx, next: Cx, d: FnDecl) -> Pass = {
+  let refreshed = match outcome.prepared {
+    None -> None
+    Some(p) -> match callee_index.replace_local(p.callees, d.name,
+      map.get(cx.fns, d.name), map.get(next.fns, d.name)) {
+      Some(ix) -> Some(Prepared { ..p, callees: ix })
+      None -> None
+    }
+  }
+  Pass { ..outcome, prepared: refreshed }
 }
 
 fn inferred_pass(state: Pass, cx: Cx, d: FnDecl, sig: Sig) -> (Pass, Cx, TFun) !io = {
@@ -681,15 +726,7 @@ fn inferred_pass(state: Pass, cx: Cx, d: FnDecl, sig: Sig) -> (Pass, Cx, TFun) !
   }
   # Include cold publications as well as hits: downstream inferred and explicit
   # consumers must see exactly the table the canonical callback produced.
-  let refreshed = match outcome.prepared {
-    None -> None
-    Some(p) -> match callee_index.replace_local(p.callees, d.name,
-      map.get(cx.fns, d.name), map.get(next.fns, d.name)) {
-      Some(ix) -> Some(Prepared { ..p, callees: ix })
-      None -> None
-    }
-  }
-  (Pass { ..outcome, prepared: refreshed }, next, tree)
+  (refresh_inferred(outcome, cx, next, d), next, tree)
 }
 
 ## The executor the pass runs. It is named rather than built inside `replay`
@@ -745,6 +782,42 @@ fn call_result_equal(actual: Replayed, expected: ModuleBodies) -> Bool =
   actual.bodies.cx.owner_decl == expected.cx.owner_decl && actual.bodies.cx.in_test == expected.cx.in_test &&
   actual.bodies.cx.const_cutoff == expected.cx.const_cutoff && actual.bodies.cx.loop_jumps == expected.cx.loop_jumps &&
   actual.bodies.cx.take_cell == expected.cx.take_cell
+
+test "assembly certified renewal matches strict products at actual scheduler entries" {
+  let scope = identity.module_key("certified", "sample", "sample", "sample.dawn")
+  let text = "trait Scale[T] { fn scale(x: T, k: Int) -> Int }\n" ++
+    "type Coin = { value: Int }\nimpl Scale[Coin] { fn scale(x: Coin, k: Int) -> Int = x.value * k }\n" ++
+    "fn generic[T: Scale](x: T) -> Int = scale(x, 2)\n" ++
+    "fn leaf() = 1\nfn inferred() = leaf()\nfn direct() -> Int = leaf()\nfn scalar(x: Int) -> Int = x + 1\n"
+  let source = source_snapshot.of(text).expect("certified renewal source")
+  for observing in [false, true] {
+    let base = Cx { ..cx_new(Some("sample"), Some("sample.dawn")),
+      function_reads: if observing { Some([semantic_reads.StdModuleMode(false)]) } else { None },
+      body_writes: if observing { Some([SignatureKey("outer")]) } else { None } }
+    let headers = checker.check_module_headers(base, source_snapshot.syntax(source), map.empty())
+    assert headers.cx.diags == []
+    let recorded = body_execution.record(scope, headers)
+    var strict_admitted = admit(scope, headers, source, recorded)
+    var certified_admitted = strict_admitted
+    for prefix in ["", "# shifted\n", "# shifted again\n\n"] {
+      let next_source = source_snapshot.of(prefix ++ text).expect("certified renewal generation")
+      let next = checker.check_module_headers(base, source_snapshot.syntax(next_source), map.empty())
+      let strict_data: AdmittedData = strict_admitted
+      let certified_data: AdmittedData = certified_admitted
+      let initial = Pass { counts: zero_counts(), prepared: prepare(strict_data, next, next_source) }
+      let certified_initial = Pass { counts: zero_counts(), prepared: prepare(certified_data, next, next_source) }
+      let (strict_state, strict) = body_execution.record_using(scope, next, initial, pass_executor())
+      let (certified_state, certified) = body_execution.record_replaying(scope, next, certified_initial, renewal_decisions(), pass_executor())
+      assert strict.entries == certified.entries && strict.visited == certified.visited
+      assert strict.capture_refused == certified.capture_refused && certified.capture_refused == 0
+      assert strict_state.counts == certified_state.counts && certified_state.counts.reused == 5
+      assert call_result_equal(replay_result(certified_state, certified.bodies), strict.bodies)
+      assert call_result_equal(replay_result(certified_state, certified.bodies), checker.check_module_body_products(next))
+      strict_admitted = AdmittedData { scope: scope, ready: ready(scope, next, next_source, strict.entries, strict.bodies.cx) }
+      certified_admitted = AdmittedData { scope: scope, ready: ready(scope, next, next_source, certified.entries, certified.bodies.cx) }
+    }
+  }
+}
 
 test "scalar replay inferred chains publish signatures in current dependency order" {
   let scope = identity.module_key("inferred", "sample", "sample", "sample.dawn")
