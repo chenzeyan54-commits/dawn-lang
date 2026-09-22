@@ -26,11 +26,27 @@ CONTEXT = 'selfhost/src/check/cx.dawn'
 SHAPE = 'selfhost/src/check/scalar_shape.dawn'
 
 
-def select_variants(variants, suite):
-    if suite == 'all':
-        return variants
-    return [variant for variant in variants
-            if variant[0].startswith('call-') == (suite == 'calls')]
+def select_variants(variants, suite, shards=1, shard=0):
+    if shards < 1 or shard < 0 or shard >= shards:
+        raise ValueError('require --shards >= 1 and 0 <= --shard < --shards')
+    selected = variants if suite == 'all' else [
+        variant for variant in variants
+        if variant[0].startswith('call-') == (suite == 'calls')]
+    if shards > len(selected):
+        raise ValueError('--shards exceeds the selected suite control count')
+    # Partition after suite selection, so call additions cannot renumber core
+    # shards. Every nonempty shard gets its own positive below.
+    selected = [variant for index, variant in enumerate(selected)
+                if index % shards == shard]
+    if not selected:
+        raise ValueError('selected shard contains no controls')
+    return selected
+
+
+def subjects(variants, originals):
+    return [('positive', SUBJECT, originals[SUBJECT])] + [
+        (name, target, edit(originals[target], old, new))
+        for name, target, old, new in variants]
 
 
 def selection_selftest(variants):
@@ -42,14 +58,36 @@ def selection_selftest(variants):
     assert len(names) == len(set(names))
     assert sorted(names) == sorted(variant[0] for variant in variants)
     assert all(variant[1] == SUBJECT for variant in calls)
-    # Both suites always execute the unchanged positive subject before mutants.
-    assert core and calls
-    print('OK: scalar replay suite partition preserves all 48 controls')
+    partitions = [select_variants(variants, 'core', 3, shard) for shard in range(3)]
+    assert [len(part) for part in partitions] == [14, 14, 13]
+    assert all(part == core[index::3] for index, part in enumerate(partitions))
+    partitions.append(calls)
+    partitioned_names = [variant[0] for part in partitions for variant in part]
+    assert sorted(partitioned_names) == sorted(names)
+    assert len(partitioned_names) == len(set(partitioned_names))
+    originals = {p: (ROOT / p).read_text() for p in {SUBJECT} | {v[1] for v in variants}}
+    for part in partitions:
+        selected = subjects(part, originals)
+        assert selected[0] == ('positive', SUBJECT, originals[SUBJECT])
+        assert len(selected) == len(part) + 1
+        assert [entry[0] for entry in selected[1:]] == [variant[0] for variant in part]
+    for suite, shards, shard in [
+            ('core', 0, 0), ('calls', -1, 0), ('core', 3, -1),
+            ('core', 3, 3), ('calls', 8, 0), ('calls', 8, 7), ('all', 49, 48)]:
+        try:
+            select_variants(variants, suite, shards, shard)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f'accepted invalid or empty shard: {suite}/{shards}/{shard}')
+    print('OK: scalar replay partitions preserve all 48 controls and independent positives')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--suite', choices=('all', 'core', 'calls'), default='all')
+    parser.add_argument('--shards', type=int, default=1, help='partition the selected suite')
+    parser.add_argument('--shard', type=int, default=0, help='zero-based suite partition')
     parser.add_argument('--self-test', action='store_true')
     args = parser.parse_args()
     started = time.monotonic()
@@ -228,20 +266,23 @@ def main():
          'SLet(name, false, None, init, _, _) -> { out = binders(init, out)? ++ [name] }'),
     ]
     variants = [(name, SUBJECT, old, new) for name, old, new in own] + shared
+    try:
+        selected = select_variants(variants, args.suite, args.shards, args.shard)
+    except ValueError as error:
+        parser.error(str(error))
     if args.self_test:
         selection_selftest(variants)
         return
-    variants = select_variants(variants, args.suite)
-    originals = {p: (ROOT / p).read_text() for p in {v[1] for v in variants}}
+    variants = selected
+    originals = {p: (ROOT / p).read_text() for p in {SUBJECT} | {v[1] for v in variants}}
     with tempfile.TemporaryDirectory(prefix='dawn-scalar-replay-') as temp:
         root = Path(temp)
         for directory in ('selfhost', 'compiler-plan'):
             shutil.copytree(ROOT / directory, root / directory,
                             ignore=shutil.ignore_patterns('build', '.dawn'))
         (root / 'packages').symlink_to(ROOT / 'packages', target_is_directory=True)
-        for name, target, source in [('positive', SUBJECT, originals[SUBJECT])] + [
-                (name, target, edit(originals[target], old, new))
-                for name, target, old, new in variants]:
+        for name, target, source in subjects(variants, originals):
+            subject_started = time.monotonic()
             for other, text in originals.items():
                 (root / other).write_text(text)
             (root / target).write_text(source)
@@ -253,8 +294,9 @@ def main():
                     r'^FAIL\s+check/scalar_replay :: scalar replay [^\n]*\n\s+assertion failed:',
                     output, re.M) or re.search(r'^error:', output, re.M):
                 raise RuntimeError(name + ' missed its assertion owner\n' + output)
-            print('OK: scalar replay ' + name, flush=True)
-    print(f'OK: {len(variants)} compiling scalar replay controls, {time.monotonic() - started:.2f}s')
+            print(f'OK: scalar replay {name}, {time.monotonic() - subject_started:.2f}s', flush=True)
+    print(f'OK: {len(variants)} compiling scalar replay controls '
+          f'({args.suite}, shard {args.shard}/{args.shards}), {time.monotonic() - started:.2f}s')
 
 
 if __name__ == '__main__':
