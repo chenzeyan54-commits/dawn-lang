@@ -36,6 +36,42 @@ def revisions(size):
     ]
 
 
+def expected_counts(size):
+    # Each revision is compared to the preceding revision, not the baseline.
+    # main reaches IO and stays cold. Signature edits also reset value_0's body;
+    # reorder restores provider's inferred signature. Errors discard retention.
+    return dict(zip((label for label, _, _ in revisions(size)), (
+        (size + 3, 0, 0, 0), (1, size + 2, 0, 0), (2, size + 1, 0, 0),
+        (4, size - 1, 0, 1), (3, size, 0, 1), (1, size + 1, 0, 0),
+        (3, size + 1, 0, 0), (2, size + 2, 0, 0), (size + 3, 0, 0, 0),
+        (0, 0, 1, 0),
+    )))
+
+
+def validate_counts(counts, expected):
+    if len(counts) != 1 or not counts[0]["observed"] or counts[0]["scope"] != "standalone":
+        raise RuntimeError("expected one observed standalone analysis")
+    actual = tuple(counts[0]["counts"][field] for field in (
+        "checked_bodies", "reused_bodies", "reused_modules", "cold_rejected_bodies"))
+    if actual != expected:
+        raise RuntimeError(f"analysis count mismatch: {actual} != {expected}")
+
+
+def selftest():
+    fields = ("checked_bodies", "reused_bodies", "reused_modules", "cold_rejected_bodies")
+    for expected in expected_counts(20).values():
+        good = {"observed": True, "scope": "standalone", "counts": dict(zip(fields, expected))}
+        validate_counts([good], expected)
+        bad = {**good, "counts": {**good["counts"], "reused_bodies": expected[1] + 1}}
+        for invalid in ([], [good, good], [{**good, "observed": False}], [bad]):
+            try:
+                validate_counts(invalid, expected)
+            except RuntimeError:
+                continue
+            raise AssertionError("count oracle accepted invalid observation")
+    print("OK: ten edit censuses and forty count-oracle rejection cases")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path)
@@ -85,9 +121,8 @@ def main():
                     raise RuntimeError(f"{label}: unresolved query target {needle!r}")
             counts = [decode(line) for line in client.stderr_text()[stderr_mark:].splitlines()
                       if line.startswith("LSP_BODY_STATS\t")]
-            if args.expect_reuse and label in {"whitespace", "body", "inferred-signature", "reorder"}:
-                if len(counts) != 1 or not counts[0]["observed"] or counts[0]["counts"]["reused_bodies"] <= 0:
-                    raise RuntimeError(f"{label}: no observed body reuse")
+            if args.expect_reuse:
+                validate_counts(counts, expected_counts(args.functions)[label])
             rows.append({"label": label, "version": version, "diagnostics": publishes,
                          "replies": replies, "analysis_counts": counts})
             (args.output / "samples.json").write_text(json.dumps(rows, indent=2) + "\n")
@@ -107,4 +142,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--self-test"]:
+        selftest()
+    else:
+        main()

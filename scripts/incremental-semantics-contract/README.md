@@ -792,7 +792,11 @@ exercises ten real untitled-document revisions: initial analysis, whitespace,
 body edit, inferred signature change, reorder, deletion, insertion, error,
 recovery, and an identical revision. This is synthetic correctness/count
 coverage, not a latency experiment or a real-application hit-rate corpus.
-`--expect-reuse` requires actual observed body reuse on four edit classes.
+`--expect-reuse` requires exact checked/reused/rejected body and prefix-hit
+counts on every revision, including full cold recovery after the error and a
+whole-module hit on the identical revision. Counts are derived from the actual
+preceding revision, not a separate baseline comparison. The count oracle's
+`--self-test` rejects absent, duplicated, unobserved, and changed observations.
 `--compare <prior-output>` requires identical source hashes and complete
 diagnostics/hover/definition/completion responses across independently selected
 policies. Counts are stored separately and excluded from semantic equality;
