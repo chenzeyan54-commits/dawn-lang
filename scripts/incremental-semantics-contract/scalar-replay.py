@@ -12,6 +12,7 @@ and the assertion it reddens is still a replay assertion.
 """
 import argparse
 import re
+import shlex
 import shutil
 import tempfile
 import time
@@ -49,7 +50,19 @@ def subjects(variants, originals):
         for name, target, old, new in variants]
 
 
-def selection_selftest(variants):
+def workflow_inventory(variants, parser, text):
+    flags = re.findall(
+        r'^\s*(?:run:\s*)?python3 scripts/incremental-semantics-contract/scalar-replay\.py([^\n]*)$',
+        text, re.M)
+    names = []
+    for flag_line in flags:
+        args = parser.parse_args(shlex.split(flag_line))
+        if not args.self_test:
+            names.extend(v[0] for v in select_variants(variants, args.suite, args.shards, args.shard))
+    assert sorted(names) == sorted(v[0] for v in variants), 'workflow loses or duplicates scalar controls'
+
+
+def selection_selftest(variants, parser):
     core = select_variants(variants, 'core')
     calls = select_variants(variants, 'calls')
     assert select_variants(variants, 'all') == variants
@@ -80,7 +93,17 @@ def selection_selftest(variants):
             pass
         else:
             raise AssertionError(f'accepted invalid or empty shard: {suite}/{shards}/{shard}')
-    print('OK: scalar replay partitions preserve all 48 controls and independent positives')
+    workflow_inventory(variants, parser, (ROOT / '.github/workflows/gates.yml').read_text())
+    command = 'python3 scripts/incremental-semantics-contract/scalar-replay.py'
+    workflow_inventory(variants, parser, command + '\n')
+    for broken in ['', command + '\n' + command + '\n', command + ' --suite calls\n']:
+        try:
+            workflow_inventory(variants, parser, broken)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError('accepted incomplete or duplicate workflow coverage')
+    print('OK: scalar replay partitions and workflow preserve all 48 controls and independent positives')
 
 
 def main():
@@ -271,7 +294,7 @@ def main():
     except ValueError as error:
         parser.error(str(error))
     if args.self_test:
-        selection_selftest(variants)
+        selection_selftest(variants, parser)
         return
     variants = selected
     originals = {p: (ROOT / p).read_text() for p in {SUBJECT} | {v[1] for v in variants}}
