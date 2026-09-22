@@ -46,8 +46,9 @@ validation costs, not CI runner observations or a production speedup.
 
 ## Running the whole family locally
 
-`sweep.sh` runs every invocation the nine `incremental-*` jobs in
-`.github/workflows/gates.yml` run, in parallel, on one machine, because every
+`sweep.sh` runs the incremental contract invocations in
+`.github/workflows/gates.yml`, including those moved into ordinary jobs,
+in parallel on one machine, because every
 change under `selfhost/src/check/` has to be put in front of all of them before
 it merges: the mutants here are pinned to literal source strings, a harness
 whose anchor has drifted still looks like a working harness, and main went red
@@ -55,9 +56,8 @@ at ca33cdbe for exactly that. The list is parsed out of gates.yml at run time
 rather than written down a second time, so a harness added to an existing job is
 swept without anyone remembering to, and `sweep.sh --self-test` compares that
 parse against a plain grep of the same file so the sweep cannot quietly run a
-subset (47 invocations today, 45 after deduplicating the three jobs that each
-run `diagnostic-reads.py --self-test`; `header-metadata.py` left with
-`check/relocate_header` in K7). Harnesses start longest first, since the
+subset. Use `sweep-plan.py --raw-count` and `sweep.sh --list` for the current
+raw and deduplicated inventories. Harnesses start longest first, since the
 sweep is tail-bound rather than throughput-bound: the longest harness is the
 whole wall clock if it starts in the last wave. `prefix.py` was that harness at
 771s of a 1413s sweep, and the floor the sweep could not go under; on

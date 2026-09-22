@@ -1,6 +1,6 @@
 # Bounded generic dictionary admission: trace-first slice
 
-> Status: current. Pure explicit bounded trait-call replay is implemented; correctness fixtures pass, but the original G3 value gate fails. Earlier refusal and entry-only sections below are historical evidence.
+> Status: current. Pure explicit bounded trait-call replay and assembly-owned renewal are implemented. The uncached baseline below was slower than cold checking; full G3 acceptance remains separate from these correctness and work-count results. Earlier refusal and entry-only sections are historical evidence.
 
 This tracks the M3.3 prerequisites and subsequent bounded admission class, not a completed G3 gate.
 The original workload remains `Scale[T]`: a nominal `Coin` implementation and
@@ -326,8 +326,8 @@ defenses, not an AST-to-TAST rechecker or proof against arbitrary fabrication.
 
 The original 1,000-function `Scale[T]` benchmark keeps its exact source and
 1,001-body denominator, including its unsupported implementation method. Its
-generic hit expectation is now 1,000. Integrated acceptance remains pending;
-the first isolated value measurement below is negative.
+generic hit expectation is now 1,000. Full G3 acceptance remains separate;
+the first isolated, uncached value measurement below was negative.
 
 ## Real dependency invalidation and recovery
 
@@ -342,7 +342,7 @@ remain equal to fresh cold analysis. The FunctionAnswer-only bypass fails the
 exact dependency-transition owner. The positive and all eleven compiling
 controls passed in 81.81s; these are correctness-fixture times, not latency.
 
-## Original workload value result
+## Original uncached workload baseline
 
 The unchanged 1,000-function Scale workload was measured in isolated fresh
 JVMs, 30 rounds with 12 warmups (18 measured samples), keeping the 1,001-body
@@ -361,7 +361,7 @@ proof and the original workload while addressing these measured costs.
 
 ## Assembly-owned renewal capture
 
-The next optimization targets measured repeated environment comparisons on
+Assembly-owned renewal targets measured repeated environment comparisons on
 renewed hits. A renewal callback requests installation with a product, not a
 saved context or certificate. The recording owner installs against its actual
 observed scheduler input and receives one opaque assembly/output/capture result.

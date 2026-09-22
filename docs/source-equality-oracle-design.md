@@ -1,6 +1,6 @@
 # Source equality oracle coverage
 
-> Status: current. The source-bound declaration range cache is implemented and focused correctness checks pass. Full integrated acceptance remains pending.
+> Status: current. The source-bound declaration range cache is implemented; focused correctness and Core checks pass. Whole-engine G3 acceptance is a separate requirement.
 
 Repeated declaration equality currently seeks through raw source strings.
 Before changing that implementation, preserve its observable contract with
