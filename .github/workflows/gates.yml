@@ -2274,8 +2274,10 @@ jobs:
     # 2026-09-11: 317s (run 34228544128) over the 25 completed main runs of
     # 09-08T00:18Z .. 09-10T13:48Z (the 2026-09-10 CI audit's obs.json),
     # 25s over the 292s claim.
-    # budget: 3x 317s worst observed
-    timeout-minutes: 16
+    # 2026-09-22: four Session controls and an independent positive, using
+    # the rounded 48.95s maximum subject: 317 + 2 * (5 * 49) = 807s.
+    # budget: 3x 807s planning value (prior baseline plus session body shard 1)
+    timeout-minutes: 41
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -2283,6 +2285,8 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Java member dispatch contract
         run: ./scripts/java-member-dispatch-contract/run.sh
+      - name: Session body-cache controls shard 1
+        run: python3 scripts/incremental-semantics-contract/session-bodies.py --shards 3 --shard 1
 
   # TEST-04: the documentation's own examples, links and anchors. The audit
   # found a wrong README example, an install command that did not run and an
@@ -2540,8 +2544,12 @@ jobs:
     # unchanged, only what is said about it.
     # 2026-09-06: 225s (run 34005661241) over the 12 completed main runs of
     # 09-05T11:40Z .. 09-06T08:26Z, 25s over the 200s claim.
-    # budget: 3x 225s worst observed
-    timeout-minutes: 12
+    # 2026-09-22: five Session controls and an independent positive, using
+    # the rounded 48.95s maximum subject. Include 2 * 30s for the additional
+    # toolchain setup (29s observed bound, also used by dependency-heap):
+    # 225 + 2 * (6 * 49) + 60 = 873s. No runner job is added.
+    # budget: 3x 873s planning value (prior baseline plus toolchain and session body shard 0)
+    timeout-minutes: 44
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -2550,6 +2558,13 @@ jobs:
           java-version: '21'
       - name: compiler weight schema and synthetic process contract
         run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/selfhost-bench-contract/run.py
+      - uses: ./.github/actions/dawn-toolchain
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Session body-cache partition contract
+        run: python3 scripts/incremental-semantics-contract/session-bodies.py --self-test
+      - name: Session body-cache controls shard 0
+        run: python3 scripts/incremental-semantics-contract/session-bodies.py --shards 3 --shard 0
 
   # The list literal's element forms (spec §4.11): ten compiling mutants, one
   # per sentence of `..xs` and the else-less `if`, each run against the whole
@@ -2614,8 +2629,10 @@ jobs:
     # 2026-09-11: 107s (run 34206154371) over the 25 completed main runs of
     # 09-08T00:18Z .. 09-10T13:48Z (the 2026-09-10 CI audit's obs.json),
     # 13s over the 94s claim.
-    # budget: 3x 107s worst observed
-    timeout-minutes: 6
+    # 2026-09-22: four Session controls and an independent positive, using
+    # the rounded 48.95s maximum subject: 107 + 2 * (5 * 49) = 597s.
+    # budget: 3x 597s planning value (prior baseline plus session body shard 2)
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -2624,6 +2641,8 @@ jobs:
           build: 'false'
       - name: dependency re-exec inherits the effective parent heap
         run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/dependency-heap-contract/run.py
+      - name: Session body-cache controls shard 2
+        run: python3 scripts/incremental-semantics-contract/session-bodies.py --shards 3 --shard 2
 
   # What a toolchain says when the std it loaded is not the std it shipped
   # with (#226). Every failure used to be one sentence, and on the native

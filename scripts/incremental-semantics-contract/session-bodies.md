@@ -20,4 +20,10 @@ failure evidence without compiling.
 
 Each subject reports real elapsed time including compilation and the complete
 test dependency closure. These numbers size gates, not semantic-engine speedups.
-No CI placement is introduced here; placement needs measured headroom.
+The complete local positive plus thirteen controls took 644.33 seconds under
+concurrent validation load; subjects ranged from 40.65 to 48.95 seconds. CI
+allocates three partitions to compiler-weight-contract, java-member-dispatch,
+and dependency-heap-contract. Each allocation doubles the rounded 49-second
+maximum per subject, including its independent positive, before adding the
+prior job baseline. The first job additionally budgets toolchain setup. The
+950-second pole and runner job count are unchanged.
