@@ -1,7 +1,7 @@
 # Exercise cross-revision admission at the real scheduler boundary before
 # general queries have reconstructible local contexts. This deliberately
 # producer class has primitive compatibility observations and lexically proven
-# local references, with no callees. Unsupported bodies stay cold.
+# local references and explicit pure primitive callees. Unsupported bodies stay cold.
 # This is an opt-in module executor, not the incremental session entry point.
 use std/map
 use std/set
@@ -107,6 +107,46 @@ fn primitive(t: Ty) -> Bool = match t {
   TyInt -> true, TyFloat -> true, TyBool -> true, TyUnit -> true, _ -> false
 }
 
+# This first call class carries neither dictionaries nor evidence, and never
+# invokes synthesized defaults or a local signature sealed after headers.
+fn ordinary_callee(s: Sig) -> Bool = {
+  if s.inferring || s.is_builtin || s.trait_id != None || s.op_of != None ||
+    s.tparams != [] || s.constraints != [] || s.eparams != [] || s.eff != EPure ||
+    not primitive(s.ret) { return false }
+  for t in s.param_tys { if not primitive(t) { return false } }
+  for present in s.param_defaults { if present { return false } }
+  true
+}
+
+# The index predates inferred-body execution. A sealed inferred signature can
+# look ordinary, but is not the signature this index saw in the header pass.
+fn header_callee(ix: callee_index.CalleeIndex, cx: Cx, s: Sig) -> Bool =
+  ordinary_callee(s) && callee_index.signature(ix, cx, s.owner, s.name, false, None) == Some(s)
+
+fn call_header_fact(ix: callee_index.CalleeIndex, cx: Cx, read: FunctionRead) -> Bool = match read {
+  semantic_reads.FunctionAnswer(q) -> match q.answer {
+    Some(s) -> header_callee(ix, cx, s), None -> false
+  }
+  semantic_reads.QualifiedFunction(_, q) -> match q.answer {
+    Some(s) -> header_callee(ix, cx, s), None -> false
+  }
+  _ -> true
+}
+
+fn qualified_call(reads: List[FunctionRead], qualifier: String, name: String) -> Bool = {
+  var module = false
+  var function = false
+  for read in reads {
+    match read {
+      semantic_reads.ModuleAlias(q, Some(_)) -> if q == qualifier { module = true }
+      semantic_reads.QualifiedFunction(q, answer) ->
+        if q == qualifier && answer.name == name && answer.answer != None { function = true }
+      _ -> ()
+    }
+  }
+  module && function
+}
+
 ## The types a body of this class carries from the revision that recorded it
 ## into the one replaying it: the primitives, and the type parameters its own
 ## signature binds. A type parameter is a name and an id minted for this
@@ -210,7 +250,8 @@ fn snapshot_matches(h: ModuleHeaders, s: Snapshot) -> Bool = source_snapshot.syn
 ## the same shape and the same binder names, so these answers carry over.
 ## Refusing here is refusing to record an admission verdict, not refusing a
 ## body: an unadmitted body is checked cold like any other.
-fn recorded(prior: FnDecl, prior_sig: Sig, p: Product, declaration: Int) -> Option[Prior] = {
+fn recorded(prior: FnDecl, prior_sig: Sig, p: Product, declaration: Int,
+  headers: Cx, callees: callee_index.CalleeIndex) -> Option[Prior] = {
   # Class membership of the recorded declaration is settled by
   # `scalar_shape.binders` below, which fails closed on every node this class
   # does not support. The replay path settles the candidate's: `parameters`
@@ -239,7 +280,20 @@ fn recorded(prior: FnDecl, prior_sig: Sig, p: Product, declaration: Int) -> Opti
   let reads = p.function_reads?
   if reads == [] { return None }
   for read in reads {
+    if not call_header_fact(callees, headers, read) { return None }
     match read {
+      semantic_reads.FunctionAnswer(_) -> ()
+      semantic_reads.QualifiedFunction(_, _) -> ()
+      semantic_reads.ModuleAlias(_, Some(_)) -> ()
+      semantic_reads.ReducedAssociatedType(a, b) -> if not primitive(a) || a != b { return None }
+      semantic_reads.ReducedTypeEffects(a, bindings, b) ->
+        if not primitive(a) || a != b || bindings != [] { return None }
+      semantic_reads.ReducedEffect(EPure, bindings, EPure) -> if bindings != [] { return None }
+      semantic_reads.ConcreteType(a, true) -> if not primitive(a) { return None }
+      semantic_reads.UnifiedTypes(q) ->
+        if not primitive(q.declared) || not primitive(q.actual) || not q.matched ||
+        q.before.types != [] || q.before.effects != [] ||
+        q.after.types != [] || q.after.effects != [] { return None }
       AssignableType(a, b, true) -> if not carried(prior_sig, a) || not carried(prior_sig, b) { return None }
       # A binder asked for by name from inside the body. This is the one
       # family here whose answer belongs to the declaration rather than to the
@@ -288,6 +342,7 @@ fn recorded(prior: FnDecl, prior_sig: Sig, p: Product, declaration: Int) -> Opti
   # binder the recorded body declares so the candidate revision can be asked
   # the same question without walking its body a second time.
   let names = scalar_shape.binders(prior.body, prior_sig.param_names)?
+  if not scalar_shape.module_calls(prior.body, (qualifier, name) => qualified_call(reads, qualifier, name)) { return None }
   Some(Prior { syntax: prior, signature: prior_sig, product: p, declaration: declaration,
     binders: names, symbols: symbols })
 }
@@ -295,6 +350,7 @@ fn recorded(prior: FnDecl, prior_sig: Sig, p: Product, declaration: Int) -> Opti
 fn ready(scope: ModuleKey, old: ModuleHeaders, old_source: Snapshot, saved: Recorded) -> Option[Ready] = {
   if old.cx.diags != [] || not snapshot_matches(old, old_source) { return None }
   let headers = table(scope, old)?
+  let callees = callee_index.of(old.cx)
   var originals: Map[DeclKey, (FnDecl, Int)] = map.empty()
   for entry in identity.declarations(scope, old.syntax) {
     match old.syntax.decls[entry.declaration] {
@@ -314,7 +370,7 @@ fn ready(scope: ModuleKey, old: ModuleHeaders, old_source: Snapshot, saved: Reco
           match map.get(originals, k) {
             Some((declared, declaration)) -> {
               if declared == prior && map.get(old.cx.fns, prior.name) == Some(prior_sig) {
-                match recorded(prior, prior_sig, product, declaration) {
+                match recorded(prior, prior_sig, product, declaration, old.cx, callees) {
                   Some(entry_value) -> { entries = map.insert(entries, k, entry_value) }
                   None -> ()
                 }
@@ -467,11 +523,12 @@ fn relocation(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[(Prior,
   if not source_projection.same_text(prepared.old_tokens, prepared.tokens,
     prior.lo, prior.hi, d.lo, d.hi) { return None }
   let view = View { symbols: saved.symbols,
-    # Admission is closed to named calls: `scalar_shape.binders` pairs no
-    # call node and `recorded` accepts no read that could name one, so no
-    # admitted body has a callee to resolve. Widening this class consumes
-    # `prepared.callees`; until then admission refuses every call node.
-    callee: (owner, name, builtin, trait_id) => None }
+    callee: (owner, name, builtin, trait_id) => {
+      if builtin || trait_id != None { return None }
+      let found = callee_index.signature(prepared.callees, cx, owner, name, false, None)?
+      if not ordinary_callee(found) { return None }
+      Some(found)
+    } }
   Some((saved, view))
 }
 
@@ -498,6 +555,7 @@ fn candidate(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> (Prepared, Verd
   let scoped = binder_context(cx, sig)
   var memo = prepared.memo
   for read in reads {
+    if not call_header_fact(prepared.callees, cx, read) { return (Prepared { ..prepared, memo: memo }, Rejected) }
     let (next_memo, verdict) = revalidated(memo, cx, scoped, read)
     memo = next_memo
     if verdict != Some(true) { return (Prepared { ..prepared, memo: memo }, Rejected) }
@@ -572,6 +630,180 @@ fn pass_executor() -> BodyExecutor[Pass] = {
     default_body: (n, cx, tr, d, sig, body) => cold.default_body(unadmitted(n), cx, tr, d, sig, body),
     test_body: (n, cx, name, body) => cold.test_body(unadmitted(n), cx, name, body)
   }
+}
+
+fn call_result_equal(actual: Replayed, expected: ModuleBodies) -> Bool =
+  actual.bodies.functions == expected.functions && actual.bodies.constants == expected.constants &&
+  actual.bodies.impl_methods == expected.impl_methods && actual.bodies.trait_defaults == expected.trait_defaults &&
+  actual.bodies.tests == expected.tests && actual.bodies.cx.diags == expected.cx.diags &&
+  actual.bodies.cx.syms == expected.cx.syms && actual.bodies.cx.decl_slots == expected.cx.decl_slots &&
+  actual.bodies.cx.frame == expected.cx.frame && actual.bodies.cx.fns == expected.cx.fns &&
+  actual.bodies.cx.alias_resolved == expected.cx.alias_resolved &&
+  actual.bodies.cx.current_tparams == expected.cx.current_tparams &&
+  actual.bodies.cx.current_eff_vars == expected.cx.current_eff_vars &&
+  actual.bodies.cx.current_tparam_bounds == expected.cx.current_tparam_bounds &&
+  actual.bodies.cx.function_reads == expected.cx.function_reads && actual.bodies.cx.body_writes == expected.cx.body_writes &&
+  actual.bodies.cx.owner == expected.cx.owner && actual.bodies.cx.owner_lo == expected.cx.owner_lo &&
+  actual.bodies.cx.owner_decl == expected.cx.owner_decl && actual.bodies.cx.in_test == expected.cx.in_test &&
+  actual.bodies.cx.const_cutoff == expected.cx.const_cutoff && actual.bodies.cx.loop_jumps == expected.cx.loop_jumps &&
+  actual.bodies.cx.take_cell == expected.cx.take_cell
+
+test "scalar replay direct calls keep implementations separate from signatures" {
+  let scope = identity.module_key("calls", "sample", "sample", "sample.dawn")
+  let caller = "fn caller() -> Int = sum(leaf(), { let x = 2\n x })\n"
+  let leaf = "fn leaf() -> Int = 1\n"
+  let sum = "fn sum(a: Int, b: Int) -> Int = a + b\n"
+  let before = leaf ++ sum ++ caller
+  for observing in [false, true] {
+    let base = Cx { ..cx_new(Some("sample"), Some("sample.dawn")),
+      function_reads: if observing { Some([]) } else { None },
+      body_writes: if observing { Some([]) } else { None } }
+    let snapshot = source_snapshot.of(before).expect("call snapshot")
+    let old = checker.check_module_headers(base, source_snapshot.syntax(snapshot), map.empty())
+    let saved = body_execution.record(scope, old)
+    let admitted = admit(scope, old, snapshot, saved)
+    assert admitted_count(admitted) == 3
+    for pair in [(before, 3),
+      ("fn leaf() -> Int = 9\n" ++ sum ++ caller, 2),
+      (caller ++ "# moved\n" ++ sum ++ leaf, 3),
+      ("fn leaf() -> Bool = true\n" ++ sum ++ caller, 1),
+      ("fn leaf(x: Int) -> Int = x\n" ++ sum ++ caller, 1),
+      ("fn leaf() -> Int !io = 1\n" ++ sum ++ caller, 1),
+      ("fn leaf() = 1\n" ++ sum ++ caller, 1),
+      (sum ++ caller, 1)] {
+      let (source, hits) = pair
+      let next_snapshot = source_snapshot.of(source).expect("call edit")
+      let next = checker.check_module_headers(base, source_snapshot.syntax(next_snapshot), map.empty())
+      let actual = replay(admitted, next, next_snapshot)
+      assert actual.reused == hits
+      assert call_result_equal(actual, checker.check_module_body_products(next))
+    }
+  }
+}
+
+test "scalar replay qualified calls retain canonical owners and reject provider edits" {
+  let scope = identity.module_key("calls", "sample", "sample", "sample.dawn")
+  let source = "use helper as dep\nfn value() -> Int = 4\nfn caller() -> Int = dep.value()\n"
+  let snapshot = source_snapshot.of(source).expect("consumer")
+  let text = "pub fn value() -> Int = 1\n"
+  let syntax = source_snapshot.syntax(source_snapshot.of(text).expect("provider"))
+  let (provider, _) = checker.check_module(cx_new(Some("helper"), None), syntax, map.empty())
+  let exp = checker.exports_of(provider, syntax, "helper", "helper")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(snapshot), map.from([("helper", exp)]))
+  let saved = body_execution.record(scope, old)
+  let admitted = admit(scope, old, snapshot, saved)
+  assert admitted_count(admitted) == 2
+  for entry in [("helper", text, 2), ("helper", "pub fn value() -> Int = 9\n", 2),
+    ("helper", "pub fn value() -> Bool = true\n", 1),
+    ("helper", "pub fn value(x: Int) -> Int = x\n", 1),
+    ("helper", "pub fn value() -> Int !io = 1\n", 1),
+    ("helper", "fn value() -> Int = 1\n", 1), ("replacement", text, 1)] {
+    let (owner, changed, hits) = entry
+    let ast = source_snapshot.syntax(source_snapshot.of(changed).expect("provider edit"))
+    let (checked, _) = checker.check_module(cx_new(Some(owner), None), ast, map.empty())
+    let exports = checker.exports_of(checked, ast, owner, owner)
+    let next = checker.check_module_headers(base, source_snapshot.syntax(snapshot), map.from([("helper", exports)]))
+    let actual = replay(admitted, next, snapshot)
+    assert actual.reused == hits
+    assert call_result_equal(actual, checker.check_module_body_products(next))
+  }
+  # A path answer is independently observed: leave the signature tables
+  # untouched so only canonical alias revalidation can see this edit.
+  let redirected = ModuleHeaders { ..old, cx: Cx { ..old.cx,
+    module_aliases: map.insert(old.cx.module_aliases, "dep", "replacement") } }
+  let actual = replay(admitted, redirected, snapshot)
+  assert actual.reused == 1 && actual.cold_rejected == 1
+  assert call_result_equal(actual, checker.check_module_body_products(redirected))
+}
+
+test "scalar replay call admission excludes inferred and unsupported callees" {
+  let scope = identity.module_key("calls", "sample", "sample", "sample.dawn")
+  for source in [
+    "fn leaf() = 1\nfn caller() -> Int = leaf()\n",
+    "fn leaf(x: Int = 1) -> Int = x\nfn caller() -> Int = leaf()\n",
+    "fn leaf[T](x: T) -> T = x\nfn caller() -> Int = leaf(1)\n",
+    "fn caller() -> Int = to_int(1.0)\n",
+    "fn leaf(x: Int) -> Int = x\nfn caller() -> Int = 1.leaf()\n",
+    "fn leaf(x: Int) -> Int = x\nfn caller(x: Int) -> Int = x.leaf()\n",
+    "fn caller(f: fn() -> Int) -> Int = f()\n",
+    "fn leaf() -> Int !io = 1\nfn caller() -> Int !io = leaf()\n",
+    "trait Value[T] { fn value(x: T) -> Int }\nimpl Value[Int] { fn value(x: Int) -> Int = x }\nfn caller() -> Int = value(1)\n",
+    "fn leaf(x: Int) -> Int = x\nfn caller() -> Int = leaf(x: 1)\n"
+  ] {
+    let snapshot = source_snapshot.of(source).expect("unsupported call")
+    let old = checker.check_module_headers(cx_new(Some("sample"), Some("sample.dawn")),
+      source_snapshot.syntax(snapshot), map.empty())
+    let saved = body_execution.record(scope, old)
+    assert checker.check_module_body_products(old).cx.diags == []
+    let admitted: AdmittedData = admit(scope, old, snapshot, saved)
+    let ready = admitted.ready.expect("ready headers")
+    for (_, prior) in map.entries(ready.entries) { assert prior.syntax.name != "caller" }
+    let actual = replay(admitted, old, snapshot)
+    assert call_result_equal(actual, checker.check_module_body_products(old))
+  }
+}
+
+test "scalar replay call argument binders retain alias collision diagnostics" {
+  let scope = identity.module_key("calls", "sample", "sample", "sample.dawn")
+  let source = "fn leaf(v: Int) -> Int = v\nfn caller() -> Int = leaf({ let x = 1\n x })\n"
+  let before = source_snapshot.of(source).expect("call binders")
+  let after = source_snapshot.of("use helper as x\n" ++ source).expect("alias edit")
+  let ps = source_snapshot.syntax(source_snapshot.of("pub fn value() -> Int = 1\n").expect("provider"))
+  let (pc, _) = checker.check_module(cx_new(Some("helper"), None), ps, map.empty())
+  let env = map.from([("helper", checker.exports_of(pc, ps, "helper", "helper"))])
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(before), env)
+  let next = checker.check_module_headers(base, source_snapshot.syntax(after), env)
+  let admitted = admit(scope, old, before, body_execution.record(scope, old))
+  assert admitted_count(admitted) == 2
+  let actual = replay(admitted, next, after)
+  assert actual.reused == 1 && actual.cold_unadmitted == 1
+  let cold = checker.check_module_body_products(next)
+  assert cold.cx.diags != [] && call_result_equal(actual, cold)
+}
+
+test "scalar replay call namespaces and conflicting owners fail closed independently" {
+  let scope = identity.module_key("calls", "sample", "sample", "sample.dawn")
+  let source = "fn leaf() -> Int = 1\nfn caller() -> Int = leaf()\n"
+  let snapshot = source_snapshot.of(source).expect("calls")
+  let old = checker.check_module_headers(cx_new(Some("sample"), Some("sample.dawn")),
+    source_snapshot.syntax(snapshot), map.empty())
+  let saved = body_execution.record(scope, old)
+  let admitted = admit(scope, old, snapshot, saved)
+  let leaf = map.get(old.cx.fns, "leaf").expect("leaf signature")
+  let replacement = Sig { ..leaf, owner: Some("replacement") }
+  # Keep the old canonical callee reachable, but change the selected spelling.
+  # Header availability alone must not be mistaken for namespace equality.
+  let changed = ModuleHeaders { ..old, cx: Cx { ..old.cx,
+    fns: map.insert(old.cx.fns, "leaf", replacement),
+    module_fn_sigs: map.insert(old.cx.module_fn_sigs, ("retained", "leaf"), leaf) } }
+  let prepared = prepare(admitted, old, snapshot).expect("prepared calls")
+  let caller = match old.syntax.decls[1] { DFn(d) -> d, _ -> panic("caller") }
+  let caller_sig = map.get(old.cx.fns, "caller").expect("caller signature")
+  let (_, verdict) = candidate(prepared, changed.cx, caller, caller_sig)
+  assert match verdict { Rejected -> true, _ -> false }
+  let conflict = ModuleHeaders { ..old, cx: Cx { ..old.cx,
+    module_fn_sigs: map.insert(old.cx.module_fn_sigs, ("conflict", "leaf"), Sig { ..leaf, ret: TyBool }) } }
+  let refused = replay(admitted, conflict, snapshot)
+  assert refused.reused == 1 && refused.cold_rejected == 1
+  assert call_result_equal(refused, checker.check_module_body_products(conflict))
+  # Import aliases are not declaring owners; changing one lookup must be
+  # detected even when the previous canonical signature remains in the index.
+  let qualified_source = "use helper as dep\nfn caller() -> Int = dep.leaf()\n"
+  let provider_syntax = source_snapshot.syntax(source_snapshot.of("pub fn leaf() -> Int = 1\n").expect("provider"))
+  let (provider, _) = checker.check_module(cx_new(Some("helper"), None), provider_syntax, map.empty())
+  let exp = checker.exports_of(provider, provider_syntax, "helper", "helper")
+  let qs = source_snapshot.of(qualified_source).expect("qualified caller")
+  let qh = checker.check_module_headers(cx_new(Some("sample"), Some("sample.dawn")),
+    source_snapshot.syntax(qs), map.from([("helper", exp)]))
+  let qsig = map.get(qh.cx.module_fn_sigs, ("dep", "leaf")).expect("qualified signature")
+  let swapped = ModuleHeaders { ..qh, cx: Cx { ..qh.cx,
+    module_fn_sigs: map.insert(map.insert(qh.cx.module_fn_sigs, ("retained", "leaf"), qsig),
+      ("dep", "leaf"), Sig { ..qsig, owner: Some("replacement") }) } }
+  let result = replay(admit(scope, qh, qs, body_execution.record(scope, qh)), swapped, qs)
+  assert result.reused == 0 && result.cold_rejected == 1
+  assert call_result_equal(result, checker.check_module_body_products(swapped))
 }
 
 test "provider effect edits keep mixed replay identical to cold checking" {

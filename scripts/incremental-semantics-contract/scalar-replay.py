@@ -28,6 +28,29 @@ SHAPE = 'selfhost/src/check/scalar_shape.dawn'
 def main():
     started = time.monotonic()
     own = [
+        ('call-header-lifecycle',
+         'ordinary_callee(s) && callee_index.signature(ix, cx, s.owner, s.name, false, None) == Some(s)',
+         'ordinary_callee(s)'),
+        ('call-canonical-owner',
+         'callee_index.signature(prepared.callees, cx, owner, name, false, None)?',
+         'callee_index.signature(prepared.callees, cx, None, name, false, None)?'),
+        ('call-product-refused', 'if not ordinary_callee(found) { return None }',
+         'if true { return None }'),
+        ('call-method-shape',
+         'if not scalar_shape.module_calls(prior.body, (qualifier, name) => qualified_call(reads, qualifier, name)) { return None }',
+         'if false { return None }'),
+        ('call-function-answer',
+         'if not shared(read) { return (memo, checker.revalidate_read(scoped, read)) }',
+         'match read { semantic_reads.FunctionAnswer(_) -> return (memo, Some(true)), _ -> () }\n'
+         '  if not shared(read) { return (memo, checker.revalidate_read(scoped, read)) }'),
+        ('call-qualified-answer',
+         'if not shared(read) { return (memo, checker.revalidate_read(scoped, read)) }',
+         'match read { semantic_reads.QualifiedFunction(_, _) -> return (memo, Some(true)), _ -> () }\n'
+         '  if not shared(read) { return (memo, checker.revalidate_read(scoped, read)) }'),
+        ('call-alias-answer',
+         'if not shared(read) { return (memo, checker.revalidate_read(scoped, read)) }',
+         'match read { semantic_reads.ModuleAlias(_, _) -> return (memo, Some(true)), _ -> () }\n'
+         '  if not shared(read) { return (memo, checker.revalidate_read(scoped, read)) }'),
         ('disable-replay', '(Pass { ..state, prepared: Some(after) }, verdict)',
          '(Pass { ..state, prepared: Some(after) }, Unadmitted)'),
         # The shared memo. Its key is the recorded fact, its verdicts are

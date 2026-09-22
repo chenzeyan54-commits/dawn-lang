@@ -17,9 +17,9 @@
 # carry a key and an origin that are two records of one slot; a call's
 # operands have to be one per slot of the callee's ABI row; an evidence pack
 # has to take apart and put back together with one value per role. The class
-# of bodies admission accepts today (`check/scalar_shape`) contains no named
-# call, so some of these guard nothing yet; the next widening of that class is
-# what they are here for.
+# of bodies admitted by `check/scalar_shape` now includes ordinary pure calls.
+# Their namespace and exact header signature are separately revalidated by
+# `check/scalar_replay`; this walk validates the retained call product.
 use std/map
 use check/evidence_spelling
 use check/types.{Sig, Sym, EV_PACK_ID, evidence_role_key, EvidenceRole,

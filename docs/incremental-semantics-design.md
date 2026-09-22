@@ -364,10 +364,10 @@ synthetic duplicate keys and the typed-projection fixtures assert on every
 query they make. The index is owned by `scalar_replay`'s prepared candidate and
 lives exactly as long as it: it is built once per candidate revision, from that
 revision's header `cx`, so widening admission cannot put a module-sized pass on
-the per-body path. Admission of named calls stays closed. `scalar_shape.binders`
-pairs no call node and `recorded` accepts no read but `AssignableType`, so the
-view each admitted body receives resolves no callee at all; the index is the
-prerequisite for widening that class, not the widening.
+the per-body path. Ordinary explicit primitive calls now use this index after
+namespace revalidation. Recorded answers must equal header signatures, so a
+local inferred callee sealed later by the scheduler stays outside this class.
+The detailed admission boundary is recorded below.
 
 body状态产物先从真实检查前后提取：符号、推断签名、alias解析结果、累积类型参数
 约束用逐键变化表示，诊断保存追加后缀，不保留两份完整Cx。
@@ -1319,6 +1319,22 @@ it. Argument mismatches render the fallback signature before
 the expected and actual types, matching the original evaluation order.
 Other expression and pattern type diagnostics still need migration before this
 boundary is complete.
+
+### Explicit primitive call admission
+
+The opt-in executor admits positional direct and module-qualified calls to
+ordinary explicit pure functions with primitive parameters and results. It
+revalidates canonical namespace answers and the primitive identity reductions
+and empty-binding unifications produced by call checking. New query families
+remain per-body observations, not shared memo entries.
+
+Both recorded and candidate callees must equal the signature in their header
+index. This excludes inferred functions whose signatures are sealed before
+explicit callers execute; a final `inferring=false` alone is insufficient.
+Canonical declaring owners, not import alias spellings, identify typed calls.
+Default, generic, trait, effect, builtin, dynamic and receiver-method calls
+remain cold, as do named and trailing arguments. This is admission widening,
+not production session wiring or a claim of measured acceleration.
 
 ## 七、不做的
 
