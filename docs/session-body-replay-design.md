@@ -55,15 +55,84 @@ resolved syntax. The actual header/query facts continue to establish whether
 the newly resolved imports mean the same thing. Negative controls must reject
 changed bodies, spans, declaration order, and import aliases/selections.
 
-Initially the driver can construct this snapshot explicitly from current text;
-that duplicate parse must be included in session measurements, not hidden in a
-body-only timer. The final loader integration should produce an optional clean
-snapshot beside its existing parse result, propagate the checked import rewrite,
-and preserve recovered syntax/diagnostics without reparsing. Cold CLI callers
-must not pay for an unused token index. This loader work is required before
-claiming efficient production integration.
+The legacy cached entry reconstructs a snapshot from arbitrary loaded text;
+that duplicate parse must be included whenever measuring that entry. The opt-in
+prepared loader now produces an optional clean snapshot beside its parse result,
+propagates the checked import rewrite, and preserves recovered syntax/diagnostics.
+Its prepared Session consumer does not recreate a missing proof. Cold CLI callers
+use capture-off parsing and must not pay for an unused replay token index.
+This is parse sharing within one load/check update, not an incremental parser or
+a claim that unchanged dependencies remain parsed across separate loader calls.
+
+### Single-parse source input
+
+The first additive API is `source_snapshot.parse(text, capture) -> Parsed`, where
+`Parsed` contains `syntax: Module`, ordered `diagnostics: List[Diag]`, and
+`snapshot: Option[Snapshot]`. It always returns the canonical parser's recovered
+syntax and diagnostics. It calls `parse_module_lexed` once; only clean input with
+capture enabled proceeds to replay index/token projection construction. A
+projection refusal removes only the optional snapshot, never the syntax or
+diagnostics. `of(text)` delegates to `parse(text, true).snapshot`.
+
+The result record is not itself a source-binding capability: callers can copy
+or alter its public fields. Only the opaque snapshot certifies its own syntax,
+index and tokens. There is no unchecked public constructor from separately
+provided text, syntax, code points or tokens. Later prepared loader inputs must
+preserve this proof through checked import resolution; arbitrary LoadedModule
+values must retain the existing safe binding checks.
+
+Capture disabled means no replay index or per-function token projection is
+constructed or retained. It does not mean the parser avoids ordinary lexing or
+temporary code points/tokens. The initial slice leaves all loader, Session and
+LSP callers unchanged. Semantic tests compare recovered syntax, diagnostic
+ordering and captured fields with the existing independently indexed oracle.
+Actual API method-entry instrumentation now observes one parser/index/projection
+for clean capture and `of`, and one parser with zero indexes/projections for
+capture-off and lexer/parser errors. Three independently compiled duplicate/eager
+controls change the exact expected vectors. This is not evidence of end-to-end
+speedup. Loader/consumer invocation counts require their own intervals and
+controls, and all original production activation gates remain in force.
 
 ## Session ownership and eviction
+
+### Prepared loader proof
+
+An opaque `PreparedLoad` owns the canonical `LoadResult` together with the
+optional snapshots produced at its actual seed/dependency parse sites. Its
+public accessors expose the ordinary result and opaque prepared modules, but
+there is no constructor from caller-supplied loaded syntax or snapshot maps.
+The resolver shares one capture-flagged implementation with existing cold
+loaders. Capture-off parsing preserves recovered syntax and ordered diagnostics
+without building replay indexes. A proof is replaced or removed whenever its
+loaded source is replaced; missing proofs must never borrow an older entry.
+Transient proofs carry their original path and text. Final binding compares
+both with the actual loaded module before checking the resolved AST: a same-name
+dependency can replace a queued module while its final rewrite restores an
+earlier source, and equal-shaped ASTs do not prove that text/index pair agrees.
+After all package-path rewrites and topological sorting, each proof is bound to
+the final syntax through `source_snapshot.resolved` before publication.
+
+Standalone preparation shares filename diagnostics and the proposed `main`
+identity with cold standalone analysis; the analysis transition still settles
+standard-library identity. Prepared values are transient update inputs, not
+additional fields retained in a Session. Tests must compare complete cold and
+prepared loader results on package rewrites, overlays, recovered sources and
+loader errors. Host method-entry instrumentation observes `(parse,index,
+projection) = (3,3,3)` for the three-module prepared loader, `(3,0,0)` for its
+cold counterpart, and `(1,1,1)` for standalone preparation. A separate prepared
+Session interval, excluding explicitly marked setup, observes `(0,0,0)` even
+after eviction. Four compiling controls independently duplicate seed/dependency
+parses, eagerly capture cold input, or reparse in the consumer; each preserves
+semantic samples and fails its exact count vector. These are invocation proofs,
+not latency or retained-memory measurements.
+
+`analyze_module_step_prepared` consumes an opaque prepared module and never
+falls back to reparsing when that module has no proof. The legacy cached-module
+entry retains its checked reparse fallback for arbitrary `LoadedModule` callers.
+`incremental.analyze_prepared` derives both ordinary inputs and prepared modules
+from one opaque load and enters the same Session loop as the legacy API. It
+cannot accept a separately supplied syntax list. Prefix hits and all body/cache
+accounting remain shared; disabling caching does not create another parser.
 
 Keep exact-prefix module hits as their existing distinct optimization. Add a
 separate bounded current-generation module-to-body-cache table inside the opaque

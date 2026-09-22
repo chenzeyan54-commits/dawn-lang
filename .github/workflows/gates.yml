@@ -257,8 +257,11 @@ jobs:
     # (position % 2 == 0 is exactly position % 4 in {0, 2}). Its work is
     # their two worst observations less the setup that is no longer paid
     # twice: (275 - 36) + (213 - 36) = 416s, plus one 36s setup.
-    # budget: 3x 452s planning value (two merged shards' worst observations)
-    timeout-minutes: 23
+    # 2026-09-22: source API invocation controls measured25.58s locally;
+    # prepared loader/consumer controls measured95.65s. Double rounded costs:
+    # 452 + 2 * (26 + 96) = 696s. These are gate costs, not speedup claims.
+    # budget: 3x 696s planning value (prior baseline plus parse invocation controls)
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -359,6 +362,10 @@ jobs:
         env:
           MUTANT_COVERAGE_DIR: ${{ runner.temp }}/mutant-coverage
         run: ./scripts/spike-native/run.sh --shard 1/2
+      - name: actual source parse and projection invocation controls
+        run: python3 scripts/incremental-semantics-contract/source-parse-counts.py
+      - name: actual prepared loader and consumer invocation controls
+        run: python3 scripts/incremental-semantics-contract/prepared-parse-counts.py
 
       - name: record which entries this shard ran
         uses: actions/upload-artifact@v4
@@ -388,8 +395,13 @@ jobs:
     # 9s over the 194s claim.
     # 2026-09-11, N=4 -> N=2: what shards 2 and 4 ran between them.
     # (203 - 36) + (207 - 36) = 338s of work, plus one 36s setup.
-    # budget: 3x 374s planning value (two merged shards' worst observations)
-    timeout-minutes: 19
+    # 2026-09-22: prepared proof controls measured135.52s locally, and the
+    # complete incremental fixture package50.03s under concurrent validation.
+    # Move that package here from incremental-8, keeping its old budget as
+    # headroom rather than subtracting an unmeasured runner cost. Double rounded
+    # costs: 374 + 2 * (136 + 51) = 748s; no runner job added.
+    # budget: 3x 748s planning value (prior baseline plus prepared proof and fixture package)
+    timeout-minutes: 38
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -401,6 +413,10 @@ jobs:
         env:
           MUTANT_COVERAGE_DIR: ${{ runner.temp }}/mutant-coverage
         run: ./scripts/spike-native/run.sh --shard 2/2
+      - name: prepared proof refusal and source binding controls
+        run: python3 scripts/incremental-semantics-contract/prepared-proofs.py
+      - name: complete incremental fixture package including prepared Session lifecycles
+        run: ./bin/dawn test scripts/incremental-semantics-contract
 
       - name: record which entries this shard ran
         uses: actions/upload-artifact@v4
@@ -1472,7 +1488,6 @@ jobs:
           python3 scripts/incremental-semantics-contract/lsp-prefix.py
           python3 scripts/incremental-semantics-contract/body-probe.py --all --java-home "$JAVA_HOME" --output "$RUNNER_TEMP/incremental-body-probe"
           python3 scripts/incremental-semantics-contract/relocate.py
-          ./bin/dawn test scripts/incremental-semantics-contract
 
       # was the incremental-witness job until 2026-09-11.
       # Two positive modules plus 31 compiling controls took 108.71s on 2026-09-09.

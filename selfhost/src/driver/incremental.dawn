@@ -11,7 +11,8 @@ use std/set
 use driver/analyze.{
   LoadedModule, LoadResult, Program, CheckedMod, ModuleStep, AnalysisCarry,
   initial_carry_with_provenance, analyze_module_step, analyze_module_step_cached,
-  ModuleBodyCache, CachedModuleStep, module_body_cache_size, canon
+  ModuleBodyCache, CachedModuleStep, module_body_cache_size, canon,
+  PreparedLoad, PreparedModule, prepared_result, prepared_modules, analyze_module_step_prepared
 }
 use driver/stdlib.{StdCtx, std_module_of}
 use check/cx.{Cx}
@@ -115,7 +116,15 @@ fn unambiguous(std: StdCtx, loaded: LoadResult) -> Bool !Env = {
   true
 }
 
-pub fn analyze(owner: Session, loaded: LoadResult) -> Update !Env !io = {
+pub fn analyze(owner: Session, loaded: LoadResult) -> Update !Env !io =
+  analyze_inputs(owner, loaded, None)
+
+## Both input views come from one immutable loader value. There is no public
+## API accepting an arbitrary loaded tree beside another revision's proof.
+pub fn analyze_prepared(owner: Session, prepared: PreparedLoad) -> Update !Env !io =
+  analyze_inputs(owner, prepared_result(prepared), Some(prepared_modules(prepared)))
+
+fn analyze_inputs(owner: Session, loaded: LoadResult, prepared: Option[List[PreparedModule]]) -> Update !Env !io = {
   let session: State = owner
   let probe = session.probe(session.js)
   # This label is interpreted only inside this opaque session. No provenance
@@ -165,8 +174,12 @@ pub fn analyze(owner: Session, loaded: LoadResult) -> Update !Env !io = {
       matching = false
       let queries_before = probe.queries()
       let result = if body_allowed {
-        analyze_module_step_cached(raw, carry, session.std, session.opts, probe.jsig, None,
-          map.get(session.bodies, key))
+        match prepared {
+          Some(entries) -> analyze_module_step_prepared(entries[index], carry, session.std, session.opts, probe.jsig,
+            None, map.get(session.bodies, key))
+          None -> analyze_module_step_cached(raw, carry, session.std, session.opts, probe.jsig, None,
+            map.get(session.bodies, key))
+        }
       } else {
         CachedModuleStep { step: analyze_module_step(raw, carry, session.std, session.opts, probe.jsig, None),
           cache: None, counts: None }

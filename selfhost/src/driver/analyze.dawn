@@ -63,6 +63,32 @@ pub type LocDiag = { path: String, d: Diag }
 
 pub type LoadResult = { modules: List[LoadedModule], diags: List[LocDiag] }
 
+type PreparedModuleData = { loaded: LoadedModule, snapshot: Option[source_snapshot.Snapshot] }
+type PreparedLoadData = { result: LoadResult, proofs: Map[String, source_snapshot.Snapshot] }
+type SourceProof = { path: String, text: String, snapshot: source_snapshot.Snapshot }
+
+## Only loader-owned parsing may certify this module's text and resolved tree.
+## Returning the ordinary loaded value does not permit grafting it back here.
+pub opaque type PreparedModule = PreparedModuleData
+pub opaque type PreparedLoad = PreparedLoadData
+
+pub fn prepared_result(prepared: PreparedLoad) -> LoadResult = {
+  let data: PreparedLoadData = prepared
+  data.result
+}
+
+pub fn prepared_modules(prepared: PreparedLoad) -> List[PreparedModule] = {
+  let data: PreparedLoadData = prepared
+  list.map(data.result.modules, raw => PreparedModuleData {
+    loaded: raw, snapshot: map.get(data.proofs, raw.mod_path)
+  })
+}
+
+pub fn prepared_loaded(prepared: PreparedModule) -> LoadedModule = {
+  let data: PreparedModuleData = prepared
+  data.loaded
+}
+
 ## The source files visible from one captured source plan. `project_files`
 ## keeps the caller-facing spellings used by loader diagnostics, including
 ## files whose names are not legal module paths. `by_use` is the filtered,
@@ -380,25 +406,35 @@ pub fn load_entries_over(
   entries: List[String],
   over: Map[String, String]
 ) -> LoadResult !Fs !Env !io =
-  resolve(
+  prepared_result(resolve(
     plan.source.source_root,
     entries,
     planner_diags(plan.source.diags),
     plan.source.pkgs,
-    over
-  )
+    over,
+    false
+  ))
+
+## Opt-in loader capture; cold callers retain their original result API.
+pub fn load_entries_over_prepared(
+  plan: ProjectPlan, entries: List[String], over: Map[String, String]
+) -> PreparedLoad !Fs !Env !io =
+  resolve(plan.source.source_root, entries, planner_diags(plan.source.diags),
+    plan.source.pkgs, over, true)
 
 fn resolve(
   root: String,
   seed_files: List[String],
   diags0: List[LocDiag],
   pkgs: Map[String, source.PkgR],
-  over: Map[String, String]
-) -> LoadResult !Fs !Env !io = {
+  over: Map[String, String],
+  capture: Bool
+) -> PreparedLoad !Fs !Env !io = {
   var diags = diags0
   let root_abs = canon(root)
   var by_canon: Map[String, String] = map.empty()
   var by_path: Map[String, LoadedModule] = map.empty()
+  var proofs: Map[String, SourceProof] = map.empty()
   var order: List[String] = []
   var queue: List[String] = []
   # load seeds
@@ -416,7 +452,9 @@ fn resolve(
       }
       match read_over(over, c, f) {
         Ok(text) -> {
-          let (m, pdiags) = parser.parse_module(text)
+          let parsed = source_snapshot.parse(text, capture)
+          let m = parsed.syntax
+          let pdiags = parsed.diagnostics
           let mf = LoadedModule {
             mod_path: mod_path,
             class_name: mod_path,
@@ -428,6 +466,10 @@ fn resolve(
           }
           by_canon = map.insert(by_canon, c, mod_path)
           by_path = map.insert(by_path, mod_path, mf)
+          proofs = match parsed.snapshot {
+            Some(snapshot) -> map.insert(proofs, mod_path, SourceProof { path: f, text: text, snapshot: snapshot })
+            None -> map.remove(proofs, mod_path)
+          }
           order = order ++ [mod_path]
           queue = queue ++ [mod_path]
         }
@@ -535,7 +577,9 @@ fn resolve(
         } else {
           match read_over(over, dep_canon, dep_file) {
             Ok(text) -> {
-              let (m2p, pdiags2) = parser.parse_module(text)
+              let parsed = source_snapshot.parse(text, capture)
+              let m2p = parsed.syntax
+              let pdiags2 = parsed.diagnostics
               let (mod_path, cls, m2) = match dep_pkg {
                 Some(p) -> {
                   let internal = module_path_of(p.root, dep_canon)
@@ -559,6 +603,10 @@ fn resolve(
               }
               by_canon = map.insert(by_canon, dep_canon, mod_path)
               by_path = map.insert(by_path, mod_path, mf2)
+              proofs = match parsed.snapshot {
+                Some(snapshot) -> map.insert(proofs, mod_path, SourceProof { path: dep_file, text: text, snapshot: snapshot })
+                None -> map.remove(proofs, mod_path)
+              }
               order = order ++ [mod_path]
               queue = queue ++ [mod_path]
             }
@@ -626,7 +674,26 @@ fn resolve(
   }
   # topological order + cycle detection over the use graph
   let (ordered, diags2) = topo_sort(order, by_path, diags)
-  LoadResult { modules: ordered, diags: diags2 }
+  let result = LoadResult { modules: ordered, diags: diags2 }
+  if not capture { return PreparedLoadData { result: result, proofs: map.empty() } }
+  var bound: Map[String, source_snapshot.Snapshot] = map.empty()
+  for raw in ordered {
+    match map.get(proofs, raw.mod_path) {
+      Some(proof) -> {
+        # A dependency can collide with a seed's module name while that seed
+        # is being visited. A final rewrite may restore the earlier loaded
+        # value, so its proof must match the actual source, not just its AST.
+        if proof.path == raw.path && proof.text == raw.text {
+          match source_snapshot.resolved(proof.snapshot, raw.m) {
+            Some(resolved) -> { bound = map.insert(bound, raw.mod_path, resolved) }
+            None -> ()
+          }
+        }
+      }
+      None -> ()
+    }
+  }
+  PreparedLoadData { result: result, proofs: bound }
 }
 
 ## Depth-first topological sort; on the first back edge, report the cycle path.
@@ -911,7 +978,7 @@ pub fn analyze_module_step(
   mf0: LoadedModule, before: AnalysisCarry, std: StdCtx, opts: CtOpts,
   js: Jsig, observer: Option[AnalysisObserver]
 ) -> ModuleStep !Env !io =
-  module_step_with_recording(mf0, before, std, opts, js, observer, false, false, None).step
+  module_step_with_recording(mf0, before, std, opts, js, observer, false, false, None, None).step
 
 ## Explicit integration entry while recording cost and cache admission are
 ## under validation. Existing prefix sessions keep their cold-miss cost until
@@ -920,7 +987,7 @@ pub fn analyze_module_step_recorded(
   mf0: LoadedModule, before: AnalysisCarry, std: StdCtx, opts: CtOpts,
   js: Jsig, observer: Option[AnalysisObserver]
 ) -> ModuleStep !Env !io =
-  module_step_with_recording(mf0, before, std, opts, js, observer, true, false, None).step
+  module_step_with_recording(mf0, before, std, opts, js, observer, true, false, None, None).step
 
 ## Opt-in session transition. Headers, comptime and export/carry publication
 ## always run against this revision; only validated body executions may reuse.
@@ -928,12 +995,24 @@ pub fn analyze_module_step_cached(
   mf0: LoadedModule, before: AnalysisCarry, std: StdCtx, opts: CtOpts,
   js: Jsig, observer: Option[AnalysisObserver], previous: Option[ModuleBodyCache]
 ) -> CachedModuleStep !Env !io =
-  module_step_with_recording(mf0, before, std, opts, js, observer, false, true, previous)
+  module_step_with_recording(mf0, before, std, opts, js, observer, false, true, previous, None)
+
+## Consume the loader's immutable proof without reparsing. A refused prepared
+## proof is distinct from legacy input: it must remain refused, not re-created.
+pub fn analyze_module_step_prepared(
+  prepared: PreparedModule, before: AnalysisCarry, std: StdCtx, opts: CtOpts,
+  js: Jsig, observer: Option[AnalysisObserver], previous: Option[ModuleBodyCache]
+) -> CachedModuleStep !Env !io = {
+  let data: PreparedModuleData = prepared
+  module_step_with_recording(data.loaded, before, std, opts, js, observer,
+    false, true, previous, Some(data.snapshot))
+}
 
 fn module_step_with_recording(
   mf0: LoadedModule, before: AnalysisCarry, std: StdCtx, opts: CtOpts,
   js: Jsig, observer: Option[AnalysisObserver], record_bodies: Bool,
-  cache_bodies: Bool, previous: Option[ModuleBodyCache]
+  cache_bodies: Bool, previous: Option[ModuleBodyCache],
+  prepared_snapshot: Option[Option[source_snapshot.Snapshot]]
 ) -> CachedModuleStep !Env !io = {
   var diags: List[LocDiag] = []
   # The one place a module's identity is settled, and the reason it is here
@@ -1009,9 +1088,12 @@ fn module_step_with_recording(
         # Binding may alter only loader-resolved import paths. Recovered or
         # mismatched syntax never lends source coordinates to cached bodies.
         let snapshot: Option[source_snapshot.Snapshot] = if cache_bodies && not opts.ffi {
-          match source_snapshot.of(mf.text) {
-            Some(parsed) -> source_snapshot.resolved(parsed, mf.m)
-            None -> None
+          match prepared_snapshot {
+            Some(snapshot) -> snapshot
+            None -> match source_snapshot.of(mf.text) {
+              Some(parsed) -> source_snapshot.resolved(parsed, mf.m)
+              None -> None
+            }
           }
         } else { None }
         let prior: Option[scalar_replay.Admitted] = match previous {
@@ -1256,7 +1338,16 @@ pub fn analyze_standalone(
   opts: CtOpts,
   js: Jsig
 ) -> Program !Env !io = {
-  let (m, pdiags) = parser.parse_module(text)
+  analyze_program(prepared_result(prepare_standalone_with_capture(path, text, false)), std, opts, js)
+}
+
+## The same filename validation and proposed identity as cold standalone
+## analysis; the module transition still applies the actual std identity.
+pub fn prepare_standalone(path: String, text: String) -> PreparedLoad =
+  prepare_standalone_with_capture(path, text, true)
+
+fn prepare_standalone_with_capture(path: String, text: String, capture: Bool) -> PreparedLoad = {
+  let parsed = source_snapshot.parse(text, capture)
   var diags: List[LocDiag] = []
   match entry_name_of(path) {
     Some(nm) -> {
@@ -1275,11 +1366,15 @@ pub fn analyze_standalone(
     class_name: "main",
     path: path,
     text: text,
-    m: m,
-    pdiags: pdiags,
+    m: parsed.syntax,
+    pdiags: parsed.diagnostics,
     pkg: None
   }
-  analyze_program(LoadResult { modules: [mf], diags: diags }, std, opts, js)
+  let proofs = match parsed.snapshot {
+    Some(snapshot) -> map.from([("main", snapshot)])
+    None -> map.empty()
+  }
+  PreparedLoadData { result: LoadResult { modules: [mf], diags: diags }, proofs: proofs }
 }
 
 ## The identity `analyze_standalone` settled on for its one buffer. Callers
@@ -1603,6 +1698,180 @@ test "cached module transitions follow real package import resolution" {
         cold_carry = cold.after
       }
       caches = next_caches
+    }
+  })
+}
+
+test "prepared module execution refuses a clean missing proof without reparsing" {
+  in_mem(() => {
+    let std = std_or_die()
+    let baseline = initial_carry_with_provenance(std, "prepared-refusal-test")
+    let text = "fn leaf() -> Int = 1\nfn caller() -> Int = leaf()\n"
+    let without_proof = prepare_standalone_with_capture("/prepared/main.dawn", text, false)
+    let input = prepared_modules(without_proof)[0]
+    let raw = prepared_loaded(input)
+    let data: PreparedModuleData = input
+    assert raw.pdiags == [] && data.snapshot == None
+    let certified = prepared_modules(prepare_standalone("/prepared/main.dawn", text))[0]
+    let admitted = analyze_module_step_prepared(certified, baseline, std, ct_default(), jsig_refused(), None, None)
+    assert admitted.counts.expect("eligible clean bodies").checked == 2
+    assert admitted.cache != None
+    let cold = analyze_module_step(raw, baseline, std, ct_default(), jsig_refused(), None)
+    for previous in [None, admitted.cache] {
+      let refused = analyze_module_step_prepared(input, baseline, std, ct_default(), jsig_refused(), None, previous)
+      assert refused.counts == None && refused.cache == None
+      assert refused.step.diags == [] && refused.step.diags == cold.diags
+      assert refused.step.after == cold.after
+      assert refused.step.checked.tm == cold.checked.tm && refused.step.checked.ct == cold.checked.ct
+      assert refused.step.checked.m == cold.checked.m
+      assert refused.step.checked.cx.syms == cold.checked.cx.syms
+      assert refused.step.checked.cx.fns == cold.checked.cx.fns
+      assert refused.step.check_runs == cold.check_runs && refused.step.comptime_runs == cold.comptime_runs
+    }
+  })
+}
+
+test "prepared standalone loading preserves recovery and filename diagnostics" {
+  for path in ["<lsp>", "/tmp/main.dawn", "/tmp/Bad-Name.dawn"] {
+    for text in ["", "# 🌅 λ\nfn answer() -> Int = 42\n",
+      "fn broken( -> Int = 1\nfn after() -> Int = 2\n",
+      "fn text() -> String = \"unterminated\n"] {
+      let prepared: PreparedLoadData = prepare_standalone(path, text)
+      let cold: PreparedLoadData = prepare_standalone_with_capture(path, text, false)
+      assert prepared.result == cold.result
+      assert map.len(cold.proofs) == 0
+      let entries = prepared_modules(prepared)
+      assert len(entries) == 1
+      let entry: PreparedModuleData = entries[0]
+      assert prepared_loaded(entries[0]) == prepared.result.modules[0]
+      let (syntax, diagnostics) = parser.parse_module(text)
+      assert entry.loaded.m == syntax && entry.loaded.pdiags == diagnostics
+      match entry.snapshot {
+        Some(snapshot) -> {
+          assert diagnostics == []
+          assert source_snapshot.syntax(snapshot) == syntax
+          assert map.len(prepared.proofs) == 1
+        }
+        None -> { assert diagnostics != [] }
+      }
+      # A derived ordinary input can be changed without altering the opaque
+      # source proof that a later prepared consumer will receive.
+      let altered = LoadedModule { ..entry.loaded, text: "fn other() -> Bool = true\n" }
+      assert altered.text != prepared_loaded(entries[0]).text
+    }
+  }
+}
+
+test "prepared project loading binds final imports overlays and recovered sources" {
+  in_mem(() => {
+    let base = "/tmp/dawn-selfhost-analyze/prepared-packages"
+    mkdirs("${base}/pkg/library/src")
+    mkdirs("${base}/app/src")
+    put("${base}/pkg/library/dawn.toml", "schema = 1\nname = \"library\"\n")
+    put("${base}/pkg/library/src/bridge.dawn", "use leaf as impl_leaf\npub fn value() -> Int = impl_leaf.value()\n")
+    put("${base}/pkg/library/src/leaf.dawn", "pub fn value() -> Int = 1\n")
+    put("${base}/app/dawn.toml", "schema = 1\nname = \"app\"\n[deps]\nalias_dep = \"../pkg/library\"\n")
+    let entry = "${base}/app/src/main.dawn"
+    let original = "use alias_dep/bridge.{value}\nfn answer() -> Int = value()\n"
+    put(entry, original)
+    let plan = project_plan(source.SourceFile(entry))
+    for changed in [original, "# λ🌅 overlay\n" ++ original,
+      "use alias_dep/bridge.{value}\nfn broken( -> Int = 0\nfn after() -> Int = value()\n",
+      "use missing\nfn answer() -> Int = 3\n"] {
+      let over = map.from([(canon(entry), changed)])
+      let prepared: PreparedLoadData = load_entries_over_prepared(plan, [entry, entry], over)
+      let cold = load_entries_over(plan, [entry, entry], over)
+      assert prepared_result(prepared) == cold
+      assert len(prepared_modules(prepared)) == len(cold.modules)
+      var index = 0
+      for module in prepared_modules(prepared) {
+        let data: PreparedModuleData = module
+        assert data.loaded == cold.modules[index]
+        match data.snapshot {
+          Some(snapshot) -> {
+            assert data.loaded.pdiags == []
+            assert source_snapshot.syntax(snapshot) == data.loaded.m
+            let parsed = source_snapshot.of(data.loaded.text).expect("clean source")
+            let oracle = source_snapshot.resolved(parsed, data.loaded.m).expect("resolved source")
+            assert source_snapshot.indexed(snapshot) == source_snapshot.indexed(oracle)
+            assert source_snapshot.tokens(snapshot) == source_snapshot.tokens(oracle)
+          }
+          None -> { assert data.loaded.pdiags != [] }
+        }
+        index = index + 1
+      }
+      if changed == original {
+        assert cold.diags == [] && len(cold.modules) == 3
+        assert cold.modules[0].mod_path == "library/leaf"
+        assert cold.modules[1].mod_path == "library/bridge"
+        assert cold.modules[2].mod_path == "main"
+        let std = std_or_die()
+        let baseline = initial_carry_with_provenance(std, "prepared-package-test")
+        var caches: Map[String, ModuleBodyCache] = map.empty()
+        for revision in [0, 1] {
+          var carry = baseline
+          var cold_carry = baseline
+          for module in prepared_modules(prepared) {
+            let raw = prepared_loaded(module)
+            let current = analyze_module_step_prepared(module, carry, std, ct_default(), jsig_refused(), None,
+              map.get(caches, raw.mod_path))
+            let expected = analyze_module_step(raw, cold_carry, std, ct_default(), jsig_refused(), None)
+            assert current.step.diags == [] && current.step.diags == expected.diags
+            assert current.step.after == expected.after
+            assert current.step.checked.tm == expected.checked.tm
+            assert current.step.checked.ct == expected.checked.ct
+            let counts = current.counts.expect("prepared resolved source")
+            assert counts.visited == 1
+            assert counts.reused == revision && counts.checked == 1 - revision
+            caches = map.insert(caches, raw.mod_path, current.cache.expect("prepared admission"))
+            carry = current.step.after
+            cold_carry = expected.after
+          }
+        }
+      }
+    }
+  })
+}
+
+test "prepared loader collisions never certify a replacement file's text" {
+  in_mem(() => {
+    let base = "/tmp/dawn-selfhost-analyze/prepared-collision"
+    mkdirs("${base}/app/src/library")
+    mkdirs("${base}/pkg/library/src")
+    put("${base}/app/dawn.toml", "schema = 1\nname = \"app\"\n[deps]\nalias_dep = \"../pkg/library\"\n")
+    put("${base}/pkg/library/dawn.toml", "schema = 1\nname = \"library\"\n")
+    let entry = "${base}/app/src/library/bridge.dawn"
+    let dependency = "${base}/pkg/library/src/bridge.dawn"
+    # Both sources deliberately have the same AST and all the same spans.
+    # Their equal-width comments distinguish the actual indexed source.
+    let original = "use alias_dep/bridge\n# seed\npub fn value() -> Int = 1\n"
+    let replacement = "use alias_dep/bridge\n# deps\npub fn value() -> Int = 1\n"
+    let original_snapshot = source_snapshot.of(original).expect("seed source")
+    let replacement_snapshot = source_snapshot.of(replacement).expect("dependency source")
+    assert source_snapshot.syntax(original_snapshot) == source_snapshot.syntax(replacement_snapshot)
+    assert source_snapshot.indexed(original_snapshot) != source_snapshot.indexed(replacement_snapshot)
+    put(entry, original)
+    put(dependency, replacement)
+    let plan = project_plan(source.SourceFile(entry))
+    let over: Map[String, String] = map.empty()
+    let prepared = load_entries_over_prepared(plan, [entry], over)
+    let cold = load_entries_over(plan, [entry], over)
+    assert prepared_result(prepared) == cold
+    # The aliased dependency replaces the current module's canonical name.
+    # Final import rewriting restores the seed, so its proof must either be
+    # refused or still describe that seed, even when loading reports a cycle.
+    assert len(cold.modules) == 1 && cold.diags != []
+    assert cold.modules[0].path == entry && cold.modules[0].text == original
+    let module: PreparedModuleData = prepared_modules(prepared)[0]
+    assert module.loaded == cold.modules[0]
+    match module.snapshot {
+      Some(snapshot) -> {
+        let expected = source_snapshot.resolved(original_snapshot, module.loaded.m).expect("seed rewrite")
+        assert source_snapshot.syntax(snapshot) == module.loaded.m
+        assert source_snapshot.indexed(snapshot) == source_snapshot.indexed(expected)
+        assert source_snapshot.tokens(snapshot) == source_snapshot.tokens(expected)
+      }
+      None -> ()
     }
   })
 }
