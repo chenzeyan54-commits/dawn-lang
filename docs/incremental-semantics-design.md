@@ -1328,9 +1328,9 @@ revalidates canonical namespace answers and the primitive identity reductions
 and empty-binding unifications produced by call checking. New query families
 remain per-body observations, not shared memo entries.
 
-Both recorded and candidate callees must equal the signature in their header
-index. This excludes inferred functions whose signatures are sealed before
-explicit callers execute; a final `inferring=false` alone is insufficient.
+Both recorded and candidate callees must equal the signature in their canonical
+index. Recording uses its completed execution; the candidate index follows
+actual inferred publications. A final `inferring=false` alone is insufficient.
 Canonical declaring owners, not import alias spellings, identify typed calls.
 Default, generic, trait, effect, builtin, dynamic and receiver-method calls
 remain cold, as do named and trailing arguments. This is admission widening,
@@ -1352,6 +1352,28 @@ three-generation edit sequence must prove that edited and newly added bodies
 become reusable and that dependency changes still reject recaptured products.
 This seam does not itself enable caching in driver or editor sessions and makes
 no performance claim; production ownership, eviction, and budgets follow.
+
+### Inferred primitive bodies and signature publication
+
+The next admission class covers pure primitive inferred function chains and
+their explicit consumers. It keeps the canonical dependency scheduler: only
+an actual inferred callback may install a previously checked result. Cyclic
+nodes never receive cached signatures ahead of scheduling.
+
+Pairing uses the unsealed entry headers. An admitted inferred product must
+publish exactly its own sealed signature, changing only the inferred result,
+effect and inference flag, and carry the corresponding signature write key.
+Candidate installation mirrors the cold checker's exact current-entry guard.
+An empty observed read log is legitimate for a closed inferred literal body;
+a missing log is not.
+
+Recorded callees are checked against the completed recording's temporary
+index, without retaining its full context. The candidate index changes after
+each actual inferred publication, including cold fallbacks. Guarded replacement
+preserves contributions from every local spelling and import alias so an
+updated local declaration cannot erase a canonical-owner conflict.
+Generic inferred results, closures, default arguments, effectful bodies and
+foreign operations remain subsequent classes, not evidence of completed P5.
 
 ## 七、不做的
 

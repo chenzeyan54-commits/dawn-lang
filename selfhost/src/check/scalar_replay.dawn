@@ -8,7 +8,7 @@ use std/set
 use check/checker
 use check/checker.{ModuleHeaders, ModuleBodies, BodyExecutor}
 use check/cx.{Cx, Frame, cx_new}
-use check/types.{Ty, TyInt, TyFloat, TyBool, TyUnit, TyVar, Sig, Sym, Eff, EffVar, EPure}
+use check/types.{Ty, TyInt, TyFloat, TyBool, TyUnit, TyError, TyVar, Sig, Sym, Eff, EffVar, EPure, EIo}
 use check/tast.{TFun}
 use check/body_execution
 use check/body_execution.{Recorded, Saved, SavedFunction, FunctionInput}
@@ -46,7 +46,7 @@ pub type Renewed = { replayed: Replayed, admitted: Admitted,
 ## The three ways a declaration leaves this pass, counted apart because they
 ## answer different questions. `reused` came back from the recording.
 ## `cold_unadmitted` is a declaration this producer never claimed: one of the
-## five categories it does not implement, or a function whose header, identity
+## four categories it does not implement, or a function whose header, identity
 ## or bytes put it outside the class. `cold_rejected` is a claim the candidate
 ## revision withdrew: the body was admitted and paired, and then one of the
 ## facts it recorded stopped holding. The first cold column measures how
@@ -114,7 +114,7 @@ fn primitive(t: Ty) -> Bool = match t {
 }
 
 # This first call class carries neither dictionaries nor evidence, and never
-# invokes synthesized defaults or a local signature sealed after headers.
+# invokes synthesized defaults or a signature whose inference is still pending.
 fn ordinary_callee(s: Sig) -> Bool = {
   if s.inferring || s.is_builtin || s.trait_id != None || s.op_of != None ||
     s.tparams != [] || s.constraints != [] || s.eparams != [] || s.eff != EPure ||
@@ -124,8 +124,8 @@ fn ordinary_callee(s: Sig) -> Bool = {
   true
 }
 
-# The index predates inferred-body execution. A sealed inferred signature can
-# look ordinary, but is not the signature this index saw in the header pass.
+# The index follows actual signature publication, never speculative cached
+# outputs. A call may only use the canonical answer currently indexed.
 fn header_callee(ix: callee_index.CalleeIndex, cx: Cx, s: Sig) -> Bool =
   ordinary_callee(s) && callee_index.signature(ix, cx, s.owner, s.name, false, None) == Some(s)
 
@@ -212,9 +212,12 @@ fn binder_context(cx: Cx, s: Sig) -> Cx =
 ## and admission runs that walk once, pairing the two revisions, rather than
 ## once per revision.
 fn parameters(d: FnDecl, s: Sig) -> Option[Set[String]] = {
-  if d.eparams != [] || d.effs != [] || d.ret == None ||
-    s.eparams != [] || len(s.constraints) != 0 || s.eff != EPure ||
-    s.inferring || s.is_builtin || s.trait_id != None || not carried(s, s.ret) ||
+  let inferred = d.ret == None
+  let result_ok = if inferred { s.ret == TyError && s.tparams == [] } else { carried(s, s.ret) }
+  let effect_ok = s.eff == EPure || (inferred && s.eff == EIo)
+  if d.eparams != [] || d.effs != [] || inferred != s.inferring ||
+    s.eparams != [] || len(s.constraints) != 0 || not effect_ok ||
+    s.is_builtin || s.trait_id != None || not result_ok ||
     len(d.tparams) != len(s.tparams) ||
     len(d.params) != len(s.param_tys) || len(d.params) != len(s.param_names) { return None }
   for present in s.param_defaults { if present { return None } }
@@ -258,6 +261,7 @@ fn snapshot_matches(h: ModuleHeaders, s: Snapshot) -> Bool = source_snapshot.syn
 ## body: an unadmitted body is checked cold like any other.
 fn recorded(prior: FnDecl, prior_sig: Sig, p: Product, declaration: Int,
   headers: Cx, callees: callee_index.CalleeIndex) -> Option[Prior] = {
+  let _ = parameters(prior, prior_sig)?
   # Class membership of the recorded declaration is settled by
   # `scalar_shape.binders` below, which fails closed on every node this class
   # does not support. The replay path settles the candidate's: `parameters`
@@ -280,11 +284,18 @@ fn recorded(prior: FnDecl, prior_sig: Sig, p: Product, declaration: Int,
       _ -> return None
     }
   }
-  if p.tree.sig != prior_sig || p.tree.name != prior.name ||
-    p.signatures != [] || p.aliases != [] || len(p.bounds) != 0 ||
+  let inferred = prior_sig.inferring
+  if inferred {
+    let sealed = Sig { ..prior_sig, ret: p.tree.sig.ret, eff: EPure, inferring: false }
+    if not primitive(p.tree.sig.ret) || p.tree.sig != sealed ||
+      len(p.signatures) != 1 { return None }
+    let publication = p.signatures[0]
+    if publication.key != prior.name || publication.value != Some(p.tree.sig) { return None }
+  } else if p.tree.sig != prior_sig || p.signatures != [] { return None }
+  if p.tree.name != prior.name || p.aliases != [] || len(p.bounds) != 0 ||
     p.tparams != tparams || p.effect_vars != eff_vars || p.diagnostics != [] { return None }
   let reads = p.function_reads?
-  if reads == [] { return None }
+  if reads == [] && not inferred { return None }
   for read in reads {
     if not call_header_fact(callees, headers, read) { return None }
     match read {
@@ -324,6 +335,7 @@ fn recorded(prior: FnDecl, prior_sig: Sig, p: Product, declaration: Int,
   }
   var written: Set[Int] = set.empty()
   var bounds_written: Set[Int] = set.empty()
+  var published = false
   for write in p.body_writes? {
     match write {
       SymbolKey(id) -> {
@@ -338,11 +350,15 @@ fn recorded(prior: FnDecl, prior_sig: Sig, p: Product, declaration: Int,
         if not set.has(bound_ids, id) { return None }
         bounds_written = set.insert(bounds_written, id)
       }
+      SignatureKey(name) -> {
+        if not inferred || name != prior.name { return None }
+        published = true
+      }
       _ -> return None
     }
   }
   if set.len(written) != map.len(symbols) ||
-    set.len(bounds_written) != set.len(bound_ids) { return None }
+    set.len(bounds_written) != set.len(bound_ids) || published != inferred { return None }
   # checker.declare reports a binder that shadows an imported module alias,
   # and that table read leaves no journal entry to revalidate. Name every
   # binder the recorded body declares so the candidate revision can be asked
@@ -353,10 +369,11 @@ fn recorded(prior: FnDecl, prior_sig: Sig, p: Product, declaration: Int,
     binders: names, symbols: symbols })
 }
 
-fn ready(scope: ModuleKey, old: ModuleHeaders, old_source: Snapshot, entries_saved: List[Saved]) -> Option[Ready] = {
+fn ready(scope: ModuleKey, old: ModuleHeaders, old_source: Snapshot, entries_saved: List[Saved],
+  completed: Cx) -> Option[Ready] = {
   if old.cx.diags != [] || not snapshot_matches(old, old_source) { return None }
   let headers = table(scope, old)?
-  let callees = callee_index.of(old.cx)
+  let callees = callee_index.of(completed)
   var originals: Map[DeclKey, (FnDecl, Int)] = map.empty()
   for entry in identity.declarations(scope, old.syntax) {
     match old.syntax.decls[entry.declaration] {
@@ -368,19 +385,20 @@ fn ready(scope: ModuleKey, old: ModuleHeaders, old_source: Snapshot, entries_sav
   var seen: Set[DeclKey] = set.empty()
   for entry in entries_saved {
     match entry {
-      SavedFunction(k, FunctionInput(prior, prior_sig, false), product) -> {
+      SavedFunction(k, FunctionInput(prior, prior_sig, inferred), product) -> {
         if set.has(seen, k) {
           entries = map.remove(entries, k)
         } else {
           seen = set.insert(seen, k)
           match map.get(originals, k) {
             Some((declared, declaration)) -> {
-              if declared == prior && map.get(old.cx.fns, prior.name) == Some(prior_sig) {
-                match recorded(prior, prior_sig, product, declaration, old.cx, callees) {
-                  Some(entry_value) -> { entries = map.insert(entries, k, entry_value) }
-                  None -> ()
+              if declared == prior && inferred == prior_sig.inferring &&
+                map.get(old.cx.fns, prior.name) == Some(prior_sig) {
+                  match recorded(prior, prior_sig, product, declaration, completed, callees) {
+                    Some(entry_value) -> { entries = map.insert(entries, k, entry_value) }
+                    None -> ()
+                  }
                 }
-              }
             }
             None -> ()
           }
@@ -397,7 +415,7 @@ fn ready(scope: ModuleKey, old: ModuleHeaders, old_source: Snapshot, entries_sav
 ## half of admission: it runs once per recorded revision, not once per replay,
 ## and never per candidate body.
 pub fn admit(scope: ModuleKey, old: ModuleHeaders, old_source: Snapshot, saved: Recorded) -> Admitted =
-  AdmittedData { scope: scope, ready: ready(scope, old, old_source, saved.entries) }
+  AdmittedData { scope: scope, ready: ready(scope, old, old_source, saved.entries, saved.bodies.cx) }
 
 ## How many recorded bodies this admission settled. Observable so a caller
 ## can tell "nothing was admitted" from "nothing was offered"; it grants no
@@ -432,8 +450,8 @@ fn prepare(admitted: AdmittedData, next: ModuleHeaders, source: Snapshot) -> Opt
   # site names. It belongs here for the same reason the header relocation does:
   # `prepare` runs once per candidate revision, `relocation` runs once per
   # body, and a table built per body would cost a module-sized pass per body.
-  # It is built from the header revision's `cx`, which is the revision these
-  # products are relocated onto.
+  # It starts from the header revision and follows each actual inferred
+  # signature publication before downstream consumers are considered.
   Some(Prepared { scope: scope, ready: settled, candidates: candidates,
     callees: callee_index.of(next.cx),
     old_tokens: source_snapshot.tokens(settled.source), tokens: source_snapshot.tokens(source),
@@ -544,6 +562,7 @@ fn relocation(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> Option[(Prior,
 ## ask about, and an answer is no less true for having refused the body that
 ## paid for it.
 fn candidate(prepared: Prepared, cx: Cx, d: FnDecl, sig: Sig) -> (Prepared, Verdict) = {
+  if sig.inferring && map.get(cx.fns, d.name) != Some(sig) { return (prepared, Rejected) }
   let (saved, view) = match relocation(prepared, cx, d, sig) {
     Some(pair) -> pair
     None -> return (prepared, Unadmitted)
@@ -614,9 +633,39 @@ pub fn replay_and_record(admitted: Admitted, next: ModuleHeaders, source: Snapsh
   let (outcome, captured) = body_execution.record_using(data.scope, next,
     Pass { counts: zero_counts(), prepared: prepared }, pass_executor())
   let renewed = AdmittedData { scope: data.scope,
-    ready: ready(data.scope, next, source, captured.entries) }
+    ready: ready(data.scope, next, source, captured.entries, captured.bodies.cx) }
   Renewed { replayed: replay_result(outcome, captured.bodies), admitted: renewed,
     visited: captured.visited, capture_refused: captured.capture_refused }
+}
+
+fn inferred_pass(state: Pass, cx: Cx, d: FnDecl, sig: Sig) -> (Pass, Cx, TFun) !io = {
+  let cold: BodyExecutor[Pass] = checker.cold_body_executor()
+  let (stepped, verdict) = match state.prepared {
+    Some(p) -> {
+      let (after, hit) = candidate(p, cx, d, sig)
+      (Pass { ..state, prepared: Some(after) }, hit)
+    }
+    None -> (state, Unadmitted)
+  }
+  let (outcome, next, tree) = match verdict {
+    Reused(product) -> match body_product.assemble(cx, product) {
+      Some(after) -> (reused(stepped), after, product.tree)
+      None -> cold.inferred_body(rejected(stepped), cx, d, sig)
+    }
+    Rejected -> cold.inferred_body(rejected(stepped), cx, d, sig)
+    Unadmitted -> cold.inferred_body(unadmitted(stepped), cx, d, sig)
+  }
+  # Include cold publications as well as hits: downstream inferred and explicit
+  # consumers must see exactly the table the canonical callback produced.
+  let refreshed = match outcome.prepared {
+    None -> None
+    Some(p) -> match callee_index.replace_local(p.callees, d.name,
+      map.get(cx.fns, d.name), map.get(next.fns, d.name)) {
+      Some(ix) -> Some(Prepared { ..p, callees: ix })
+      None -> None
+    }
+  }
+  (Pass { ..outcome, prepared: refreshed }, next, tree)
 }
 
 ## The executor the pass runs. It is named rather than built inside `replay`
@@ -646,10 +695,10 @@ fn pass_executor() -> BodyExecutor[Pass] = {
         Unadmitted -> cold.function(unadmitted(stepped), cx, d, sig)
       }
     },
-    # The five categories this producer does not implement. Every one of them
+    inferred_body: (n, cx, d, sig) => inferred_pass(n, cx, d, sig),
+    # The four categories this producer does not implement. Every one of them
     # is unadmitted rather than rejected: nothing was claimed for them, so
     # there is nothing for the candidate revision to withdraw.
-    inferred_body: (n, cx, d, sig) => cold.inferred_body(unadmitted(n), cx, d, sig),
     constant: (n, cx, d, ty, visible) => cold.constant(unadmitted(n), cx, d, ty, visible),
     method: (n, cx, tr, subject, d, sig) => cold.method(unadmitted(n), cx, tr, subject, d, sig),
     default_body: (n, cx, tr, d, sig, body) => cold.default_body(unadmitted(n), cx, tr, d, sig, body),
@@ -672,6 +721,125 @@ fn call_result_equal(actual: Replayed, expected: ModuleBodies) -> Bool =
   actual.bodies.cx.owner_decl == expected.cx.owner_decl && actual.bodies.cx.in_test == expected.cx.in_test &&
   actual.bodies.cx.const_cutoff == expected.cx.const_cutoff && actual.bodies.cx.loop_jumps == expected.cx.loop_jumps &&
   actual.bodies.cx.take_cell == expected.cx.take_cell
+
+test "scalar replay inferred chains publish signatures in current dependency order" {
+  let scope = identity.module_key("inferred", "sample", "sample", "sample.dawn")
+  let callers = "fn top() -> Int = middle()\nfn middle() = leaf()\n"
+  let leaf = "fn leaf() = { let value = 1\n value }\n"
+  let before = source_snapshot.of(callers ++ leaf).expect("inferred chain")
+  for observing in [false, true] {
+    let base = Cx { ..cx_new(Some("sample"), Some("sample.dawn")),
+      function_reads: if observing { Some([]) } else { None },
+      body_writes: if observing { Some([]) } else { None } }
+    let old = checker.check_module_headers(base, source_snapshot.syntax(before), map.empty())
+    let saved = body_execution.record(scope, old)
+    assert saved.bodies.cx.diags == []
+    let admitted = admit(scope, old, before, saved)
+    assert admitted_count(admitted) == 3
+    for (text, hits) in [
+      (callers ++ leaf, 3),
+      (callers ++ "fn leaf() = { let value = 2\n value }\n", 2),
+      ("# moved\n" ++ leaf ++ callers, 3),
+      (callers ++ "fn leaf() = true\n", 0),
+      (callers ++ "fn leaf() = middle()\n", 0),
+      (callers ++ "fn leaf() -> Int = 1\n", 2)
+    ] {
+      let source = source_snapshot.of(text).expect("inferred edit")
+      let next = checker.check_module_headers(base, source_snapshot.syntax(source), map.empty())
+      let actual = replay_and_record(admitted, next, source)
+      assert actual.replayed.reused == hits
+      assert call_result_equal(actual.replayed, checker.check_module_body_products(next))
+      let again = replay_and_record(actual.admitted, next, source)
+      assert call_result_equal(again.replayed, checker.check_module_body_products(next))
+      if actual.replayed.bodies.cx.diags == [] {
+        assert again.replayed.reused == 3 && again.replayed.checked == 0
+        let third = replay(again.admitted, next, source)
+        assert third.reused == 3 && third.checked == 0
+        assert call_result_equal(third, checker.check_module_body_products(next))
+      }
+      let recovered = replay_and_record(actual.admitted, old, before)
+      assert call_result_equal(recovered.replayed, checker.check_module_body_products(old))
+      let recovered_hit = replay(recovered.admitted, old, before)
+      assert recovered_hit.reused == 3 && recovered_hit.checked == 0
+      assert call_result_equal(recovered_hit, checker.check_module_body_products(old))
+    }
+  }
+}
+
+test "scalar replay inferred consumers observe cold parameterized publications" {
+  let scope = identity.module_key("inferred", "sample", "sample", "sample.dawn")
+  let callers = "fn top() -> Int = middle()\nfn middle() = leaf(1)\n"
+  let cold_leaf = "fn leaf(x: Int) = { var value = x\n value }\n"
+  let before = source_snapshot.of(callers ++ cold_leaf).expect("cold parameterized callee")
+  let base = cx_new(Some("sample"), Some("sample.dawn"))
+  let old = checker.check_module_headers(base, source_snapshot.syntax(before), map.empty())
+  let saved = body_execution.record(scope, old)
+  assert saved.bodies.cx.diags == []
+  let admitted = admit(scope, old, before, saved)
+  assert admitted_count(admitted) == 2
+  for (leaf, hits, next_hits) in [
+    (cold_leaf, 2, 2),
+    ("fn leaf(x: Int) = { var value = x + 1\n value }\n", 2, 2),
+    ("fn leaf(x: Int) = x + 1\n", 2, 3),
+    ("fn leaf(y: Int) = y\n", 1, 3)
+  ] {
+    let source = source_snapshot.of(leaf ++ callers).expect("parameterized publication edit")
+    let headers = checker.check_module_headers(base, source_snapshot.syntax(source), map.empty())
+    let result = replay_and_record(admitted, headers, source)
+    assert result.replayed.reused == hits
+    assert call_result_equal(result.replayed, checker.check_module_body_products(headers))
+    let renewed = replay_and_record(result.admitted, headers, source)
+    assert renewed.replayed.reused == next_hits
+    assert call_result_equal(renewed.replayed, checker.check_module_body_products(headers))
+  }
+}
+
+test "scalar replay inferred products guard exact signature publication" {
+  let scope = identity.module_key("inferred", "sample", "sample", "sample.dawn")
+  let source = source_snapshot.of("fn leaf() = 1\n").expect("empty read producer")
+  let old = checker.check_module_headers(cx_new(Some("sample"), Some("sample.dawn")),
+    source_snapshot.syntax(source), map.empty())
+  let saved = body_execution.record(scope, old)
+  let admitted = admit(scope, old, source, saved)
+  assert admitted_count(admitted) == 1
+  let prepared = prepare(admitted, old, source).expect("prepared inferred body")
+  let d = match old.syntax.decls[0] { DFn(decl) -> decl, _ -> panic("leaf syntax") }
+  let sig = map.get(old.cx.fns, "leaf").expect("entry signature")
+  for functions in [map.remove(old.cx.fns, "leaf"),
+    map.insert(old.cx.fns, "leaf", Sig { ..sig, owner: Some("other") })] {
+    let changed = Cx { ..old.cx, fns: functions }
+    let (_, verdict) = candidate(prepared, changed, d, sig)
+    assert match verdict { Rejected -> true, _ -> false }
+    assert changed.fns == functions
+  }
+  let wrong = Cx { ..old.cx, fns: map.remove(old.cx.fns, "leaf") }
+  let stale = Prepared { ..prepared, callees: callee_index.of(wrong) }
+  let initial = Pass { counts: zero_counts(), prepared: Some(stale) }
+  let (outcome, after, tree) = inferred_pass(initial, old.cx, d, sig)
+  assert match outcome.prepared { None -> true, _ -> false }
+  let cold: BodyExecutor[Pass] = checker.cold_body_executor()
+  let (_, expected, expected_tree) = cold.inferred_body(initial, old.cx, d, sig)
+  assert tree == expected_tree && after.fns == expected.fns && after.diags == expected.diags
+  match saved.entries[0] {
+    SavedFunction(key, input, product) -> {
+      assert product.function_reads == Some([])
+      let changed_sig = Sig { ..product.tree.sig, param_names: ["unexpected"] }
+      let changed_tree = TFun { ..product.tree, sig: changed_sig }
+      let bad: List[Product] = [
+        BodyProduct { ..product, signatures: [] },
+        BodyProduct { ..product, signatures: product.signatures ++ product.signatures },
+        BodyProduct { ..product, body_writes: Some([]) },
+        BodyProduct { ..product, function_reads: None },
+        BodyProduct { ..product, tree: changed_tree }
+      ]
+      for p in bad {
+        let malformed = Recorded { ..saved, entries: [SavedFunction(key, input, p)] }
+        assert admitted_count(admit(scope, old, source, malformed)) == 0
+      }
+    }
+    _ -> panic("inferred function product")
+  }
+}
 
 test "scalar replay renews hits replacements and additions across three revisions" {
   let scope = identity.module_key("renewal", "sample", "sample", "sample.dawn")
@@ -787,7 +955,7 @@ test "scalar replay direct calls keep implementations separate from signatures" 
       ("fn leaf() -> Bool = true\n" ++ sum ++ caller, 1),
       ("fn leaf(x: Int) -> Int = x\n" ++ sum ++ caller, 1),
       ("fn leaf() -> Int !io = 1\n" ++ sum ++ caller, 1),
-      ("fn leaf() = 1\n" ++ sum ++ caller, 1),
+      ("fn leaf() = 1\n" ++ sum ++ caller, 2),
       (sum ++ caller, 1)] {
       let (source, hits) = pair
       let next_snapshot = source_snapshot.of(source).expect("call edit")
@@ -835,10 +1003,9 @@ test "scalar replay qualified calls retain canonical owners and reject provider 
   assert call_result_equal(actual, checker.check_module_body_products(redirected))
 }
 
-test "scalar replay call admission excludes inferred and unsupported callees" {
+test "scalar replay call admission excludes unsupported callees" {
   let scope = identity.module_key("calls", "sample", "sample", "sample.dawn")
   for source in [
-    "fn leaf() = 1\nfn caller() -> Int = leaf()\n",
     "fn leaf(x: Int = 1) -> Int = x\nfn caller() -> Int = leaf()\n",
     "fn leaf[T](x: T) -> T = x\nfn caller() -> Int = leaf(1)\n",
     "fn caller() -> Int = to_int(1.0)\n",
@@ -903,6 +1070,7 @@ test "scalar replay call namespaces and conflicting owners fail closed independe
   assert match verdict { Rejected -> true, _ -> false }
   let conflict = ModuleHeaders { ..old, cx: Cx { ..old.cx,
     module_fn_sigs: map.insert(old.cx.module_fn_sigs, ("conflict", "leaf"), Sig { ..leaf, ret: TyBool }) } }
+  assert not header_callee(callee_index.of(conflict.cx), conflict.cx, leaf)
   let refused = replay(admitted, conflict, snapshot)
   assert refused.reused == 1 && refused.cold_rejected == 1
   assert call_result_equal(refused, checker.check_module_body_products(conflict))
@@ -1333,12 +1501,11 @@ test "scalar replay raises the diagnostics of a mixed assembly in cold order" {
   assert actual.bodies.cx.decl_slots == expected.cx.decl_slots
 }
 
-test "scalar replay leaves every category but an admitted function to the cold path" {
+test "scalar replay counts unsupported bodies across every cold executor role" {
   # The cold remainder, counted by declaration category rather than in total.
-  # `replay` routes five of the executor's six roles straight to the cold
-  # executor and the sixth only when admission refuses, so the remainder is
-  # every declaration of the other five categories plus the functions that
-  # were not admitted. A census of what the scheduler dispatches on this very
+  # Four executor roles are always cold; explicit and inferred functions are
+  # also cold when their products are outside the admitted class. This fixture
+  # keeps its inferred list body unsupported. A census of this very
   # revision says how many of each there are, and the count `replay` reports
   # has to be exactly that sum. A category that stopped being counted, or one
   # that started being reused without a product, breaks the identity.
@@ -1346,7 +1513,7 @@ test "scalar replay leaves every category but an admitted function to the cold p
   let before = "const K: Int = 7\n" ++
     "fn reused() -> Int = 1\n" ++
     "fn cold_one(s: String) -> String = s\n" ++
-    "fn inferred() = 2\n" ++
+    "fn inferred() = [2]\n" ++
     "trait Greet[T] {\n fn greet(x: T) -> Int = 5\n}\n" ++
     "trait Named[T] { fn describe(x: T) -> Int }\n" ++
     "type Box[T] = { item: T }\n" ++

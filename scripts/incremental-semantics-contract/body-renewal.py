@@ -21,8 +21,8 @@ def main():
     original = (ROOT / SUBJECT).read_text()
     controls = [
         ('stale-generation', 'admitted: renewed,', 'admitted: admitted,'),
-        ('discard-products', 'ready(data.scope, next, source, captured.entries)',
-         'ready(data.scope, next, source, [])'),
+        ('discard-products', 'ready(data.scope, next, source, captured.entries, captured.bodies.cx)',
+         'ready(data.scope, next, source, [], captured.bodies.cx)'),
         ('drop-reused-reads', 'Some(_) -> moved.function_reads', 'Some(_) -> Some([])'),
         ('drop-reused-writes', 'Some(_) -> moved.body_writes', 'Some(_) -> Some([])'),
         ('visits-as-cold-checks', 'visited: captured.visited, capture_refused: captured.capture_refused',
