@@ -1768,6 +1768,29 @@ test "prepared project loading binds final imports overlays and recovered source
         assert cold.modules[0].mod_path == "library/leaf"
         assert cold.modules[1].mod_path == "library/bridge"
         assert cold.modules[2].mod_path == "main"
+        let std = std_or_die()
+        let baseline = initial_carry_with_provenance(std, "prepared-package-test")
+        var caches: Map[String, ModuleBodyCache] = map.empty()
+        for revision in [0, 1] {
+          var carry = baseline
+          var cold_carry = baseline
+          for module in prepared_modules(prepared) {
+            let raw = prepared_loaded(module)
+            let current = analyze_module_step_prepared(module, carry, std, ct_default(), jsig_refused(), None,
+              map.get(caches, raw.mod_path))
+            let expected = analyze_module_step(raw, cold_carry, std, ct_default(), jsig_refused(), None)
+            assert current.step.diags == [] && current.step.diags == expected.diags
+            assert current.step.after == expected.after
+            assert current.step.checked.tm == expected.checked.tm
+            assert current.step.checked.ct == expected.checked.ct
+            let counts = current.counts.expect("prepared resolved source")
+            assert counts.visited == 1
+            assert counts.reused == revision && counts.checked == 1 - revision
+            caches = map.insert(caches, raw.mod_path, current.cache.expect("prepared admission"))
+            carry = current.step.after
+            cold_carry = expected.after
+          }
+        }
       }
     }
   })
