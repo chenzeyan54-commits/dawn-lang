@@ -1804,6 +1804,49 @@ test "prepared project loading binds final imports overlays and recovered source
   })
 }
 
+test "prepared loader collisions never certify a replacement file's text" {
+  in_mem(() => {
+    let base = "/tmp/dawn-selfhost-analyze/prepared-collision"
+    mkdirs("${base}/app/src/library")
+    mkdirs("${base}/pkg/library/src")
+    put("${base}/app/dawn.toml", "schema = 1\nname = \"app\"\n[deps]\nalias_dep = \"../pkg/library\"\n")
+    put("${base}/pkg/library/dawn.toml", "schema = 1\nname = \"library\"\n")
+    let entry = "${base}/app/src/library/bridge.dawn"
+    let dependency = "${base}/pkg/library/src/bridge.dawn"
+    # Both sources deliberately have the same AST and all the same spans.
+    # Their equal-width comments distinguish the actual indexed source.
+    let original = "use alias_dep/bridge\n# seed\npub fn value() -> Int = 1\n"
+    let replacement = "use alias_dep/bridge\n# deps\npub fn value() -> Int = 1\n"
+    let original_snapshot = source_snapshot.of(original).expect("seed source")
+    let replacement_snapshot = source_snapshot.of(replacement).expect("dependency source")
+    assert source_snapshot.syntax(original_snapshot) == source_snapshot.syntax(replacement_snapshot)
+    assert source_snapshot.indexed(original_snapshot) != source_snapshot.indexed(replacement_snapshot)
+    put(entry, original)
+    put(dependency, replacement)
+    let plan = project_plan(source.SourceFile(entry))
+    let over: Map[String, String] = map.empty()
+    let prepared = load_entries_over_prepared(plan, [entry], over)
+    let cold = load_entries_over(plan, [entry], over)
+    assert prepared_result(prepared) == cold
+    # The aliased dependency replaces the current module's canonical name.
+    # Final import rewriting restores the seed, so its proof must either be
+    # refused or still describe that seed, even when loading reports a cycle.
+    assert len(cold.modules) == 1 && cold.diags != []
+    assert cold.modules[0].path == entry && cold.modules[0].text == original
+    let module: PreparedModuleData = prepared_modules(prepared)[0]
+    assert module.loaded == cold.modules[0]
+    match module.snapshot {
+      Some(snapshot) -> {
+        let expected = source_snapshot.resolved(original_snapshot, module.loaded.m).expect("seed rewrite")
+        assert source_snapshot.syntax(snapshot) == module.loaded.m
+        assert source_snapshot.indexed(snapshot) == source_snapshot.indexed(expected)
+        assert source_snapshot.tokens(snapshot) == source_snapshot.tokens(expected)
+      }
+      None -> ()
+    }
+  })
+}
+
 test "a two-module project analyzes end to end" {
   in_mem(() => {
     let root = "/tmp/dawn-selfhost-analyze/proj1"
