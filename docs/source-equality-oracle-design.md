@@ -1,6 +1,6 @@
 # Source equality oracle coverage
 
-> Status: correctness verification in progress. The source-bound declaration range cache is implemented; isolated value acceptance remains pending.
+> Status: current. The source-bound declaration range cache is implemented and focused correctness checks pass. Full integrated acceptance remains pending.
 
 Repeated declaration equality currently seeks through raw source strings.
 Before changing that implementation, preserve its observable contract with
@@ -79,3 +79,10 @@ ranges, cached equal-width trivia, and unreachable raw boundaries). Its strict
 classifier rejects compile/link errors, panics, timeout, wrong status, missing
 summary and unrelated assertion owners. These are correctness results, not a
 claim that replay or snapshot construction is faster.
+
+Matched Core lowering on 2026-09-23 produced 109 modules on both sides of the
+range-cache change, with zero failures. Only `check/source_projection` changed:
+the range map adds tuple Eq/Hash dictionaries and monotone cursor traversal;
+unrelated modules remain byte-identical. Integrated golden recording retains
+all 17 existing example/standard-library dumps and adds two bounded-admission
+module hashes, with five existing compiler module hashes intentionally updated.

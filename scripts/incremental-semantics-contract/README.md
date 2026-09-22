@@ -11,6 +11,22 @@ and native inline range oracles and the existing parse/index invocation counts.
 See [the source equality design](../../docs/source-equality-oracle-design.md)
 for the exact raw-range cache contract and pending performance acceptance.
 
+## Bounded generic admission and assembly-owned renewal
+
+`function-entry.py` compares canonical entry allocation with its frozen old
+loop. `bounded-entry-proof.py` requires ten compiling controls to reach exact
+forged-input failures. `generic-trace.py` retains the original bounded `Scale`
+workload, and `bounded-replay.py` verifies actual body execution counts, full
+cold products, dependency invalidation and recovery through eleven compiling
+controls. These run in the bounded-generic CI job alongside `source-equality.py`.
+
+`body-renewal.py` retains six generation/log/count controls and adds five
+assembly-boundary controls. Ordinary callback environments remain strict;
+successful installation with refused capture must retain its output without
+checking the body again. Strict and certified saved products are compared
+through three actual renewed generations and both observer modes. These are
+correctness contracts, not a production-default or complete G3 performance gate.
+
 ## Prepared source proof boundaries
 
 `prepared-proofs.py` compiles one positive subject and two isolated controls.
