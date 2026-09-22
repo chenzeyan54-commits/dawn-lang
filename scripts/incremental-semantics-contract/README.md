@@ -829,8 +829,15 @@ revisions cover provider body/signature edits, consumer and provider error
 recovery, moved source, and closing/reopening the provider. It records complete
 diagnostic publications with consumer versions and hover/definition/completion
 replies; `--compare <prior-output>` checks exact cross-policy equivalence using
-the same fixture paths and hashes. `--expect-reuse` requires exactly one body
-checked and three reused after the provider implementation edit. This is a
+the same fixture paths, hashes, and generated operation/version/overlay history.
+`--expect-reuse` requires the exact body/prefix/refusal/retention census on all
+eight revisions, including unobserved downstream work after provider errors.
+Both open document versions are checked; closing the provider must send an
+unversioned diagnostic clear. `--self-test` exercises these publication and
+count oracles. `--expect-parse-counts prepared` requires aggregate `(2,2,2)`
+project parse/index/projection entries per revision; `cold` requires `(2,0,0)`.
+These are project totals, not source-attributed proof that each module is
+processed once. This is a
 small synthetic cross-module correctness/count fixture, not latency or
 real-application hit-rate evidence.
 
