@@ -19,7 +19,7 @@ public final class BoundedReplayTrace {
         Object suite = method(reference, "bounded_cases").invoke(null);
         long bodies = (Long) method(reference, "bounded_body_count").invoke(null, suite);
         long programs = (Long) method(reference, "bounded_program_count").invoke(null, suite);
-        if (bodies != 15 || programs != 4) throw new AssertionError("bounded replay full-product denominator");
+        if (bodies != 15 || programs != 12) throw new AssertionError("bounded replay full-product denominator");
         for (long i = 0; i < bodies; i++) {
             Object pair = method(reference, "bounded_body_at").invoke(null, suite, i);
             GenericTrace.equalBodies(field(pair, "cold"), field(pair, "actual"), "bounded replay " + i);
@@ -48,6 +48,6 @@ public final class BoundedReplayTrace {
                 }
             }
         }
-        System.out.println("PASS: bounded replay 15 full-body histories and 4 complete prepared Programs");
+        System.out.println("PASS: bounded replay 15 full-body histories and 12 complete prepared Programs");
     }
 }

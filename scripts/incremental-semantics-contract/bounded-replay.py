@@ -29,6 +29,9 @@ def main():
         ("argument-role", "bounded", "symbol.ty != ty || ", "", "bounded replay rejected argument role"),
         ("callee-owner", "bounded", "found.owner != owner || ", "", "bounded replay rejected callee owner"),
         ("unification-fact", "replay", "checker.revalidate_read(scoped, read) != Some(true)", "false", "bounded replay rejected unification fact"),
+        ("trait-signature", "replay", "checker.revalidate_read(scoped, read) != Some(true)",
+         "(match read { semantic_reads.FunctionAnswer(_) -> Some(true), _ -> checker.revalidate_read(scoped, read) }) != Some(true)",
+         "bounded replay real dependency transition"),
         ("entry-frame", "replay", """match function_entry_proof.prove(cx, d, sig, p) {
       Some(proof) -> function_entry_proof.context(proof)
       None -> return (prepared, Rejected)
@@ -85,7 +88,7 @@ def main():
             result = subprocess.run(["java", "-Xss64m", "-Xmx2g", "-cp", str(oracle) + os.pathsep + str(root / "subject.jar"),
                 "contract.BoundedReplayTrace"], cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
             if owner is None:
-                if result.returncode or "PASS: bounded replay 15 full-body histories and 4 complete prepared Programs" not in result.stdout:
+                if result.returncode or "PASS: bounded replay 15 full-body histories and 12 complete prepared Programs" not in result.stdout:
                     raise RuntimeError("Bounded replay positive failed\n" + result.stdout)
             elif not classifier["owning_failure"](result.returncode, result.stdout, owner):
                 raise RuntimeError(f"Bounded replay {name} missed sole owner {owner}\n{result.stdout}")
