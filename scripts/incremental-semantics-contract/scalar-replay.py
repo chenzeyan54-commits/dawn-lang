@@ -167,8 +167,10 @@ def main():
          'Rejected -> cold.function(rejected(stepped), cx, d, sig)',
          'Rejected -> cold.function(unadmitted(stepped), cx, d, sig)'),
         ('count-reused-column',
-         'Some(after) -> (reused(stepped), after, product.tree)',
-         'Some(after) -> (stepped, after, product.tree)'),
+         'Some(after) -> (reused(stepped), after, product.tree)\n'
+         '          None -> cold.function(rejected(stepped), cx, d, sig)',
+         'Some(after) -> (stepped, after, product.tree)\n'
+         '          None -> cold.function(rejected(stepped), cx, d, sig)'),
         ('count-checked-sum',
          'checked: outcome.counts.cold_unadmitted + outcome.counts.cold_rejected,',
          'checked: outcome.counts.cold_unadmitted,'),
