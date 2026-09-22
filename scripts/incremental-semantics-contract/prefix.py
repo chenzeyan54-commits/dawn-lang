@@ -91,9 +91,14 @@ def main():
         ("cache-java", " || probe.queries() != queries_before", ""),
         ("ignore-loader", "len(loaded.diags) == 0 && ", ""),
         ("ignore-ffi", "not session.opts.ffi", "true"),
-        ("ignore-eviction", "  State { ..session, prefix: [] }", "  session"),
-        ("ignore-module-budget", "len(prefix) < session.max_modules", "true"),
-        ("ignore-text-budget", "units <= session.max_text_units - text_units", "true"),
+        # Weaken only prefix retention; the new body-map safeguards remain
+        # intact. These fixtures deliberately use the prefix-only owner.
+        ("ignore-eviction", "  State { ..session, prefix: [], bodies: map.empty() }",
+         "  State { ..session, bodies: map.empty() }"),
+        ("ignore-module-budget", "    if retaining && len(prefix) + map.len(bodies) < session.max_modules &&",
+         "    if retaining && true &&"),
+        ("ignore-text-budget", "      units <= session.max_text_units - text_units - body_text_units {\n"
+         "        prefix = prefix ++", "      true {\n        prefix = prefix ++"),
         ("ignore-std-identity", "identity == session.prefix[index].std_identity", "true"),
         ("allow-negative-budget",
          '  if max_modules < 0 || max_text_units < 0 { panic("negative analysis cache limit") }',
