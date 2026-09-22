@@ -1203,6 +1203,8 @@ jobs:
 
       # was the incremental-context job until 2026-09-11.
       # Two positive closures and 27 controls took 97.56s on 2026-09-09.
+      # 2026-09-22: two positive closures and 33 controls took 137.15s locally;
+      # keep the existing 161s context allocation above, not a lower estimate.
       - name: Candidate context query revalidation contracts
         run: python3 scripts/incremental-semantics-contract/context-revalidation.py
 
