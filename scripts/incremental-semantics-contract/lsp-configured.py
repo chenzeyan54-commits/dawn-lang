@@ -17,9 +17,17 @@ from cold import DAWN, ROOT, edit
 from lsp_stats import FIELDS
 
 
-def configure(text, mode, modules, text_units, products, observe):
+def configure(text, mode, modules, text_units, products, observe, reparse=None):
     if mode not in {"Legacy", "PreparedBodies", "Cold"} or min(modules, text_units, products) < 0:
         raise ValueError("invalid analysis policy or cache limit")
+    if reparse is not None:
+        if mode != "PreparedBodies" or reparse not in {"project", "standalone"}:
+            raise ValueError("reparse control requires prepared project or standalone policy")
+        text = edit(text, "load_entries_over_prepared, prepare_standalone, canon",
+                    "load_entries_over_prepared, prepare_standalone, prepared_result, canon")
+        owner = "ws0.cache" if reparse == "project" else "owner"
+        text = edit(text, f"incremental.analyze_prepared({owner}, prepared)",
+                    f"incremental.analyze({owner}, prepared_result(prepared))")
     text = edit(text, "run_lsp_configured(std_flag, host, legacy_analysis_config())",
                 "run_lsp_configured(std_flag, host, LspAnalysisConfig { "
                 f"mode: {mode}, max_modules: {modules}, max_text_units: {text_units}, "
@@ -52,6 +60,9 @@ fn benchmark_analysis_stats(scope: String, value: Option[incremental.Stats]) -> 
 
 def selftest():
     fixture = "\n".join((
+        "load_entries_over_prepared, prepare_standalone, canon",
+        "incremental.analyze_prepared(ws0.cache, prepared)",
+        "incremental.analyze_prepared(owner, prepared)",
         "run_lsp_configured(std_flag, host, legacy_analysis_config())",
         "      let prog = update.program\n      Workspace {",
         "  let (prog, owner, stats) = standalone_analysis(st, source_path, text, None)",
@@ -65,6 +76,10 @@ def selftest():
         assert observed.count("benchmark_analysis_stats(") == 4
         for field in FIELDS:
             assert observed.count(f"to_string(stats.{field})") == 1
+    for scope, owner in (("project", "ws0.cache"), ("standalone", "owner")):
+        mutated = configure(fixture, "PreparedBodies", 1, 2, 3, False, scope)
+        assert f"incremental.analyze({owner}, prepared_result(prepared))" in mutated
+        assert mutated.count("incremental.analyze_prepared(") == 1
     for source, mode, modules in (("", "Cold", 1), (fixture + fixture, "Cold", 1),
                                   (fixture, "Invalid", 1), (fixture, "Cold", -1)):
         try:
@@ -84,12 +99,14 @@ def main():
     parser.add_argument("--max-text-units", type=int, default=1048576)
     parser.add_argument("--max-products", type=int, default=10000)
     parser.add_argument("--uninstrumented", action="store_true")
+    parser.add_argument("--reparse-control", choices=("project", "standalone"),
+                        help="private compiling negative control: use the safe legacy consumer")
     args = parser.parse_args()
     source = args.source.resolve()
     original = (source / "selfhost/src/lsp/server.dawn").read_text()
     # Validate configuration and exact anchors before creating any output.
     text = configure(original, args.mode, args.max_modules, args.max_text_units,
-                     args.max_products, not args.uninstrumented)
+                     args.max_products, not args.uninstrumented, args.reparse_control)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     fingerprints = {}
@@ -109,6 +126,7 @@ def main():
         "source": str(source), "sources": fingerprints, "mode": args.mode,
         "max_modules": args.max_modules, "max_text_units": args.max_text_units,
         "max_products": args.max_products, "instrumented": not args.uninstrumented,
+        "reparse_control": args.reparse_control,
         "stats_fields": FIELDS,
         "note": "cold standalone work is unobserved, not zero; timing includes optional stderr observation",
         "configured_server_sha256": hashlib.sha256(text.encode()).hexdigest(),
