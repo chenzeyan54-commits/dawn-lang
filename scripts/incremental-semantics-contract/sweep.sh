@@ -11,9 +11,9 @@
 # gates.yml and running them one after another costs about 62 minutes.
 #
 # The invocation list is derived from .github/workflows/gates.yml at run time by
-# sweep-plan.py, so a harness added to an existing incremental job is swept
-# without editing anything here. --self-test cross-checks that parse against a
-# plain grep of the same file, so the sweep cannot quietly run a subset.
+# sweep-plan.py, including contract commands moved into ordinary jobs for CI
+# budget headroom. --self-test cross-checks that parse against an independent
+# line scan of the same file, so the sweep cannot quietly run a subset.
 #
 # Harnesses start longest first, because the sweep is tail-bound rather than
 # throughput-bound: the longest harness, if it starts in the last wave, is the
@@ -136,9 +136,19 @@ self_test() {
   local failures=0 parsed_jobs grep_jobs parsed_count grep_count plan_count
 
   # The Python side checks itself against its own regexes. This half is the
-  # independent one: plain grep over the same file, no YAML parser involved.
+  # independent one: a line scan over the same file, no YAML parser involved.
   parsed_jobs=$(python3 "$PLAN_TOOL" --jobs | sort)
-  grep_jobs=$(grep -oE '^  incremental[-a-z0-9]*:$' "$GATES" | tr -d ' :' | sort)
+  grep_jobs=$(awk '
+    /^  [-a-zA-Z0-9_]+:$/ {
+      if (selected) print job
+      job=$1
+      sub(/:$/, "", job)
+      selected=(job ~ /^incremental/)
+    }
+    /^[[:space:]]*#/ { next }
+    /scripts\/incremental-semantics-contract/ { selected=1 }
+    END { if (selected) print job }
+  ' "$GATES" | sort)
   if [ "$parsed_jobs" != "$grep_jobs" ]; then
     printf 'FAIL sweep self-test: jobs differ\n  parser: %s\n  grep:   %s\n' \
       "$(echo "$parsed_jobs" | tr '\n' ' ')" "$(echo "$grep_jobs" | tr '\n' ' ')" >&2
