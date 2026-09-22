@@ -31,6 +31,12 @@ def main():
         ('leak-private-writes', 'let writes = match before.body_writes {\n    None -> None',
          'let writes = match before.body_writes {\n    None -> after.body_writes'),
         ('drop-trace', 'let start = observed(cx)', 'let start = cx'),
+        ('reset-executor-state', 'supplied.function(inner, start, d, sig)',
+         'supplied.function(initial, start, d, sig)'),
+        ('discard-final-executor-state', '(after, Captured { bodies: bodies, entries: state.entries,',
+         '(initial, Captured { bodies: bodies, entries: state.entries,'),
+        ('lose-inferred-executor-state', 'supplied.inferred_body(inner, start, d, sig)',
+         'supplied.inferred_body(initial, start, d, sig)'),
     ]
     subjects = [('positive', original)]
     for name, old, new in variants:
@@ -55,7 +61,10 @@ def main():
                 if status or 'test(s) passed' not in output:
                     raise RuntimeError('Positive failed\n' + output)
             else:
-                failure = re.compile(r'^FAIL\s+check/body_execution :: body recording [^\n]+\n\s+assertion failed:', re.M)
+                owner = ('record using preserves six role order state and cold products'
+                         if name in ('reset-executor-state', 'discard-final-executor-state',
+                                     'lose-inferred-executor-state') else r'body recording [^\n]+')
+                failure = re.compile(r'^FAIL\s+check/body_execution :: ' + owner + r'\n\s+assertion failed:', re.M)
                 if not status or not failure.search(output) or re.search(r'^error:', output, re.M):
                     raise RuntimeError(name + ' missed its assertion owner\n' + output)
             print('OK: body recording ' + name, flush=True)

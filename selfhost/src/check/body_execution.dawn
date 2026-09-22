@@ -30,6 +30,10 @@ pub type Saved =
 type State = { entries: List[Saved], checked: Int, refused: Int }
 pub type Recorded = { bodies: ModuleBodies, entries: List[Saved], checked: Int, refused: Int }
 
+## Visits include replayed bodies; they are not a count of cold checks.
+## Refusals describe capture, independently of the executor's reuse verdicts.
+pub type Captured = { bodies: ModuleBodies, entries: List[Saved], visited: Int, capture_refused: Int }
+
 fn named(scope: ModuleKey, name: String, kind: identity.Kind) -> DeclKey =
   DeclKey { scope: scope, path: [Named(kind, name)] }
 
@@ -75,30 +79,46 @@ fn method_key(scope: ModuleKey, trait_name: String, subject: TypeRef, d: FnDecl,
 }
 
 pub fn record(scope: ModuleKey, headers: ModuleHeaders) -> Recorded !io = {
+  let cold: BodyExecutor[Unit] = checker.cold_body_executor()
+  let (_, captured) = record_using(scope, headers, (), cold)
+  Recorded { bodies: captured.bodies, entries: captured.entries,
+    checked: captured.visited, refused: captured.capture_refused }
+}
+
+## Wrap a trusted canonical or dependency-validated executor in one recording
+## pass. Touched-key capture assumes complete instrumentation; this is not a
+## validator for arbitrary callbacks. Capture happens before the scheduler
+## resolves declaration-relative positions. Failed capture never executes a
+## callback again or discards its current result.
+pub fn record_using[S](scope: ModuleKey, headers: ModuleHeaders, initial: S,
+  supplied: BodyExecutor[S]) -> (S, Captured) !io = {
   var allowed: Set[DeclKey] = set.empty()
   let path_matches = match headers.cx.src_path { Some(path) -> scope.source == path && path != "", None -> scope.source == "" }
   if headers.cx.diags == [] && headers.cx.owner_class == Some(scope.emission_owner) && path_matches {
     allowed = set.from(map(identity.declarations(scope, headers.syntax), e => e.key))
   }
   let admitted = allowed
-  let executor: BodyExecutor[State] = BodyExecutor {
-    function: (state, cx, d, sig) => {
+  let executor: BodyExecutor[(S, State)] = BodyExecutor {
+    function: (pair, cx, d, sig) => {
+      let (inner, state) = pair
       let start = observed(cx)
-      let (next, tree) = checker.check_fn(start, d, sig)
+      let (after, next, tree) = supplied.function(inner, start, d, sig)
       let saved = save_function(state, admitted, Some(named(scope, d.name, FunctionDecl)),
         FunctionInput(d, sig, false), body_product.capture_journaled(start, next, tree))
-      (saved, restore_log(cx, next), tree)
+      ((after, saved), restore_log(cx, next), tree)
     },
-    inferred_body: (state, cx, d, sig) => {
+    inferred_body: (pair, cx, d, sig) => {
+      let (inner, state) = pair
       let start = observed(cx)
-      let (next, _, tree) = checker.check_fn_inferred(start, d, sig)
+      let (after, next, tree) = supplied.inferred_body(inner, start, d, sig)
       let saved = save_function(state, admitted, Some(named(scope, d.name, FunctionDecl)),
         FunctionInput(d, sig, true), body_product.capture_journaled(start, next, tree))
-      (saved, restore_log(cx, next), tree)
+      ((after, saved), restore_log(cx, next), tree)
     },
-    constant: (state, cx, d, ty, visible) => {
+    constant: (pair, cx, d, ty, visible) => {
+      let (inner, state) = pair
       let start = observed(cx)
-      let (next, tree) = checker.check_const_init(start, d, ty, visible)
+      let (after, next, tree) = supplied.constant(inner, start, d, ty, visible)
       let key = named(scope, d.name, ConstDecl)
       var saved = State { ..state, checked: state.checked + 1 }
       let product = body_product.capture_constant_journaled(start, next, tree)
@@ -110,41 +130,112 @@ pub fn record(scope: ModuleKey, headers: ModuleHeaders) -> Recorded !io = {
         }
         None -> { saved = State { ..saved, refused: saved.refused + 1 } }
       }
-      (saved, restore_log(cx, next), tree)
+      ((after, saved), restore_log(cx, next), tree)
     },
-    method: (state, cx, trait_name, subject, d, sig) => {
+    method: (pair, cx, trait_name, subject, d, sig) => {
+      let (inner, state) = pair
       let start = observed(cx)
-      let (next, tree) = checker.check_fn(start, d, sig)
+      let (after, next, tree) = supplied.method(inner, start, trait_name, subject, d, sig)
       let saved = save_function(state, admitted, method_key(scope, trait_name, subject, d, sig),
         MethodInput(trait_name, subject, d, sig), body_product.capture_journaled(start, next, tree))
-      (saved, restore_log(cx, next), tree)
+      ((after, saved), restore_log(cx, next), tree)
     },
-    default_body: (state, cx, tid, d, sig, body) => {
+    default_body: (pair, cx, tid, d, sig, body) => {
+      let (inner, state) = pair
       let start = observed(cx)
-      let (next, tree) = checker.check_trait_default(start, d, sig, body)
+      let (after, next, tree) = supplied.default_body(inner, start, tid, d, sig, body)
       let trait_name = match map.get(cx.traits, tid) { Some(info) -> info.name, None -> "" }
       let key = DeclKey { scope: scope, path: [Named(TraitDecl, trait_name), Named(MethodDecl, d.name)] }
       let saved = save_function(state, admitted, Some(key), DefaultInput(trait_name, d, sig),
         body_product.capture_journaled(start, next, tree))
-      (saved, restore_log(cx, next), tree)
+      ((after, saved), restore_log(cx, next), tree)
     },
-    test_body: (state, cx, name, body) => {
+    test_body: (pair, cx, name, body) => {
+      let (inner, state) = pair
       let start = observed(cx)
-      let (next, tree) = checker.check_test(start, name, body)
+      let (after, next, tree) = supplied.test_body(inner, start, name, body)
       let saved = save_function(state, admitted, Some(named(scope, name, TestDecl)), TestInput(name, body),
         body_product.capture_journaled(start, next, tree))
-      (saved, restore_log(cx, next), tree)
+      ((after, saved), restore_log(cx, next), tree)
     }
   }
-  let initial = State { entries: [], checked: 0, refused: 0 }
-  let (state, bodies) = checker.execute_module_bodies(headers, initial, executor)
-  Recorded { bodies: bodies, entries: state.entries, checked: state.checked, refused: state.refused }
+  let empty = State { entries: [], checked: 0, refused: 0 }
+  let ((after, state), bodies) = checker.execute_module_bodies(headers, (initial, empty), executor)
+  (after, Captured { bodies: bodies, entries: state.entries,
+    visited: state.checked, capture_refused: state.refused })
 }
 
 fn spanless(syms: Map[Int, Sym]) -> Map[Int, Sym] = {
   var out: Map[Int, Sym] = map.empty()
   for (id, s) in map.entries(syms) { out = map.insert(out, id, Sym { ..s, dlo: 0, dhi: 0 }) }
   out
+}
+
+fn traced_executor() -> BodyExecutor[List[String]] = {
+  let cold: BodyExecutor[List[String]] = checker.cold_body_executor()
+  BodyExecutor {
+    function: (state, cx, d, sig) => cold.function(state ++ ["function:" ++ d.name], cx, d, sig),
+    inferred_body: (state, cx, d, sig) => cold.inferred_body(state ++ ["inferred:" ++ d.name], cx, d, sig),
+    constant: (state, cx, d, ty, visible) => cold.constant(state ++ ["constant:" ++ d.name], cx, d, ty, visible),
+    method: (state, cx, tr, subject, d, sig) => cold.method(state ++ ["method:" ++ d.name], cx, tr, subject, d, sig),
+    default_body: (state, cx, tr, d, sig, body) => cold.default_body(state ++ ["default:" ++ d.name], cx, tr, d, sig, body),
+    test_body: (state, cx, name, body) => cold.test_body(state ++ ["test:" ++ name], cx, name, body)
+  }
+}
+
+test "record using preserves six role order state and cold products" {
+  let src = "type Coin = { v: Int }\n" ++
+    "trait Waxy[T] { fn wax(x: T) -> Int\n fn buff(x: T) -> Int = wax(x) + 1 }\n" ++
+    "impl Waxy[Coin] { fn wax(x: Coin) -> Int = x.v }\n" ++
+    "fn caller() = leaf()\nfn leaf() = 2\nconst A: Int = 1\nconst B: Int = A\n" ++
+    "fn add(x: Int = 7) -> Int = x + B\ntest \"result\" { assert add() == 8 }\n"
+  let (syntax, ds) = parser.parse_module(src)
+  assert ds == []
+  let scope = identity.module_key("recording", "sample", "sample", "sample.dawn")
+  let headers = checker.check_module_headers(cx_new(Some("sample"), Some("sample.dawn")), syntax, map.empty())
+  let initial = ["initial"]
+  let (trace, actual) = record_using(scope, headers, initial, traced_executor())
+  assert trace == ["initial", "inferred:leaf", "inferred:caller", "constant:A", "constant:B",
+    "function:add", "method:wax", "default:buff", "test:result"]
+  assert actual.visited == 8 && actual.capture_refused == 0
+  let cold: BodyExecutor[Unit] = checker.cold_body_executor()
+  let (_, canonical) = record_using(scope, headers, (), cold)
+  assert actual.entries == canonical.entries
+  let (_, plain) = checker.execute_module_bodies(headers, initial, traced_executor())
+  let (actual_cx, actual_tm) = checker.assemble_module_bodies(actual.bodies)
+  let (plain_cx, plain_tm) = checker.assemble_module_bodies(plain)
+  assert actual_tm == plain_tm && actual_cx.diags == plain_cx.diags
+  assert actual_cx.function_reads == None && actual_cx.body_writes == None
+  let observed_headers = ModuleHeaders { ..headers, cx: Cx { ..headers.cx,
+    function_reads: Some([semantic_reads.ScopedEffectVariable("outer", None)]),
+    body_writes: Some([write_journal.SignatureKey("outer")]) } }
+  let (_, observed_result) = record_using(scope, observed_headers, initial, traced_executor())
+  assert observed_result.entries == actual.entries
+  let reads = observed_result.bodies.cx.function_reads.expect("outer reads")
+  let writes = observed_result.bodies.cx.body_writes.expect("outer writes")
+  assert reads[0] == semantic_reads.ScopedEffectVariable("outer", None)
+  assert writes[0] == write_journal.SignatureKey("outer")
+  assert len(reads) > 1 && len(writes) > 1
+}
+
+test "record using refuses capture without retrying or losing callback output" {
+  let (syntax, ds) = parser.parse_module("fn answer() -> Int = 42\n")
+  assert ds == []
+  let scope = identity.module_key("recording", "sample", "sample", "sample.dawn")
+  let headers = checker.check_module_headers(cx_new(Some("sample"), Some("sample.dawn")), syntax, map.empty())
+  let cold: BodyExecutor[List[String]] = checker.cold_body_executor()
+  # Fault injection: this output deliberately loses its journal. It remains
+  # the current result, but cannot establish a reusable saved transition.
+  let broken = BodyExecutor { ..cold, function: (count, cx, d, sig) => {
+    let (_, next, tree) = cold.function(count, cx, d, sig)
+    (count ++ ["visited"], Cx { ..next, body_writes: None }, tree)
+  } }
+  let (count, actual) = record_using(scope, headers, ["initial"], broken)
+  assert count == ["initial", "visited"] && actual.visited == 1 && actual.capture_refused == 1
+  assert actual.entries == []
+  let (_, expected) = checker.check_module_bodies(headers)
+  let (cx, tree) = checker.assemble_module_bodies(actual.bodies)
+  assert tree == expected && cx.diags == []
 }
 
 test "body recording captures all roles at actual scheduler entries" {
