@@ -22,9 +22,10 @@ from lsp_stats import FIELDS
 NATIVE_FLAGS = ("-std=c11", "-O2", "-fwrapv", "-fexceptions", "-fno-strict-aliasing", "-pthread")
 
 
-def hashes(root):
-    return {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in sorted(root.rglob("*")) if path.is_file()}
+def hashes(directory):
+    # This is a staged artifact directory, not a repository-wide input root.
+    return {str(path.relative_to(directory)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(directory.rglob("*")) if path.is_file()}
 
 
 def stage_source(source, output, text, backend="jvm"):
@@ -63,8 +64,9 @@ def build_native(output, cc_name):
         raise RuntimeError("native C compiler executable was not found")
     cc = Path(cc_path).resolve(strict=True)
     launcher = Path(shutil.which(DAWN) or DAWN).resolve(strict=True)
-    bootstrap_root = launcher.parent.parent
-    bootstrap_jar = bootstrap_root / "build/dawn-selfhost.jar"
+    # The selected bootstrap may live outside the source checkout under test.
+    bootstrap_directory = launcher.parent.parent
+    bootstrap_jar = bootstrap_directory / "build/dawn-selfhost.jar"
     staged_inputs = {directory + "/" + path: value for directory in
                      ("selfhost", "compiler-plan", "packages", "std", "runtime/c")
                      for path, value in hashes(output / directory).items()}
@@ -93,7 +95,7 @@ def build_native(output, cc_name):
     run("java-version", [java, "-version"])
     run("cc-version", [cc, "--version"])
     tools = [launcher, bootstrap_jar, java, cc]
-    tools.extend(sorted((bootstrap_root / "build/lib").glob("*.jar")))
+    tools.extend(sorted((bootstrap_directory / "build/lib").glob("*.jar")))
     for name in ("cc1", "as", "ld"):
         value = subprocess.check_output([str(cc), "-print-prog-name=" + name], text=True,
                                         timeout=10).strip()
@@ -123,8 +125,8 @@ def build_native(output, cc_name):
             "native_commands": commands,
             "tool_scope": "launcher and actual bootstrap jar, adjacent tool jars, Java, C compiler and discoverable cc1/as/ld; system headers/libraries are host-provided",
             "native_flags": NATIVE_FLAGS,
-            "normal_seed_records": {str(path.relative_to(bootstrap_root)): hashlib.sha256(path.read_bytes()).hexdigest()
-                                    for path in (bootstrap_root / "scripts").glob("seed-*.txt")}}
+            "normal_seed_records": {str(path.relative_to(bootstrap_directory)): hashlib.sha256(path.read_bytes()).hexdigest()
+                                    for path in (bootstrap_directory / "scripts").glob("seed-*.txt")}}
 
 
 def configure(text, mode, modules, text_units, products, observe, reparse=None):
