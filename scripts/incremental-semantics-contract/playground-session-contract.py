@@ -47,15 +47,23 @@ def save(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n")
 
 
-def validate_policy(name, metadata, jar_hash):
+def validate_policy(name, metadata, jar_hash, backend="jvm"):
     if (metadata.get("mode") != ("Cold" if name.startswith("cold-") else "PreparedBodies") or
             metadata.get("instrumented") != name.endswith("-stats") or
             metadata.get("reparse_control") is not None or
-            metadata.get("compiler_sha256") != jar_hash or not metadata.get("sources")):
+            metadata.get("compiler_sha256") != jar_hash or not metadata.get("sources") or
+            metadata.get("backend", "jvm") != backend):
         raise RuntimeError("configured child provenance does not match its claimed policy")
 
 
-def validate_argv(command):
+def validate_argv(command, backend="jvm"):
+    if backend == "native":
+        if (not isinstance(command, list) or len(command) != 4 or
+                not all(isinstance(x, str) for x in command) or
+                not Path(command[0]).is_absolute() or command[1:3] != ["lsp", "--std"] or
+                not Path(command[3]).is_absolute()):
+            raise RuntimeError("native argv must be absolute ELF, lsp, --std, absolute std snapshot")
+        return
     if (not isinstance(command, list) or not all(isinstance(x, str) for x in command) or
             len(command) < 4 or command[-3] != "-jar" or command[-1] != "lsp" or
             Path(command[0]).name != "java" or not Path(command[0]).is_absolute()):
@@ -66,7 +74,15 @@ def validate_argv(command):
             raise RuntimeError("unsupported JVM launch option")
 
 
-def load_subjects(path):
+def elf_header(data):
+    if len(data) < 18 or data[:4] != b"\x7fELF" or data[4] not in (1, 2) or data[5] not in (1, 2):
+        raise RuntimeError("native child is not an ELF executable")
+    kind = int.from_bytes(data[16:18], "little" if data[5] == 1 else "big")
+    if kind not in (2, 3):
+        raise RuntimeError("native child ELF is neither executable nor position-independent executable")
+
+
+def load_subjects(path, backend="jvm"):
     if any(os.environ.get(name) for name in ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS")):
         raise RuntimeError("unset JVM option-injection environment variables for explicit child provenance")
     manifest = json.loads(path.read_text())
@@ -76,21 +92,34 @@ def load_subjects(path):
     for name in SUBJECTS:
         item = manifest[name]
         command = item["argv"]
-        validate_argv(command)
-        jar = Path(command[-2]).resolve(strict=True)
-        if not Path(command[-2]).is_absolute():
-            raise RuntimeError("compiler jar path must be absolute")
+        validate_argv(command, backend)
+        artifact = Path(command[0] if backend == "native" else command[-2]).resolve(strict=True)
+        if not Path(command[0] if backend == "native" else command[-2]).is_absolute():
+            raise RuntimeError("compiler artifact path must be absolute")
         provenance = Path(item["metadata"]).resolve(strict=True)
         metadata = json.loads(provenance.read_text())
-        validate_policy(name, metadata, digest(jar))
+        validate_policy(name, metadata, digest(artifact), backend)
         if sources is None:
             sources = metadata["sources"]
         elif sources != metadata["sources"]:
             raise RuntimeError("configured children were built from different source inputs")
-        dependencies = sorted((jar.parent / "lib").glob("*.jar"))
-        fingerprints = {str(p.resolve()): digest(p) for p in [Path(command[0]), jar, provenance, *dependencies]}
+        if backend == "native":
+            with artifact.open("rb") as stream:
+                elf_header(stream.read(18))
+            if not os.access(artifact, os.X_OK):
+                raise RuntimeError("native compiler ELF is not executable")
+            std = Path(command[3]).resolve(strict=True)
+            std_hashes = {str(p.relative_to(std)): digest(p) for p in sorted(std.rglob("*")) if p.is_file()}
+            if not std_hashes or std_hashes != metadata.get("std_sources"):
+                raise RuntimeError("native runtime std snapshot differs from its build provenance")
+            if metadata.get("native_outputs", {}).get("dawnc") != digest(artifact):
+                raise RuntimeError("native output inventory does not identify this ELF")
+            dependencies = [p for p in sorted(std.rglob("*")) if p.is_file()]
+        else:
+            dependencies = sorted((artifact.parent / "lib").glob("*.jar"))
+        fingerprints = {str(p.resolve()): digest(p) for p in [Path(command[0]), artifact, provenance, *dependencies]}
         result[name] = {"argv": command, "metadata": str(provenance), "fingerprints": fingerprints,
-                        "builder": metadata}
+                        "builder": metadata, "backend": backend}
     return result
 
 
@@ -178,7 +207,12 @@ class Client:
         wire.initialize(self.ws)
         actual_command = Path(f"/proc/{self.pid}/cmdline").read_bytes().rstrip(b"\0").decode().split("\0")
         if actual_command != gateway.subject["argv"]:
-            raise RuntimeError("gateway child PID is not the actual configured JVM process")
+            raise RuntimeError("gateway child PID is not the actual configured compiler process")
+        if gateway.subject["backend"] == "native":
+            actual_executable = Path(f"/proc/{self.pid}/exe").resolve(strict=True)
+            if (actual_executable != Path(gateway.subject["argv"][0]).resolve() or
+                    digest(actual_executable) != gateway.subject["builder"]["compiler_sha256"]):
+                raise RuntimeError("live native PID does not execute the fingerprinted ELF")
         self.identity = process_identity(self.pid)
         if self.identity is None:
             raise RuntimeError("configured child did not remain alive")
@@ -355,17 +389,38 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--functions", type=int, default=20)
     parser.add_argument("--evidence-label", choices=("canonical", "local-smoke"), default="canonical")
+    parser.add_argument("--backend", choices=("jvm", "native"), default="jvm")
+    parser.add_argument("--compare", type=Path, help="completed explicit other-backend gateway output")
     args = parser.parse_args()
     if args.functions < 2:
         parser.error("require at least two functions")
-    subjects = load_subjects(args.subjects)
+    subjects = load_subjects(args.subjects, args.backend)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    metadata = {"backend": "JVM", "evidence_label": args.evidence_label, "complete": False,
+    metadata = {"backend": "JVM" if args.backend == "jvm" else "native", "evidence_label": args.evidence_label, "complete": False,
                 "http_check_tested": False, "native_sandbox_tested": False, "timing_evidence": False,
                 "subjects": subjects, "functions": args.functions, "manifest_sha256": digest(args.subjects),
                 "gateway_sha256": digest(Path(wire.GATEWAY)), "runner_sha256": digest(Path(__file__))}
     save(output / "metadata.json", metadata)
+    reference = None
+    if args.compare:
+        reference = json.loads((args.compare / "metadata.json").read_text())
+        if not reference.get("complete") or reference.get("functions") != args.functions:
+            raise RuntimeError("cross-backend reference must be complete and use the same corpus size")
+        if reference.get("backend") != ("JVM" if args.backend == "native" else "native"):
+            raise RuntimeError("cross-backend reference must identify the other supported backend")
+        if reference.get("gateway_sha256") != metadata["gateway_sha256"]:
+            raise RuntimeError("cross-backend reference used a different gateway")
+        for name, subject in subjects.items():
+            previous = reference.get("subjects", {}).get(name, {}).get("builder", {})
+            for key in ("sources", "configured_server_sha256", "mode", "instrumented",
+                        "max_modules", "max_text_units", "max_products", "reparse_control"):
+                if key not in previous or previous[key] != subject["builder"][key]:
+                    raise RuntimeError("cross-backend reference used different configured source inputs")
+        metadata["cross_backend_reference"] = {"path": str(args.compare.resolve()),
+                                                "metadata_sha256": digest(args.compare / "metadata.json"),
+                                                "semantic_sha256": {name: digest(args.compare / name / "semantic.json")
+                                                                    for name in SUBJECTS}}
     baseline = None
     for name, subject in subjects.items():
         for path, expected_hash in subject["fingerprints"].items():
@@ -376,10 +431,16 @@ def main():
             baseline = actual
         elif actual != baseline:
             raise RuntimeError("real gateway cold/prepared or plain/observed semantic mismatch")
-        print(f"PASS: real gateway JVM {name}; revisions, peer isolation and reconnect", flush=True)
+        if reference is not None:
+            if digest(args.compare / name / "semantic.json") != metadata["cross_backend_reference"]["semantic_sha256"][name]:
+                raise RuntimeError("cross-backend semantic reference changed during execution")
+            previous = json.loads((args.compare / name / "semantic.json").read_text())
+            if actual != previous:
+                raise RuntimeError("complete native/JVM gateway semantics differ")
+        print(f"PASS: real gateway {metadata['backend']} {name}; revisions, peer isolation and reconnect", flush=True)
     metadata["complete"] = True
     save(output / "metadata.json", metadata)
-    print("OK: real Playground gateway JVM Session contract; not HTTP /check or native acceptance")
+    print(f"OK: real Playground gateway {metadata['backend']} Session contract; not HTTP /check or production sandbox acceptance")
 
 
 def selftest():
@@ -412,6 +473,17 @@ def selftest():
                   lambda: validate_argv(["python3", "fake.py"]),
                   lambda: validate_argv(["/jdk/java", "-Xbootclasspath/a:/untracked.jar", "-jar", "/compiler.jar", "lsp"])))
     validate_argv(["/jdk/java", "-Xss512m", "-Xmx2g", "-XX:+UseSerialGC", "-jar", "/compiler.jar", "lsp"])
+    validate_argv(["/private/dawnc", "lsp", "--std", "/private/std"], "native")
+    native = {**good, "backend": "native"}
+    validate_policy("cold-plain", native, "hash", "native")
+    header = b"\x7fELF\x02\x01" + b"\0" * 10 + b"\x03\0"
+    elf_header(header)
+    tests.extend((lambda: validate_policy("cold-plain", good, "hash", "native"),
+                  lambda: validate_policy("cold-plain", native, "hash"),
+                  lambda: validate_argv(["/private/dawnc", "lsp"], "native"),
+                  lambda: validate_argv(["/jdk/java", "-jar", "/compiler.jar", "lsp"], "native"),
+                  lambda: elf_header(b"#!/bin/sh\n"),
+                  lambda: elf_header(header[:16] + b"\x01\0")))
     for test in tests:
         try:
             test()

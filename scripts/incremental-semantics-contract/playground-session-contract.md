@@ -55,3 +55,34 @@ come from `lsp-configured.py` builds with their corresponding policies):
 The runner is Linux-only for its `/proc` child identity check. `--self-test`
 launches no compiler. A normal run may have two JVM children alive at once by
 design; coordinate that resource demand separately from native acceptance.
+
+## Explicit native mode
+
+`lsp-configured.py --backend native` uses the same exact configuration and
+source-staging helper as the default JVM builder. It stages fresh std and C
+runtime inputs, emits `nmain.c` through the normal verified-seed Dawn launcher,
+then compiles it with the existing native-selfhost-tests C flags and runtime.
+It records staged input hashes, actual configured source, emitted C and ELF
+hashes, bootstrap/JDK/C-tool hashes, full commands, versions and logs. It does
+not change nmain's CLI, LSP defaults or production source. JVM remains the
+builder default and existing JVM metadata remains accepted.
+
+`playground-session-contract.py --backend native` selects four explicit native
+subjects. Their argv is `["/absolute/artifact/dawnc", "lsp", "--std",
+"/absolute/artifact/std"]`; metadata must identify the native builder output,
+and both the executable ELF header/hash and the std snapshot must match.
+The exec-only wrapper, real gateway, PID/session ownership, 23 revisions,
+per-client counters, isolation and reconnect checks are otherwise identical.
+The live `/proc/<pid>/exe` must point at the fingerprinted ELF, not a launcher.
+
+Optional `--compare <completed-JVM-output>` additionally compares every complete
+semantic response against an explicit JVM reference with the same corpus size.
+No normalization removes diagnostics, positions or query information. Different
+backend-specific behavior fails comparison and must be investigated, not hidden.
+Native mode makes no ASM parser-entry claim.
+
+These native children run locally without the production systemd sandbox.
+Passing does not prove its 256 MiB/TasksMax limits, sandbox isolation, deployment,
+HTTP `/check`, or default activation. Build and protocol runs must yield the
+host before the original 1000-function generic value measurement's isolated
+window; their timings cannot be used as uncontended performance evidence.

@@ -797,6 +797,14 @@ between clients. See [the contract design](playground-session-contract.md) for
 the manifest and evidence boundary. This does not complete native sandbox or
 HTTP `/check` acceptance, and does not change deployment or default policy.
 
+The private configured builder also accepts `--backend native`, using fresh
+normal `__emitc` + C-runtime builds rather than a JVM substitute. The gateway
+contract's explicit `--backend native` checks executable ELF/hash/PID and the
+same four-policy protocol/count matrix; `--compare <JVM-output>` keeps complete
+cross-backend semantic equality separate and explicit. JVM defaults are
+unchanged. Unsandboxed native protocol evidence does not establish production
+systemd resource limits or `/check` reuse; see the design's native section.
+
 The optional private observer emits all Session counters on stderr, and
 `lsp-bench.py` preserves them per edit as `analysis_counts`. Cold standalone
 analysis has no Session counter: it is recorded as unobserved, never as zero
