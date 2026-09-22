@@ -25,7 +25,7 @@ public final class GenericTrace {
                 .findFirst().orElseThrow();
     }
 
-    private static void equalBodies(Object cold, Object actual, String label) throws Exception {
+    static void equalBodies(Object cold, Object actual, String label) throws Exception {
         for (Field member : cold.getClass().getFields()) {
             if (Modifier.isStatic(member.getModifiers())) continue;
             Object a = member.get(cold), b = member.get(actual);

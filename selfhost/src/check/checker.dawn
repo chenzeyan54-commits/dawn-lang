@@ -13829,6 +13829,10 @@ fn dict_sym_list(cx: Cx, s: Sig) -> List[Int] = {
   out
 }
 
+## Read the canonical dictionary ABI order from an independently entered
+## function context. This does not allocate or record semantic observations.
+pub fn function_dictionaries(cx: Cx, s: Sig) -> List[Int] = dict_sym_list(cx, s)
+
 ## The shared prologue of checkFn and friends: bind the signature frame and
 ## dictionaries, fresh effect record, one root scope.
 ##
@@ -14215,10 +14219,14 @@ pub fn check_fn(cx: Cx, d: FnDecl, s: Sig) -> (Cx, TFun) !io = {
   check_fn_body(cx0, d, s, dtxs)
 }
 
-## Defaults have already been checked in declaration order. Keeping this
-## boundary separate lets incremental scheduling capture each default's state
-## without checking it again when only the main expression needs execution.
-pub fn check_fn_body(cx: Cx, d: FnDecl, s: Sig, dtxs: List[Option[TDefault]]) -> (Cx, TFun) !io = {
+pub type FunctionEntry = { cx: Cx, parameters: List[Int] }
+
+## The canonical ordinary-function prologue, also usable as temporary proof
+## context. Callers that only validate must keep the original scheduler Cx;
+## this returned value does not install anything into that immutable input.
+## Defaults have already run. Final dictionary/evidence collection stays at
+## body exit so extracting this prologue does not reorder semantic reads.
+pub fn function_entry(cx: Cx, d: FnDecl, s: Sig) -> FunctionEntry = {
   var cx1 = enter_fn(cx, s, d.nlo, d.nhi)
   var psyms: List[Int] = []
   var i = 0
@@ -14228,6 +14236,16 @@ pub fn check_fn_body(cx: Cx, d: FnDecl, s: Sig, dtxs: List[Option[TDefault]]) ->
     psyms = psyms ++ [sid]
     i = i + 1
   }
+  FunctionEntry { cx: cx1, parameters: psyms }
+}
+
+## Defaults have already been checked in declaration order. Keeping this
+## boundary separate lets incremental scheduling capture each default's state
+## without checking it again when only the main expression needs execution.
+pub fn check_fn_body(cx: Cx, d: FnDecl, s: Sig, dtxs: List[Option[TDefault]]) -> (Cx, TFun) !io = {
+  let entry = function_entry(cx, d, s)
+  var cx1 = entry.cx
+  let psyms = entry.parameters
   let (cx2, bt, bx) = check_expr(cx1, d.body, Some(s.ret))
   cx1 = cx2
   let (compatible_cx, compatible) = assignable_read(cx1, bt, s.ret)

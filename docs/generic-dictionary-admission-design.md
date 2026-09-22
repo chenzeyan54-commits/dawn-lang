@@ -151,3 +151,55 @@ The strengthened baseline ran successfully on 2026-09-22 in 11.03s with the
 existing JDK 21 compiler launcher. This is fixture build/validation time, not
 generic replay performance. No native, Core-golden, CI, or production admission
 change is included.
+
+## Helper-only extraction
+
+The next implementation step exposes `FunctionEntry { cx, parameters }` and
+`function_entry(cx, declaration, signature)`. It factors only the existing
+`enter_fn` and ordinary parameter declaration loop from `check_fn_body`.
+The cold body checker consumes the returned context and parameter IDs; it keeps
+its final dictionary and evidence collection in exactly the same position.
+In particular, `ev_sym_list` is not moved to entry, because doing so could
+change effect-related observation ordering. Default preparation and inferred
+signature scheduling are untouched. A separate pure `function_dictionaries`
+accessor reuses the existing canonical dictionary ordering only when a proof
+caller asks for it; ordinary cold checks gain no extra dictionary traversal.
+
+The helper is a temporary computation over immutable contexts, not an entry
+installation API. Tests must call it from real scheduler entry contexts, then
+check/replay from the original input and compare every final body/context field.
+They must compare the helper's independently produced entry symbols, dictionary
+order and slots with captured products, including multiple bounds and distinct
+type parameters. The existing frozen ordinary-body loop remains the independent
+reference for extraction equivalence, including effect/default cases. No
+production admission guard is opened by this extraction.
+
+`FunctionEntry` adds a small return-record allocation to ordinary cold function
+entry. This extraction is not claimed to have zero overhead; the production
+workload measurements must include it. The minimal record avoids additional
+dictionary traversal and derived whole-context equality/printing dictionaries.
+
+The helper-only validation on 2026-09-22 passed 359 focused checker tests and
+the formatter check. `scripts/incremental-semantics-contract/function-entry.py`
+passed in 14.79s: the original twelve generic body/context pairs remain intact,
+and 32 additional full context/tree pairs match the exact frozen pre-extraction
+body loop from `f688f4b4`. These cover the three original generic classes plus
+scalar, named-effect, declared-IO, ordinary-default, bounded-default,
+duplicate-parameter, wrong-default-type and wrong-return-type functions, with
+logging both disabled and enabled. The malformed cases must emit diagnostics;
+the other cases must not. Two real scalar replay histories still hit after a
+private candidate hook computes and discards the temporary entry context.
+
+The host compares returned contexts and trees field by field, not through
+generated Dawn equality. Temporary entry contexts are also compared with a
+second independent entry from the same scheduler input, and ordered parameter
+and dictionary symbol metadata must match the checked body. This is an
+extraction oracle, not a second checker: its frozen body loop still calls the
+unchanged canonical type/effect/default helpers.
+
+Core review lowered all 107 modules successfully. Only `check.checker.core`
+changed: two added helpers and the changed `check_fn_body` prologue. Every other
+existing Core function is unchanged. The return-record constructor, field
+loads and release are visible in Core; no new equality or printing dictionary
+is generated. No golden was re-recorded in this slice. Native and full-suite
+integration remain separate acceptance work.

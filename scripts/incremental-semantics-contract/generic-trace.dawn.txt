@@ -17,7 +17,7 @@ use compiler/check/source_snapshot
 use java "contract.GenericTrace"
 
 pub type Pair = { cold: ModuleBodies, actual: ModuleBodies }
-pub type Sample = { label: String, products: List[Product], pairs: List[Pair] }
+pub type Sample = { label: String, source: String, products: List[Product], pairs: List[Pair] }
 
 fn trial(label: String, support: String, functions: String, reordered: String,
   total: Int, generic_count: Int) -> Sample !io = {
@@ -142,7 +142,7 @@ fn trial(label: String, support: String, functions: String, reordered: String,
     pairs = pairs ++ [Pair { cold: expected, actual: renewed.replayed.bodies }]
     admitted = renewed.admitted
   }
-  Sample { label: label, products: products, pairs: pairs }
+  Sample { label: label, source: support ++ functions, products: products, pairs: pairs }
 }
 
 pub fn samples() -> List[Sample] !io = {
