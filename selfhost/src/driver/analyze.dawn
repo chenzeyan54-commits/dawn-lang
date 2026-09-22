@@ -25,6 +25,8 @@ use check/passes.{
 }
 use check/checker.{check_module, check_module_headers, check_module_bodies, assemble_module_bodies, exports_of, check_fn, check_fn_inferred}
 use check/body_execution
+use check/scalar_replay
+use check/source_snapshot
 use check/allocation
 use check/allocation.{TypeParameter, EffectParameter}
 use check/identity
@@ -108,7 +110,7 @@ fn seg_ok(s: String) -> Bool = {
   }
   true
 }
-use ir/core.{CValue}
+use ir/core.{CValue, VInt}
 
 ## The segments of a module path that are not legal path segments, in order.
 ##
@@ -777,6 +779,29 @@ pub type ModuleStep = {
   comptime_runs: Int
 }
 
+type ModuleBodyCacheData = { scope: identity.ModuleKey, admitted: scalar_replay.Admitted }
+
+## Products belong to one analysis world and exact module identity. The owner
+## must replace its cache when its captured plan, options, std or lease changes.
+## No historical checker context or Java oracle is retained in this value.
+pub opaque type ModuleBodyCache = ModuleBodyCacheData
+
+pub type ModuleBodyCounts = {
+  checked: Int, reused: Int, cold_unadmitted: Int, cold_rejected: Int,
+  visited: Int, capture_refused: Int, retained: Int
+}
+
+## Counts are absent when the canonical cold entry was used without recording,
+## not a claim that no body was checked. A parse failure has no body execution.
+pub type CachedModuleStep = {
+  step: ModuleStep, cache: Option[ModuleBodyCache], counts: Option[ModuleBodyCounts]
+}
+
+pub fn module_body_cache_size(cache: ModuleBodyCache) -> Int = {
+  let data: ModuleBodyCacheData = cache
+  scalar_replay.admitted_count(data.admitted)
+}
+
 pub fn initial_carry(std: StdCtx) -> AnalysisCarry = {
   # The bundled library is already checked; its own sources are given a view
   # when one of them is analyzed again as an ordinary module.
@@ -886,7 +911,7 @@ pub fn analyze_module_step(
   mf0: LoadedModule, before: AnalysisCarry, std: StdCtx, opts: CtOpts,
   js: Jsig, observer: Option[AnalysisObserver]
 ) -> ModuleStep !Env !io =
-  module_step_with_recording(mf0, before, std, opts, js, observer, false)
+  module_step_with_recording(mf0, before, std, opts, js, observer, false, false, None).step
 
 ## Explicit integration entry while recording cost and cache admission are
 ## under validation. Existing prefix sessions keep their cold-miss cost until
@@ -895,12 +920,21 @@ pub fn analyze_module_step_recorded(
   mf0: LoadedModule, before: AnalysisCarry, std: StdCtx, opts: CtOpts,
   js: Jsig, observer: Option[AnalysisObserver]
 ) -> ModuleStep !Env !io =
-  module_step_with_recording(mf0, before, std, opts, js, observer, true)
+  module_step_with_recording(mf0, before, std, opts, js, observer, true, false, None).step
+
+## Opt-in session transition. Headers, comptime and export/carry publication
+## always run against this revision; only validated body executions may reuse.
+pub fn analyze_module_step_cached(
+  mf0: LoadedModule, before: AnalysisCarry, std: StdCtx, opts: CtOpts,
+  js: Jsig, observer: Option[AnalysisObserver], previous: Option[ModuleBodyCache]
+) -> CachedModuleStep !Env !io =
+  module_step_with_recording(mf0, before, std, opts, js, observer, false, true, previous)
 
 fn module_step_with_recording(
   mf0: LoadedModule, before: AnalysisCarry, std: StdCtx, opts: CtOpts,
-  js: Jsig, observer: Option[AnalysisObserver], record_bodies: Bool
-) -> ModuleStep !Env !io = {
+  js: Jsig, observer: Option[AnalysisObserver], record_bodies: Bool,
+  cache_bodies: Bool, previous: Option[ModuleBodyCache]
+) -> CachedModuleStep !Env !io = {
   var diags: List[LocDiag] = []
   # The one place a module's identity is settled, and the reason it is here
   # rather than in the loaders: only this function holds the std, and the
@@ -954,6 +988,8 @@ fn module_step_with_recording(
   var comptime_runs = 0
   var local_provenance: Option[allocation.Table] = None
   var body_records: Option[List[body_execution.Saved]] = None
+  var body_cache: Option[ModuleBodyCache] = None
+  var body_counts: Option[ModuleBodyCounts] = None
   if not parse_failed {
     analysis_event(observer, mf.mod_path, AnalyzeCheck, true)
     let (cx1, tm1) = match before.provenance {
@@ -970,11 +1006,57 @@ fn module_step_with_recording(
             None -> ()
           }
         }
-        if record_bodies {
-          let recorded = body_execution.record(scope, headers)
-          body_records = Some(recorded.entries)
-          assemble_module_bodies(recorded.bodies)
-        } else { check_module_bodies(headers) }
+        # Binding may alter only loader-resolved import paths. Recovered or
+        # mismatched syntax never lends source coordinates to cached bodies.
+        let snapshot: Option[source_snapshot.Snapshot] = if cache_bodies && not opts.ffi {
+          match source_snapshot.of(mf.text) {
+            Some(parsed) -> source_snapshot.resolved(parsed, mf.m)
+            None -> None
+          }
+        } else { None }
+        let prior: Option[scalar_replay.Admitted] = match previous {
+          Some(cache) -> {
+            let data: ModuleBodyCacheData = cache
+            if data.scope == scope { Some(data.admitted) } else { None }
+          }
+          None -> None
+        }
+        match snapshot {
+          Some(revision) -> {
+            let (bodies, admitted, counts) = match prior {
+              Some(old) -> {
+                let renewed = scalar_replay.replay_and_record(old, headers, revision)
+                let pass = renewed.replayed
+                (pass.bodies, renewed.admitted, ModuleBodyCounts {
+                  checked: pass.checked, reused: pass.reused,
+                  cold_unadmitted: pass.cold_unadmitted, cold_rejected: pass.cold_rejected,
+                  visited: renewed.visited, capture_refused: renewed.capture_refused,
+                  retained: scalar_replay.admitted_count(renewed.admitted)
+                })
+              }
+              None -> {
+                let recorded = body_execution.record(scope, headers)
+                let admitted = scalar_replay.admit(scope, headers, revision, recorded)
+                (recorded.bodies, admitted, ModuleBodyCounts {
+                  checked: recorded.checked, reused: 0,
+                  cold_unadmitted: recorded.checked, cold_rejected: 0,
+                  visited: recorded.checked, capture_refused: recorded.refused,
+                  retained: scalar_replay.admitted_count(admitted)
+                })
+              }
+            }
+            body_counts = Some(counts)
+            if counts.retained > 0 {
+              body_cache = Some(ModuleBodyCacheData { scope: scope, admitted: admitted })
+            }
+            assemble_module_bodies(bodies)
+          }
+          None -> if record_bodies {
+            let recorded = body_execution.record(scope, headers)
+            body_records = Some(recorded.entries)
+            assemble_module_bodies(recorded.bodies)
+          } else { check_module_bodies(headers) }
+        }
       }
     }
     check_runs = 1
@@ -1009,7 +1091,7 @@ fn module_step_with_recording(
     ct: ct
   }
   analysis_event(observer, mf.mod_path, AnalyzeModule, false)
-  ModuleStep {
+  let step = ModuleStep {
     input: mf,
     checked: checked,
     diags: diags,
@@ -1025,6 +1107,15 @@ fn module_step_with_recording(
     check_runs: check_runs,
     comptime_runs: comptime_runs
   }
+  # Error recovery starts from the next real recording, not an older success.
+  if diags != [] {
+    body_cache = None
+    body_counts = match body_counts {
+      Some(counts) -> Some(ModuleBodyCounts { ..counts, retained: 0 })
+      None -> None
+    }
+  }
+  CachedModuleStep { step: step, cache: body_cache, counts: body_counts }
 }
 
 # ---- single-document analysis (the language server's entry) ----
@@ -1341,6 +1432,180 @@ fn put(p: String, text: String) -> Unit !Fs =
     Ok(_) -> ()
     Err(e) -> panic("test setup: ${e.message}")
   }
+
+test "cached module transitions renew bodies and publish the current carry" {
+  in_mem(() => {
+    let std = match load_std(std_dir()) {
+      Ok(value) -> value
+      Err(e) -> panic("std: ${std_load_error_text(e)}")
+    }
+    let baseline = initial_carry_with_provenance(std, "cached-module-test")
+    let original = "fn leaf() = 1\nfn middle() = leaf()\nfn answer() -> Int = middle()\n"
+    let changed = "fn leaf() = 9\nfn middle() = leaf()\nfn answer() -> Int = middle()\n"
+    let moved = "# 🌅\nfn answer() -> Int = middle()\n\nfn leaf() = 9\nfn middle() = leaf()\n"
+    let boolean = "fn leaf() = true\nfn middle() = leaf()\nfn answer() -> Bool = middle()\n"
+    let failed = "fn leaf() = true\nfn middle() = leaf()\nfn answer() -> Int = middle()\n"
+    var cache: Option[ModuleBodyCache] = None
+    for sample in [(original, 0, true), (original, 3, true),
+      (changed, 2, true), (changed, 3, true), (moved, 3, true),
+      (boolean, 0, true), (boolean, 3, true), (failed, 2, false),
+      (original, 0, true), (original, 3, true)] {
+      let (text, hits, clean) = sample
+      let (syntax, pd) = parser.parse_module(text)
+      let input = LoadedModule { mod_path: "cached", class_name: "cached", path: "/cache/cached.dawn",
+        text: text, m: syntax, pdiags: pd, pkg: None }
+      let warm = analyze_module_step_cached(input, baseline, std, ct_default(), jsig_refused(), None, cache)
+      let cold = analyze_module_step(input, baseline, std, ct_default(), jsig_refused(), None)
+      assert warm.step.checked.tm == cold.checked.tm
+      assert warm.step.diags == cold.diags
+      assert warm.step.after == cold.after
+      assert warm.step.checked.ct == cold.checked.ct
+      assert warm.step.checked.cx.fns == cold.checked.cx.fns
+      assert warm.step.checked.cx.syms == cold.checked.cx.syms
+      assert warm.step.check_runs == cold.check_runs
+      assert warm.step.comptime_runs == cold.comptime_runs
+      assert warm.step.body_records == None
+      assert (warm.step.diags == []) == clean
+      let counts = warm.counts.expect("body execution counts")
+      assert counts.reused == hits
+      assert counts.checked + counts.reused == counts.visited
+      assert counts.visited == 3
+      assert counts.checked == counts.cold_unadmitted + counts.cold_rejected
+      if clean {
+        assert module_body_cache_size(warm.cache.expect("retained bodies")) == 3
+      } else {
+        assert warm.cache == None
+        assert counts.retained == 0
+      }
+      cache = warm.cache
+    }
+    let (syntax, pd) = parser.parse_module(original)
+    let input = LoadedModule { mod_path: "cached", class_name: "cached", path: "/cache/cached.dawn",
+      text: original, m: syntax, pdiags: pd, pkg: None }
+    # Every owner coordinate independently prevents borrowing the old cache.
+    for altered in [LoadedModule { ..input, mod_path: "renamed" },
+      LoadedModule { ..input, class_name: "renamed" },
+      LoadedModule { ..input, path: "/cache/renamed.dawn" }] {
+      let warm = analyze_module_step_cached(altered, baseline, std, ct_default(), jsig_refused(), None, cache)
+      let cold = analyze_module_step(altered, baseline, std, ct_default(), jsig_refused(), None)
+      assert warm.counts.expect("fresh owner counts").reused == 0
+      assert warm.step.checked.tm == cold.checked.tm && warm.step.after == cold.after
+    }
+    let other_world = initial_carry_with_provenance(std, "another-world")
+    let foreign = analyze_module_step_cached(input, other_world, std, ct_default(), jsig_refused(), None, cache)
+    assert foreign.counts.expect("fresh world counts").reused == 0
+    let no_origin = analyze_module_step_cached(input, initial_carry(std), std, ct_default(), jsig_refused(), None, cache)
+    let no_origin_cold = analyze_module_step(input, initial_carry(std), std, ct_default(), jsig_refused(), None)
+    assert no_origin.cache == None && no_origin.counts == None
+    assert no_origin.step.checked.tm == no_origin_cold.checked.tm
+    for text in ["fn broken(", "fn broken(x: Missing) -> Unit = ()\n"] {
+      let (broken, diagnostics) = parser.parse_module(text)
+      let raw = LoadedModule { ..input, text: text, m: broken, pdiags: diagnostics }
+      let warm = analyze_module_step_cached(raw, baseline, std, ct_default(), jsig_refused(), None, cache)
+      let cold = analyze_module_step(raw, baseline, std, ct_default(), jsig_refused(), None)
+      assert warm.cache == None
+      assert warm.step.diags == cold.diags && warm.step.after == cold.after
+      assert warm.step.checked.tm == cold.checked.tm
+    }
+    # Syntax forged beside unrelated text must select cold execution, not a
+    # snapshot that happens to contain a previously admitted function.
+    let forged = LoadedModule { ..input, text: changed }
+    let refused = analyze_module_step_cached(forged, baseline, std, ct_default(), jsig_refused(), None, cache)
+    let oracle = analyze_module_step(forged, baseline, std, ct_default(), jsig_refused(), None)
+    assert refused.cache == None && refused.counts == None
+    assert refused.step.checked.tm == oracle.checked.tm && refused.step.diags == oracle.diags
+  })
+}
+
+test "cached module transitions recompute comptime and recover from evaluation errors" {
+  in_mem(() => {
+    let std = match load_std(std_dir()) {
+      Ok(value) -> value
+      Err(e) -> panic("std: ${std_load_error_text(e)}")
+    }
+    let baseline = initial_carry_with_provenance(std, "cached-comptime-test")
+    var cache: Option[ModuleBodyCache] = None
+    let cases: List[(String, Option[Int], Int)] = [
+      ("1", Some(1), 0), ("1", Some(1), 2), ("9", Some(9), 1),
+      ("1 / 0", None, 1), ("9", Some(9), 0), ("9", Some(9), 2)]
+    for sample in cases {
+      let (expression, expected, hits) = sample
+      let text = "fn leaf() -> Int = ${expression}\nconst RESULT: Int = leaf()\nfn runtime() -> Int = leaf()\n"
+      let (syntax, pd) = parser.parse_module(text)
+      let input = LoadedModule { mod_path: "cached", class_name: "cached", path: "/cache/cached.dawn",
+        text: text, m: syntax, pdiags: pd, pkg: None }
+      let warm = analyze_module_step_cached(input, baseline, std, ct_default(), jsig_refused(), None, cache)
+      let cold = analyze_module_step(input, baseline, std, ct_default(), jsig_refused(), None)
+      assert warm.step.checked.tm == cold.checked.tm
+      assert warm.step.checked.ct == cold.checked.ct
+      assert warm.step.diags == cold.diags && warm.step.after == cold.after
+      assert warm.step.comptime_runs == 1
+      assert warm.counts.expect("observed bodies").reused == hits
+      match expected {
+        Some(value) -> {
+          assert warm.step.diags == []
+          assert map.get(warm.step.checked.ct.consts, "RESULT") == Some(VInt(value))
+          assert warm.cache != None
+        }
+        None -> {
+          assert warm.step.checked.cx.diags == []
+          assert warm.step.checked.ct.diags != []
+          assert warm.cache == None
+          assert warm.counts.expect("failed CT counts").retained == 0
+        }
+      }
+      let ffi = CtOpts { ..ct_default(), ffi: true }
+      let disabled = analyze_module_step_cached(input, baseline, std, ffi, jsig_refused(), None, cache)
+      let ffi_cold = analyze_module_step(input, baseline, std, ffi, jsig_refused(), None)
+      assert disabled.cache == None && disabled.counts == None
+      assert disabled.step.checked.tm == ffi_cold.checked.tm
+      assert disabled.step.checked.ct == ffi_cold.checked.ct
+      assert disabled.step.diags == ffi_cold.diags
+      cache = warm.cache
+    }
+  })
+}
+
+test "cached module transitions follow real package import resolution" {
+  in_mem(() => {
+    let base = "/tmp/dawn-selfhost-analyze/cached-packages"
+    mkdirs("${base}/pkg/library/src")
+    mkdirs("${base}/app/src")
+    put("${base}/pkg/library/dawn.toml", "schema = 1\nname = \"library\"\n")
+    put("${base}/pkg/library/src/bridge.dawn", "use leaf as impl_leaf\npub fn value() -> Int = impl_leaf.value()\n")
+    put("${base}/app/dawn.toml", "schema = 1\nname = \"app\"\n[deps]\nalias_dep = \"../pkg/library\"\n")
+    put("${base}/app/src/main.dawn", "use alias_dep/bridge.{value}\nfn answer() -> Int = value()\n")
+    let std = match load_std(std_dir()) {
+      Ok(value) -> value
+      Err(e) -> panic("std: ${std_load_error_text(e)}")
+    }
+    let baseline = initial_carry_with_provenance(std, "cached-package-test")
+    var caches: Map[String, ModuleBodyCache] = map.empty()
+    for expression in ["1", "1", "9", "9"] {
+      put("${base}/pkg/library/src/leaf.dawn", "pub fn value() -> Int = ${expression}\n")
+      let loaded = load_directory("${base}/app")
+      assert loaded.diags == [] && len(loaded.modules) == 3
+      var warm_carry = baseline
+      var cold_carry = baseline
+      var next_caches: Map[String, ModuleBodyCache] = map.empty()
+      for raw in loaded.modules {
+        let previous = map.get(caches, raw.mod_path)
+        let warm = analyze_module_step_cached(raw, warm_carry, std, ct_default(), jsig_refused(), None, previous)
+        let cold = analyze_module_step(raw, cold_carry, std, ct_default(), jsig_refused(), None)
+        assert warm.step.diags == [] && cold.diags == []
+        assert warm.step.checked.tm == cold.checked.tm && warm.step.checked.ct == cold.checked.ct
+        assert warm.step.after == cold.after
+        let counts = warm.counts.expect("loader resolved source")
+        if previous != None && raw.mod_path != "library/leaf" { assert counts.reused == 1 }
+        assert counts.visited == 1
+        next_caches = map.insert(next_caches, raw.mod_path, warm.cache.expect("package admission"))
+        warm_carry = warm.step.after
+        cold_carry = cold.after
+      }
+      caches = next_caches
+    }
+  })
+}
 
 test "a two-module project analyzes end to end" {
   in_mem(() => {

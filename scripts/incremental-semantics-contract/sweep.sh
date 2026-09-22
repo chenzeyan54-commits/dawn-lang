@@ -53,6 +53,8 @@
 #   sweep.sh [--jobs N] [--log PATH] [--only NAME[,NAME...]]
 #   sweep.sh --list
 #   sweep.sh --self-test
+# Execution requires JAVA_HOME to contain executable java and javac (JDK 21+).
+# The selected JDK is also placed first on PATH for host-side harness commands.
 set -euo pipefail
 
 SELF=$(cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
@@ -94,6 +96,30 @@ plan_line() {
   python3 "$PLAN_TOOL" --hints "$2" |
     awk -v want="$1" -F '\t' '$1 == want { print; found = 1 }
     END { if (!found) exit 1 }'
+}
+
+validate_java_home() {
+  local tool output major
+  if [ -z "${JAVA_HOME:-}" ]; then
+    printf 'sweep.sh: JAVA_HOME must name a JDK containing java and javac\n' >&2
+    return 2
+  fi
+  for tool in java javac; do
+    if [ ! -x "$JAVA_HOME/bin/$tool" ]; then
+      printf 'sweep.sh: JAVA_HOME/bin/%s is not executable: %s\n' "$tool" "$JAVA_HOME/bin/$tool" >&2
+      return 2
+    fi
+    if ! output=$("$JAVA_HOME/bin/$tool" -version 2>&1); then
+      printf 'sweep.sh: JAVA_HOME/bin/%s cannot run: %s\n' "$tool" "$output" >&2
+      return 2
+    fi
+    major=$(printf '%s\n' "$output" | sed -nE 's/^(openjdk|java) version "([0-9]+).*/\2/p; s/^javac ([0-9]+).*/\1/p' | head -n 1)
+    if [ -z "$major" ] || [ "$major" -lt 21 ]; then
+      printf 'sweep.sh: JAVA_HOME/bin/%s must report version 21 or newer: %s\n' "$tool" "$output" >&2
+      return 2
+    fi
+  done
+  export PATH="$JAVA_HOME/bin:$PATH"
 }
 
 # ---------------------------------------------------------------- one harness
@@ -174,6 +200,58 @@ self_test() {
 
   python3 "$PLAN_TOOL" --self-test || failures=$((failures + 1))
 
+  # Exercise the execution preflight without ever selecting a real harness.
+  # Invalid environments must fail before even creating the output directory.
+  python3 - "$SELF" <<'PY' || failures=$((failures + 1))
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+with tempfile.TemporaryDirectory(prefix='dawn-sweep-java-selftest-') as temp:
+    root = Path(temp)
+    java_home = root / 'jdk'
+    binary = java_home / 'bin'
+    binary.mkdir(parents=True)
+    env = dict(os.environ, JAVA_HOME=str(java_home))
+    cases = [
+        (None, None, 'java is not executable'),
+        ('openjdk version "21.0.2"', None, 'javac is not executable'),
+        ('FAIL', 'javac 21.0.2', 'java cannot run'),
+        ('openjdk version "21.0.2"', 'FAIL', 'javac cannot run'),
+        ('openjdk version "17.0.2"', 'javac 21.0.2', 'java must report version 21'),
+        ('openjdk version "21.0.2"', 'javac 17.0.2', 'javac must report version 21'),
+        ('openjdk version "21.0.2"', 'javac 21.0.2', 'no such harness'),
+    ]
+    for index, (java, javac, expected) in enumerate(cases):
+        for name, output in [('java', java), ('javac', javac)]:
+            path = binary / name
+            if output is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_text('#!/bin/sh\n' + ('exit 1\n' if output == 'FAIL' else
+                                "printf '%s\\n' '" + output + "'\n"))
+                path.chmod(0o755)
+        log = root / str(index) / 'sweep.log'
+        result = subprocess.run(['bash', sys.argv[1], '--only', '__preflight_unknown__', '--log', str(log)],
+                                env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if result.returncode != 2 or expected not in result.stdout:
+            raise RuntimeError(f'Java preflight case {index} failed: {result.stdout}')
+        if expected != 'no such harness' and log.parent.exists():
+            raise RuntimeError('Invalid Java environment changed the output directory')
+    env.pop('JAVA_HOME')
+    result = subprocess.run(['bash', sys.argv[1]], env=env, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if result.returncode != 2 or 'JAVA_HOME must name a JDK' not in result.stdout:
+        raise RuntimeError('Missing JAVA_HOME did not fail before execution')
+    result = subprocess.run(['bash', sys.argv[1], '--list'], env=env, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if result.returncode != 0:
+        raise RuntimeError('Listing unexpectedly requires Java: ' + result.stdout)
+print('OK: sweep Java preflight, 9 execution/listing cases without running harnesses')
+PY
+
   if [ "$failures" -ne 0 ]; then
     return 1
   fi
@@ -253,10 +331,15 @@ case $MODE in
     exit 0
     ;;
   run-one)
+    validate_java_home
     run_one "$RUN_ONE_NAME" "$LOG"
     exit $?
     ;;
 esac
+
+# Reject an unusable host JDK before creating/truncating logs or starting any
+# compiler. Listing and plan self-tests remain available without Java installed.
+validate_java_home
 
 case $JOBS in
   '' | *[!0-9]*)

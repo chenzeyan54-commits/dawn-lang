@@ -13,7 +13,7 @@
 # the tree in a snapshot is the tree of its own text by construction, so a
 # consumer only has to compare it with the headers it was given.
 use front/parser
-use front/ast.{Module, DFn}
+use front/ast.{Module, Decl, DFn, DUseModule}
 use check/source_projection
 
 type SnapshotData = { syntax: Module, indexed: source_projection.Indexed,
@@ -57,6 +57,28 @@ pub fn of(text: String) -> Option[Snapshot] = {
 pub fn syntax(s: Snapshot) -> Module = {
   let data: SnapshotData = s
   data.syntax
+}
+
+## The loader resolves package imports without changing their source spelling.
+## Admit only that transformation: every body, declaration order, alias,
+## selection and coordinate must still come from this snapshot's own parse.
+## Resolution is not semantic equivalence; current headers and query answers
+## still validate what these paths name before any body may be reused.
+pub fn resolved(s: Snapshot, candidate: Module) -> Option[Snapshot] = {
+  let data: SnapshotData = s
+  if len(data.syntax.decls) != len(candidate.decls) { return None }
+  var index = 0
+  for original in data.syntax.decls {
+    let changed = candidate.decls[index]
+    match (original, changed) {
+      (DUseModule(_, selection, aname, lo, hi, nlo, nhi), DUseModule(path, _, _, _, _, _, _)) -> {
+        if path == [] || changed != DUseModule(path, selection, aname, lo, hi, nlo, nhi) { return None }
+      }
+      _ -> if original != changed { return None }
+    }
+    index = index + 1
+  }
+  Some(SnapshotData { ..data, syntax: candidate })
 }
 
 ## The code-point index of the same text, for token projection.
@@ -141,4 +163,54 @@ test "source snapshot pairs one parse with the index of its own text" {
   # the snapshot's own declaration slice answers for itself, both ways
   assert source_projection.pair(tokens(snapshot), tokens(snapshot), 0, 0, 4, 27, 4, 27)
   assert source_projection.same_text(tokens(snapshot), tokens(snapshot), 4, 27, 4, 27)
+}
+
+test "source snapshot resolution changes only import paths" {
+  let source = of("use helper\nfn answer() -> Int = helper.value()\n").expect("source")
+  let original = syntax(source)
+  let first = original.decls[0]
+  let body = original.decls[1]
+  let rewritten: Decl = match first {
+    DUseModule(_, selection, aname, lo, hi, nlo, nhi) ->
+      DUseModule(["package", "helper"], selection, aname, lo, hi, nlo, nhi)
+    _ -> panic("import fixture")
+  }
+  let target = Module { decls: [rewritten, body] }
+  assert resolved(source, target) != None
+  let bound = resolved(source, target).expect("resolved import")
+  assert syntax(bound) == target
+  assert indexed(bound) == indexed(source)
+  assert tokens(bound) == tokens(source)
+  assert resolved(source, original) != None
+  assert resolved(bound, original) != None
+  assert resolved(source, Module { decls: [rewritten] }) == None
+  assert resolved(source, Module { decls: [rewritten, body, body] }) == None
+  assert resolved(source, Module { decls: [body, rewritten] }) == None
+  let other = syntax(of("use helper\nfn answer() -> Int = helper.other()\n").expect("changed body"))
+  assert resolved(source, Module { decls: [rewritten, other.decls[1]] }) == None
+  let moved = syntax(of("use helper\n\nfn answer() -> Int = helper.value()\n").expect("moved body"))
+  assert resolved(source, Module { decls: [rewritten, moved.decls[1]] }) == None
+  match first {
+    DUseModule(path, selection, aname, lo, hi, nlo, nhi) -> {
+      for bad in [DUseModule([], selection, aname, lo, hi, nlo, nhi),
+        DUseModule(path, selection, aname, lo + 1, hi, nlo, nhi),
+        DUseModule(path, selection, aname, lo, hi + 1, nlo, nhi),
+        DUseModule(path, selection, aname, lo, hi, nlo + 1, nhi),
+        DUseModule(path, selection, aname, lo, hi, nlo, nhi + 1)] {
+        assert resolved(source, Module { decls: [bad, body] }) == None
+      }
+    }
+    _ -> panic("import fixture")
+  }
+  # Parse aliases and selections to exercise their actual AST representation.
+  for text in ["use helper as renamed\nfn answer() -> Int = helper.value()\n",
+    "use helper.{value}\nfn answer() -> Int = helper.value()\n"] {
+    let changed = syntax(of(text).expect("import variant"))
+    let forged: Decl = match (first, changed.decls[0]) {
+      (DUseModule(path, _, _, lo, hi, nlo, nhi), DUseModule(_, selection, aname, _, _, _, _)) ->
+        DUseModule(path, selection, aname, lo, hi, nlo, nhi)
+      _ -> panic("import fixture")
+    }
+    assert resolved(source, Module { decls: [forged, body] }) == None
+  }
 }
