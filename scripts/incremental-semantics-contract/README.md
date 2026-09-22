@@ -1,5 +1,32 @@
 # 增量语义契约夹具
 
+## Raw source equality controls
+
+`source-equality.py` runs the source projection positive and four private
+compiling controls for negative ranges, valid empty ranges, equal-width trivia
+and unreachable source boundaries. Each control must fail its named assertion;
+compile/link errors, panics and timeout are not acceptance. `--self-test` checks
+the failure classifier without a compiler. These controls complement the JVM
+and native inline range oracles and the existing parse/index invocation counts.
+See [the source equality design](../../docs/source-equality-oracle-design.md)
+for the exact raw-range cache contract and pending performance acceptance.
+
+## Bounded generic admission and assembly-owned renewal
+
+`function-entry.py` compares canonical entry allocation with its frozen old
+loop. `bounded-entry-proof.py` requires ten compiling controls to reach exact
+forged-input failures. `generic-trace.py` retains the original bounded `Scale`
+workload, and `bounded-replay.py` verifies actual body execution counts, full
+cold products, dependency invalidation and recovery through eleven compiling
+controls. These run in the bounded-generic CI job alongside `source-equality.py`.
+
+`body-renewal.py` retains six generation/log/count controls and adds five
+assembly-boundary controls. Ordinary callback environments remain strict;
+successful installation with refused capture must retain its output without
+checking the body again. Strict and certified saved products are compared
+through three actual renewed generations and both observer modes. These are
+correctness contracts, not a production-default or complete G3 performance gate.
+
 ## Prepared source proof boundaries
 
 `prepared-proofs.py` compiles one positive subject and two isolated controls.
@@ -19,8 +46,9 @@ validation costs, not CI runner observations or a production speedup.
 
 ## Running the whole family locally
 
-`sweep.sh` runs every invocation the nine `incremental-*` jobs in
-`.github/workflows/gates.yml` run, in parallel, on one machine, because every
+`sweep.sh` runs the incremental contract invocations in
+`.github/workflows/gates.yml`, including those moved into ordinary jobs,
+in parallel on one machine, because every
 change under `selfhost/src/check/` has to be put in front of all of them before
 it merges: the mutants here are pinned to literal source strings, a harness
 whose anchor has drifted still looks like a working harness, and main went red
@@ -28,9 +56,8 @@ at ca33cdbe for exactly that. The list is parsed out of gates.yml at run time
 rather than written down a second time, so a harness added to an existing job is
 swept without anyone remembering to, and `sweep.sh --self-test` compares that
 parse against a plain grep of the same file so the sweep cannot quietly run a
-subset (47 invocations today, 45 after deduplicating the three jobs that each
-run `diagnostic-reads.py --self-test`; `header-metadata.py` left with
-`check/relocate_header` in K7). Harnesses start longest first, since the
+subset. Use `sweep-plan.py --raw-count` and `sweep.sh --list` for the current
+raw and deduplicated inventories. Harnesses start longest first, since the
 sweep is tail-bound rather than throughput-bound: the longest harness is the
 whole wall clock if it starts in the last wave. `prefix.py` was that harness at
 771s of a 1413s sweep, and the floor the sweep could not go under; on

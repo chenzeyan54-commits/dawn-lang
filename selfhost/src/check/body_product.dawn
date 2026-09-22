@@ -167,11 +167,18 @@ fn touched_changes[K: Eq + Hash, V](before: Map[K, V], after: Map[K, V], keys: L
 }
 
 fn capture_with_mode[T](before: Cx, after: Cx, tree: T, tracked: Bool) -> Option[BodyProduct[T]] = {
+  if not environment_unchanged(before, after, tracked) { return None }
+  capture_transition(before, after, tree, tracked)
+}
+
+# Only strict capture or this module's own assembly may enter this remainder.
+# Assembly preserves every environment field by construction, not by a log
+# claiming that an arbitrary callback left those fields untouched.
+fn capture_transition[T](before: Cx, after: Cx, tree: T, tracked: Bool) -> Option[BodyProduct[T]] = {
   # A body mints inside the declaration it was entered for and inside no
   # other, so a transition that reissued slots it had already handed out is
   # not one body. Which declaration it is, is `environment_unchanged`'s.
   if slot_of(after) < slot_of(before) { return None }
-  if not environment_unchanged(before, after, tracked) { return None }
   if len(after.frame.lambda_stack) != 0 || len(after.frame.loop_stack) != 0 { return None }
   if len(after.diags) < len(before.diags) || list.take(after.diags, len(before.diags)) != before.diags { return None }
   let journal = write_journal.capture(before.body_writes, after.body_writes)?
@@ -237,6 +244,23 @@ pub fn assemble[T](current: Cx, product: BodyProduct[T]) -> Option[Cx] = {
     function_reads: semantic_reads.append(current.function_reads, product.function_reads)?,
     body_writes: write_journal.append(current.body_writes, product.body_writes)?
   })
+}
+
+type InstallationData = { cx: Cx, tree: TFun, captured: Option[Product] }
+pub opaque type Installation = InstallationData
+
+## The recording owner must supply its actual scheduler input here. Neither
+## an old input nor a separately supplied output can certify a transition.
+## Capture refusal retains successful assembly; it is not a cold-check request.
+pub fn assemble_captured(current: Cx, product: Product) -> Option[Installation] = {
+  let after = assemble(current, product)?
+  Some(InstallationData { cx: after, tree: product.tree,
+    captured: capture_transition(current, after, product.tree, true) })
+}
+
+pub fn installation_output(value: Installation) -> (Cx, TFun, Option[Product]) = {
+  let data: InstallationData = value
+  (data.cx, data.tree, data.captured)
 }
 
 fn projected_changes[K, V, L, W](writes: List[Change[K, V]], key: fn(K) -> Option[L],
@@ -376,6 +400,32 @@ test "body product keyed writes preserve unrelated preceding products" {
   assert apply_changes(before, writes) == after
   assert apply_changes(map.insert(before, "preceding", 5), writes) == map.insert(after, "preceding", 5)
   assert changes(before, before, (a, b) => a == b) == []
+}
+
+test "assembly certified capture matches strict transition and preserves refusal" {
+  let before = Cx { ..cx_new(Some("sample"), Some("sample.dawn")),
+    function_reads: Some([]), body_writes: Some([]) }
+  let tree = fixture_function(before)
+  let product = capture_journaled(before, before, tree).expect("assembly capture fixture")
+  let (after, installed, saved) = installation_output(assemble_captured(before, product).expect("assembly certified output"))
+  assert installed == tree
+  assert saved == capture_journaled(before, after, installed)
+  assert saved == Some(product)
+  # The caller may propose an unbalanced product, but successful installation
+  # must not be confused with capture success or trigger another execution.
+  let bad = BodyProduct { ..product, frame: Frame { ..product.frame, loop_stack: [1] } }
+  let (bad_after, bad_tree, refused) = installation_output(assemble_captured(before, bad).expect("assembly refused capture output"))
+  assert bad_after.frame.loop_stack == [1] && bad_tree == tree
+  assert refused == None && capture_journaled(before, bad_after, bad_tree) == None
+  # A no-op saved change normalizes against the real installation input.
+  let symbol = Sym { name: "kept", ty: TyInt, mutable: false, dlo: 0, dhi: 0,
+    dict_of: None, ev_of: None, cell_of: None }
+  let current = Cx { ..before, syms: map.from([(10, symbol)]) }
+  let noop = BodyProduct { ..product, symbols: [Change { key: 10, value: Some(symbol) }],
+    body_writes: Some([write_journal.SymbolKey(10)]) }
+  let (normalized, normalized_tree, normalized_saved) = installation_output(assemble_captured(current, noop).expect("assembly no-op change"))
+  assert normalized_saved == capture_journaled(current, normalized, normalized_tree)
+  assert normalized_saved.expect("assembly normalized capture").symbols == []
 }
 
 test "body product constants project their real tree and share state admission" {

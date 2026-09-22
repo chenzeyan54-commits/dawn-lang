@@ -2658,6 +2658,30 @@ jobs:
       - name: Single-pass body cache renewal contracts
         run: python3 scripts/incremental-semantics-contract/body-renewal.py
 
+  incremental-bounded-generic-contract:
+    runs-on: ubuntu-latest
+    # Initial planning allowance: local entry proof controls 66.57s, bounded
+    # replay controls 81.81s, entry oracle 14.79s, source controls 13.85s.
+    # Reserve 30s for the original generic trace and 29s for toolchain setup;
+    # double the rounded contract sum: 2 * (67 + 82 + 15 + 14 + 30) + 29 = 445s.
+    # budget: 3x 445s planning value (bounded admission and exact source proof)
+    timeout-minutes: 23
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/dawn-toolchain
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Canonical function entry oracle
+        run: python3 scripts/incremental-semantics-contract/function-entry.py
+      - name: Bounded function entry proof controls
+        run: python3 scripts/incremental-semantics-contract/bounded-entry-proof.py
+      - name: Original bounded generic trace
+        run: python3 scripts/incremental-semantics-contract/generic-trace.py
+      - name: Bounded replay and renewal controls
+        run: python3 scripts/incremental-semantics-contract/bounded-replay.py
+      - name: Exact raw source equality controls
+        run: python3 scripts/incremental-semantics-contract/source-equality.py
+
   # Phase 2 measures process semantics, not runner hardware. The complete
   # contract measured 60s locally, and the reused toolchain setup has a 29s
   # observed upper bound. Keep it parallel to the 163s Phase 1 contract.

@@ -48,10 +48,18 @@ def main():
         ("completed-recording-index", REPLAY,
          "let callees = callee_index.of(completed)",
          "let callees = callee_index.of(old.cx)"),
-        ("skip-hit-publication", REPLAY, refresh,
-         refresh.replace("Some(p) -> match", "Some(p) -> if outcome.counts.reused != stepped.counts.reused { Some(p) } else { match") + " }"),
-        ("skip-cold-publication", REPLAY, refresh,
-         refresh.replace("Some(p) -> match", "Some(p) -> if outcome.counts.reused == stepped.counts.reused { Some(p) } else { match") + " }"),
+        # The shared refresh helper has no pre-execution counters. Select the
+        # deliberately omitted publication at the caller that owns both states,
+        # preserving the original hit-versus-cold distinction and test owners.
+        ("skip-hit-publication", REPLAY,
+         "(refresh_inferred(outcome, cx, next, d), next, tree)",
+         "(if outcome.counts.reused != stepped.counts.reused { outcome } else { refresh_inferred(outcome, cx, next, d) }, next, tree)"),
+        ("skip-cold-publication", REPLAY,
+         "(refresh_inferred(outcome, cx, next, d), next, tree)",
+         "(if outcome.counts.reused == stepped.counts.reused { outcome } else { refresh_inferred(outcome, cx, next, d) }, next, tree)"),
+        ("skip-renewal-publication", REPLAY,
+         "after_inferred: (state, before, after, d, sig) => refresh_inferred(state, before, after, d)",
+         "after_inferred: (state, before, after, d, sig) => state"),
         ("failed-refresh-keeps-index", REPLAY, refresh,
          refresh.replace("None -> None", "None -> Some(p)")),
         ("inferred-hit-counter", REPLAY,
@@ -76,11 +84,19 @@ def main():
                 (root / original_path).write_text(text)
             (root / path).write_text(source)
             status, output = run("test", root / REPLAY)
+            # Ordinary replay's cold publication is owned by the annotated-
+            # to-inferred leaf edit in the direct-call test. The chain tests
+            # now renew via a different executor, so pin that path separately
+            # to its actual cold-parameterized-publication assertion.
+            owner = {
+                "skip-cold-publication": re.escape("scalar replay direct calls keep implementations separate from signatures"),
+                "skip-renewal-publication": re.escape("scalar replay inferred consumers observe cold parameterized publications"),
+            }.get(name, r"scalar replay inferred [^\n]*")
             if name == "positive":
                 if status or "test(s) passed" not in output:
                     raise RuntimeError("Positive inferred replay failed\n" + output)
             elif not status or not re.search(
-                    r"^FAIL\s+check/scalar_replay :: scalar replay inferred [^\n]*\n\s+assertion failed:",
+                    r"^FAIL\s+check/scalar_replay :: " + owner + r"\n\s+assertion failed:",
                     output, re.M) or re.search(r"^error:|Exception in thread|LinkageError", output, re.M):
                 failures.append(name)
                 print(name + " missed its inferred assertion owner\n" + output, flush=True)
