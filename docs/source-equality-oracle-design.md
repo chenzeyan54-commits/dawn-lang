@@ -1,5 +1,7 @@
 # Source equality oracle coverage
 
+> Status: current. Regression oracles for existing raw source equality; no index optimization is implemented here.
+
 Repeated declaration equality currently seeks through raw source strings.
 Before changing that implementation, preserve its observable contract with
 an independent oracle built from the existing raw-string operations.
@@ -23,6 +25,9 @@ A temporary compiling mutant that rejects valid empty ranges fails exactly
 the two new tests; the original implementation is restored afterward.
 These checks establish oracle coverage, not an optimized implementation or
 performance improvement.
+
+The same 40 targeted tests also pass on the native backend using a freshly
+built cold-configured compiler and its matching staged standard library.
 
 ## Not included
 
