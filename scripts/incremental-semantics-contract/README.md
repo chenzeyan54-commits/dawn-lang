@@ -770,6 +770,23 @@ plan. Percentile reporting does not add body-edit/signature/reorder workloads,
 prove cold equivalence, or measure retained semantic-cache memory. Self-tests
 also check percentile ordering and reject empty, negative, and nonfinite samples.
 
+`lsp-configured.py --source <configured-worktree> --output <new-dir> --mode
+PreparedBodies` builds a private compiler using the real `run_lsp_configured`
+entry. `Legacy` and `Cold` select the other immutable policies; cache budgets
+are explicit arguments. The source must already contain the configured entry.
+No production CLI flag or wire method is added. Exact source fingerprints,
+policy, budgets, observer schema, and artifact hash are recorded. Launch the
+resulting `compiler.jar` with the ordinary `lsp` command.
+
+The optional private observer emits all Session counters on stderr, and
+`lsp-bench.py` preserves them per edit as `analysis_counts`. Cold standalone
+analysis has no Session counter: it is recorded as unobserved, never as zero
+work. `--uninstrumented` builds the same configured policy without observation;
+protocol equivalence and timing runs must distinguish these artifacts. Body
+reuse counts alone cannot prove parse avoidance: the legacy Session entry can
+reparse safely while reusing the same bodies. The builder's `--self-test`
+checks policy injection and fail-closed anchors, not compiler semantics.
+
 单大模块错误恢复使用 `standalone-large.dawn.txt`（500个简单函数及一个入口，
 合成语料，不冒充真实大型应用）。在上述参数后加
 `--uri untitled:incremental-large --error-round 5`，entry/edit 指向同一份文件，

@@ -16,6 +16,8 @@ import statistics
 import sys
 import time
 
+from lsp_stats import FIELDS, decode
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts/lsp-workspace-contract"))
 from workspace import LspClient, did_open, did_change, position
@@ -53,11 +55,25 @@ def validate_diagnostics(publishes, uri, version, expected_error, error_line):
 
 
 def selftest():
+    assert decode("LSP_BODY_STATS\tstandalone\tunobserved") == {
+        "scope": "standalone", "observed": False, "counts": None}
+    assert decode("LSP_BODY_STATS\tproject\t" + "\t".join(["0"] * len(FIELDS))) == {
+        "scope": "project", "observed": True, "counts": dict.fromkeys(FIELDS, 0)}
+    for invalid in ("", "LSP_BODY_STATS\tunknown\tunobserved",
+                    "LSP_BODY_STATS\tproject\t0", "LSP_BODY_STATS\tproject\tunobserved\t0",
+                    "LSP_BODY_STATS\tproject\t" + "\t".join(["-1"] * len(FIELDS)),
+                    "LSP_BODY_STATS\tproject\t" + "\t".join(["NaN"] * len(FIELDS))):
+        try:
+            decode(invalid)
+        except ValueError:
+            continue
+        raise AssertionError("analysis trace accepted invalid counters")
     assert latency_summary([1_000_000]) == {
         "samples": 1, "median_ms": 1.0, "p95_ms": 1.0}
     assert latency_summary(reversed([n * 1_000_000 for n in range(1, 21)])) == {
         "samples": 20, "median_ms": 10.5, "p95_ms": 19.0}
     assert latency_summary([0, 0, 0])["p95_ms"] == 0
+    assert latency_summary([n * 1_000_000 for n in range(1, 22)])["p95_ms"] == 20
     for invalid in ([], [-1], [float("nan")], [float("inf")]):
         try:
             latency_summary(invalid)
@@ -84,7 +100,7 @@ def selftest():
         except RuntimeError:
             continue
         raise AssertionError("diagnostic validation accepted a negative control")
-    print("OK: benchmark diagnostic validation and 6 negative controls; latency percentiles and 4 invalid-sample controls")
+    print("OK: benchmark diagnostics (6 controls), latency percentiles (4 controls), analysis traces (6 controls)")
 
 
 def main():
@@ -160,6 +176,11 @@ def main():
                 trace = client.stderr_text()[stderr_mark:].splitlines()
                 orders = [line.split("\t")[1:] for line in trace if line.startswith("LSP_INPUTS\t")]
                 counts = [line.split("\t")[1:] for line in trace if line.startswith("LSP_PREFIX_STATS\t")]
+                body_counts = [decode(line) for line in trace if line.startswith("LSP_BODY_STATS\t")]
+                if body_counts:
+                    if len(body_counts) != 1:
+                        raise RuntimeError("expected one analysis-count trace per edit")
+                    row["analysis_counts"] = body_counts[0]
                 if orders:
                     if len(orders) != 1:
                         raise RuntimeError("expected one analysis input trace per edit")
