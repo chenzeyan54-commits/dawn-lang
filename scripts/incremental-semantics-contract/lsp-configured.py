@@ -8,13 +8,125 @@ neither variant adds a production command-line flag or protocol method.
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
+import time
 
 from cold import DAWN, ROOT, edit
 from lsp_stats import FIELDS
+
+NATIVE_FLAGS = ("-std=c11", "-O2", "-fwrapv", "-fexceptions", "-fno-strict-aliasing", "-pthread")
+
+
+def hashes(directory):
+    # This is a staged artifact directory, not a repository-wide input root.
+    return {str(path.relative_to(directory)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(directory.rglob("*")) if path.is_file()}
+
+
+def stage_source(source, output, text, backend="jvm"):
+    output.mkdir(parents=True, exist_ok=False)
+    fingerprints = {}
+    for directory in ("selfhost", "compiler-plan"):
+        shutil.copytree(source / directory, output / directory,
+                        ignore=shutil.ignore_patterns("build", ".dawn"))
+        for path in sorted((source / directory).rglob("*")):
+            if path.is_file() and path.suffix in (".dawn", ".toml", ".lock"):
+                fingerprints[str(path.relative_to(source))] = hashlib.sha256(path.read_bytes()).hexdigest()
+    if backend == "native":
+        for directory in ("packages", "std", "runtime/c"):
+            shutil.copytree(source / directory, output / directory,
+                            ignore=shutil.ignore_patterns("build", ".dawn"))
+    else:
+        (output / "packages").symlink_to(source / "packages", target_is_directory=True)
+    (output / "selfhost/src/lsp/server.dawn").write_text(text)
+    return fingerprints
+
+
+def native_command(cc, output):
+    return [cc, *NATIVE_FLAGS, "-I", str(output / "runtime/c"), "-o", str(output / "dawnc"),
+            str(output / "nmain.c"), str(output / "runtime/c/dawn_rt.c"), "-lm"]
+
+
+def build_native(output, cc_name):
+    if os.environ.get("DAWN_SEED"):
+        raise RuntimeError("native private builds require the normal verified seed")
+    java_home = os.environ.get("JAVA_HOME")
+    if not java_home:
+        raise RuntimeError("set JAVA_HOME for native bootstrap tool provenance")
+    java = (Path(java_home) / "bin/java").resolve(strict=True)
+    cc_path = shutil.which(cc_name)
+    if cc_path is None:
+        raise RuntimeError("native C compiler executable was not found")
+    cc = Path(cc_path).resolve(strict=True)
+    launcher = Path(shutil.which(DAWN) or DAWN).resolve(strict=True)
+    # The selected bootstrap may live outside the source checkout under test.
+    bootstrap_directory = launcher.parent.parent
+    bootstrap_jar = bootstrap_directory / "build/dawn-selfhost.jar"
+    staged_inputs = {directory + "/" + path: value for directory in
+                     ("selfhost", "compiler-plan", "packages", "std", "runtime/c")
+                     for path, value in hashes(output / directory).items()}
+    commands = []
+    def run(label, command):
+        started = time.monotonic()
+        timed_out = False
+        with (output / (label + ".log")).open("w") as log:
+            process = subprocess.Popen([str(x) for x in command], cwd=output, stdout=log,
+                                       stderr=subprocess.STDOUT, start_new_session=True)
+            try:
+                process.wait(timeout=600)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+        commands.append({"label": label, "argv": [str(x) for x in command],
+                         "status": process.returncode, "timed_out": timed_out,
+                         "seconds": time.monotonic() - started})
+        (output / "native-commands.json").write_text(json.dumps(commands, indent=2) + "\n")
+        if process.returncode or timed_out:
+            raise RuntimeError(f"native {label} failed; see {output / (label + '.log')}")
+    run("bootstrap-version", [launcher, "--version"])
+    if not bootstrap_jar.is_file():
+        raise RuntimeError("native bootstrap must expose its actual build/dawn-selfhost.jar")
+    run("java-version", [java, "-version"])
+    run("cc-version", [cc, "--version"])
+    tools = [launcher, bootstrap_jar, java, cc]
+    tools.extend(sorted((bootstrap_directory / "build/lib").glob("*.jar")))
+    for name in ("cc1", "as", "ld"):
+        value = subprocess.check_output([str(cc), "-print-prog-name=" + name], text=True,
+                                        timeout=10).strip()
+        path = Path(shutil.which(value) or value)
+        if path.is_file():
+            tools.append(path.resolve())
+    tool_hashes = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in tools}
+    run("emitc", [launcher, "__emitc", "--std", str(output / "std"),
+                  "selfhost/src/nmain.dawn", "-o", str(output / "nmain.c")])
+    run("cc", native_command(str(cc), output))
+    executable = output / "dawnc"
+    with executable.open("rb") as stream:
+        if stream.read(4) != b"\x7fELF":
+            raise RuntimeError("native compiler output is not an ELF executable")
+    run("native-version", [executable, "--version"])
+    current_inputs = {directory + "/" + path: value for directory in
+                      ("selfhost", "compiler-plan", "packages", "std", "runtime/c")
+                      for path, value in hashes(output / directory).items()}
+    if current_inputs != staged_inputs:
+        raise RuntimeError("native staged inputs changed during compilation")
+    if tool_hashes != {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in tools}:
+        raise RuntimeError("native build tools changed during compilation")
+    return {"native_inputs": staged_inputs, "std_sources": hashes(output / "std"),
+            "native_outputs": {name: hashlib.sha256((output / name).read_bytes()).hexdigest()
+                               for name in ("nmain.c", "dawnc")},
+            "native_tools": tool_hashes,
+            "native_commands": commands,
+            "tool_scope": "launcher and actual bootstrap jar, adjacent tool jars, Java, C compiler and discoverable cc1/as/ld; system headers/libraries are host-provided",
+            "native_flags": NATIVE_FLAGS,
+            "normal_seed_records": {str(path.relative_to(bootstrap_directory)): hashlib.sha256(path.read_bytes()).hexdigest()
+                                    for path in (bootstrap_directory / "scripts").glob("seed-*.txt")}}
 
 
 def configure(text, mode, modules, text_units, products, observe, reparse=None):
@@ -88,6 +200,11 @@ def selftest():
             continue
         raise AssertionError("configuration accepted drifted anchors or invalid policy")
     print("OK: three private policies, observation schema, and four rejection controls")
+    command = native_command("/tool/cc", Path("/private"))
+    assert command[1:7] == list(NATIVE_FLAGS)
+    assert command[-3:] == ["/private/nmain.c", "/private/runtime/c/dawn_rt.c", "-lm"]
+    assert command.count("-o") == 1 and command[command.index("-o") + 1] == "/private/dawnc"
+    print("OK: native recipe preserves canonical C flags and fresh runtime/output paths")
 
 
 def main():
@@ -101,6 +218,8 @@ def main():
     parser.add_argument("--uninstrumented", action="store_true")
     parser.add_argument("--reparse-control", choices=("project", "standalone"),
                         help="private compiling negative control: use the safe legacy consumer")
+    parser.add_argument("--backend", choices=("jvm", "native"), default="jvm")
+    parser.add_argument("--cc", default=os.environ.get("CC", "cc"), help="native C compiler executable")
     args = parser.parse_args()
     source = args.source.resolve()
     original = (source / "selfhost/src/lsp/server.dawn").read_text()
@@ -108,20 +227,17 @@ def main():
     text = configure(original, args.mode, args.max_modules, args.max_text_units,
                      args.max_products, not args.uninstrumented, args.reparse_control)
     output = args.output.resolve()
-    output.mkdir(parents=True, exist_ok=False)
-    fingerprints = {}
-    for directory in ("selfhost", "compiler-plan"):
-        shutil.copytree(source / directory, output / directory,
-                        ignore=shutil.ignore_patterns("build", ".dawn"))
-        for path in sorted((source / directory).rglob("*")):
-            if path.is_file() and path.suffix in (".dawn", ".toml", ".lock"):
-                fingerprints[str(path.relative_to(source))] = hashlib.sha256(path.read_bytes()).hexdigest()
-    (output / "packages").symlink_to(source / "packages", target_is_directory=True)
-    (output / "selfhost/src/lsp/server.dawn").write_text(text)
-    with (output / "build.log").open("w") as log:
-        subprocess.run([DAWN, "build", str(output / "selfhost"), "-o", str(output / "compiler.jar"),
-                        "--vendor", "org/objectweb/asm", "--vendor", "coursierapi"],
-                       cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600)
+    fingerprints = stage_source(source, output, text, args.backend)
+    native = {}
+    if args.backend == "native":
+        native = build_native(output, args.cc)
+        artifact = output / "dawnc"
+    else:
+        artifact = output / "compiler.jar"
+        with (output / "build.log").open("w") as log:
+            subprocess.run([DAWN, "build", str(output / "selfhost"), "-o", str(artifact),
+                            "--vendor", "org/objectweb/asm", "--vendor", "coursierapi"],
+                           cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600)
     (output / "metadata.json").write_text(json.dumps({
         "source": str(source), "sources": fingerprints, "mode": args.mode,
         "max_modules": args.max_modules, "max_text_units": args.max_text_units,
@@ -130,7 +246,9 @@ def main():
         "stats_fields": FIELDS,
         "note": "cold standalone work is unobserved, not zero; timing includes optional stderr observation",
         "configured_server_sha256": hashlib.sha256(text.encode()).hexdigest(),
-        "compiler_sha256": hashlib.sha256((output / "compiler.jar").read_bytes()).hexdigest(),
+        "compiler_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        "backend": args.backend,
+        **native,
     }, indent=2) + "\n")
 
 
