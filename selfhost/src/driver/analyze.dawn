@@ -970,7 +970,7 @@ pub fn analyze_module_step(
   mf0: LoadedModule, before: AnalysisCarry, std: StdCtx, opts: CtOpts,
   js: Jsig, observer: Option[AnalysisObserver]
 ) -> ModuleStep !Env !io =
-  module_step_with_recording(mf0, before, std, opts, js, observer, false, false, None).step
+  module_step_with_recording(mf0, before, std, opts, js, observer, false, false, None, None).step
 
 ## Explicit integration entry while recording cost and cache admission are
 ## under validation. Existing prefix sessions keep their cold-miss cost until
@@ -979,7 +979,7 @@ pub fn analyze_module_step_recorded(
   mf0: LoadedModule, before: AnalysisCarry, std: StdCtx, opts: CtOpts,
   js: Jsig, observer: Option[AnalysisObserver]
 ) -> ModuleStep !Env !io =
-  module_step_with_recording(mf0, before, std, opts, js, observer, true, false, None).step
+  module_step_with_recording(mf0, before, std, opts, js, observer, true, false, None, None).step
 
 ## Opt-in session transition. Headers, comptime and export/carry publication
 ## always run against this revision; only validated body executions may reuse.
@@ -987,12 +987,24 @@ pub fn analyze_module_step_cached(
   mf0: LoadedModule, before: AnalysisCarry, std: StdCtx, opts: CtOpts,
   js: Jsig, observer: Option[AnalysisObserver], previous: Option[ModuleBodyCache]
 ) -> CachedModuleStep !Env !io =
-  module_step_with_recording(mf0, before, std, opts, js, observer, false, true, previous)
+  module_step_with_recording(mf0, before, std, opts, js, observer, false, true, previous, None)
+
+## Consume the loader's immutable proof without reparsing. A refused prepared
+## proof is distinct from legacy input: it must remain refused, not re-created.
+pub fn analyze_module_step_prepared(
+  prepared: PreparedModule, before: AnalysisCarry, std: StdCtx, opts: CtOpts,
+  js: Jsig, observer: Option[AnalysisObserver], previous: Option[ModuleBodyCache]
+) -> CachedModuleStep !Env !io = {
+  let data: PreparedModuleData = prepared
+  module_step_with_recording(data.loaded, before, std, opts, js, observer,
+    false, true, previous, Some(data.snapshot))
+}
 
 fn module_step_with_recording(
   mf0: LoadedModule, before: AnalysisCarry, std: StdCtx, opts: CtOpts,
   js: Jsig, observer: Option[AnalysisObserver], record_bodies: Bool,
-  cache_bodies: Bool, previous: Option[ModuleBodyCache]
+  cache_bodies: Bool, previous: Option[ModuleBodyCache],
+  prepared_snapshot: Option[Option[source_snapshot.Snapshot]]
 ) -> CachedModuleStep !Env !io = {
   var diags: List[LocDiag] = []
   # The one place a module's identity is settled, and the reason it is here
@@ -1068,9 +1080,12 @@ fn module_step_with_recording(
         # Binding may alter only loader-resolved import paths. Recovered or
         # mismatched syntax never lends source coordinates to cached bodies.
         let snapshot: Option[source_snapshot.Snapshot] = if cache_bodies && not opts.ffi {
-          match source_snapshot.of(mf.text) {
-            Some(parsed) -> source_snapshot.resolved(parsed, mf.m)
-            None -> None
+          match prepared_snapshot {
+            Some(snapshot) -> snapshot
+            None -> match source_snapshot.of(mf.text) {
+              Some(parsed) -> source_snapshot.resolved(parsed, mf.m)
+              None -> None
+            }
           }
         } else { None }
         let prior: Option[scalar_replay.Admitted] = match previous {

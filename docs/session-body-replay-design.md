@@ -113,6 +113,14 @@ prepared loader results on package rewrites, overlays, recovered sources and
 loader errors. Actual invocation instrumentation remains required to prove the
 cost claim; semantic equality alone does not establish one parse per source.
 
+`analyze_module_step_prepared` consumes an opaque prepared module and never
+falls back to reparsing when that module has no proof. The legacy cached-module
+entry retains its checked reparse fallback for arbitrary `LoadedModule` callers.
+`incremental.analyze_prepared` derives both ordinary inputs and prepared modules
+from one opaque load and enters the same Session loop as the legacy API. It
+cannot accept a separately supplied syntax list. Prefix hits and all body/cache
+accounting remain shared; disabling caching does not create another parser.
+
 Keep exact-prefix module hits as their existing distinct optimization. Add a
 separate bounded current-generation module-to-body-cache table inside the opaque
 session. A prefix mismatch ends whole-module reuse, but does not prevent current

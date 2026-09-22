@@ -1,0 +1,59 @@
+# Prepared loader inputs must enter the same session lifecycle as arbitrary
+# loaded inputs, with identical semantic products and actual body accounting.
+use std/io
+use compiler/driver/analyze.{prepare_standalone, prepared_result, analyze_program}
+use compiler/driver/incremental
+use compiler/driver/stdlib.{load_std, std_load_error_text}
+use compiler/driver/checkdump
+use compiler/check/jsig.{jsig_refused, refused_probe}
+use compiler/ir/interp.{ct_default}
+
+test "prepared sessions preserve legacy counts products and error recovery" {
+  io.with_fs_real(() => io.with_env_real(() => {
+    let std = match load_std("std") {
+      Ok(value) -> value
+      Err(error) -> panic(std_load_error_text(error))
+    }
+    let initial = incremental.new_with_body_cache(std, ct_default(), jsig_refused(), refused_probe, 8, 20000, 20)
+    var prepared_owner = initial
+    var legacy_owner = initial
+    var iteration = 0
+    for text in ["fn leaf() = 1\nfn caller() = leaf()\n",
+      "fn leaf() = 1\nfn caller() = leaf()\n",
+      "fn leaf() = 2\nfn caller() = leaf()\n",
+      "# λ🌅 shifted\nfn leaf() = 2\nfn caller() = leaf()\n",
+      "fn leaf() = true\nfn caller() = leaf()\n",
+      "fn broken( -> Int = 1\nfn after() -> Int = 2\n",
+      "fn leaf() = true\nfn caller() = leaf()\n",
+      "fn leaf() = missing\nfn caller() = leaf()\n",
+      "fn leaf() = 3\nfn caller() = leaf()\n",
+      "fn leaf() = 3\n"] {
+      let input = prepare_standalone("<lsp>", text)
+      let loaded = prepared_result(input)
+      let next = incremental.analyze_prepared(prepared_owner, input)
+      let legacy = incremental.analyze(legacy_owner, loaded)
+      let cold = analyze_program(loaded, std, ct_default(), jsig_refused())
+      assert next.stats == legacy.stats
+      assert next.program.diags == cold.diags && next.program.decl_spans == cold.decl_spans
+      assert checkdump.render(next.program) == checkdump.render(cold)
+      assert next.program.modules[0].tm == cold.modules[0].tm
+      assert next.program.modules[0].ct == cold.modules[0].ct
+      if iteration == 0 { assert next.stats.checked_bodies == 2 && next.stats.reused_bodies == 0 }
+      if iteration == 1 { assert next.stats.reused_modules == 1 && next.stats.visited_bodies == 0 }
+      if iteration == 2 { assert next.stats.checked_bodies == 1 && next.stats.reused_bodies == 1 }
+      if iteration == 3 { assert next.stats.checked_bodies == 0 && next.stats.reused_bodies == 2 }
+      prepared_owner = next.session
+      legacy_owner = legacy.session
+      iteration = iteration + 1
+    }
+    let input = prepare_standalone("<lsp>", "fn leaf() = 3\n")
+    let evicted = incremental.analyze_prepared(incremental.evict(prepared_owner), input)
+    assert evicted.stats.reused_modules == 0 && evicted.stats.reused_bodies == 0
+    assert evicted.stats.checked_bodies == 1
+    let disabled = incremental.analyze_prepared(incremental.disable_reuse(evicted.session), input)
+    let again = incremental.analyze_prepared(disabled.session, input)
+    assert again.stats.retained_total_modules == 0 && again.stats.retained_body_products == 0
+    assert again.stats.unobserved_modules == 1 && again.stats.reused_modules == 0
+    assert checkdump.render(again.program) == checkdump.render(evicted.program)
+  }))
+}
