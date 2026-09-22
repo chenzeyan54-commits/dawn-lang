@@ -778,6 +778,16 @@ No production CLI flag or wire method is added. Exact source fingerprints,
 policy, budgets, observer schema, and artifact hash are recorded. Launch the
 resulting `compiler.jar` with the ordinary `lsp` command.
 
+`configured-lsp-contract.py --output <new-dir> --suite all` composes fresh
+plain/observed Cold and PreparedBodies builds, both edit matrices, and both
+compiling legacy-reparse controls. `--suite standalone` and `--suite project`
+retain independent positives for future CI placement. Each control must first
+pass its complete semantic/body-count matrix, then fail the exact parse-count
+assertion; compilation, linkage, timeout, and unrelated failures never count as
+success. See [the runner design](configured-lsp-contract.md) for evidence and
+scope. `--self-test` validates orchestration and fail-closed classification
+without a compiler. This is correctness coverage, not performance evidence.
+
 The optional private observer emits all Session counters on stderr, and
 `lsp-bench.py` preserves them per edit as `analysis_counts`. Cold standalone
 analysis has no Session counter: it is recorded as unobserved, never as zero
