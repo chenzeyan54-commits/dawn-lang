@@ -57,6 +57,23 @@ def main():
     subjects.extend((name, 'checker', checker[:dispatch_start] + edit(dispatch, old, new) + checker[dispatch_end:],
                      'candidate revalidation dispatches queries without accepting unknown facts')
                     for name, old, new in dispatch_variants)
+    # Qualified effects are captured by a real provider/consumer fixture in
+    # checker, not the synthetic context-family fixture. Mutate cx but execute
+    # that fixture so a missing alias/member becoming public must invalidate
+    # both its lookup answer and its optional diagnostic.
+    qualified_owner = 'qualified effect reads revalidate positive negative and diagnostic answers'
+    qualified_variants = []
+    for variant, helper in [('QualifiedEffectName', 'qualified_effect_name_read'),
+                            ('QualifiedEffectDiagnostic', 'qualified_effect_diagnostic_read')]:
+        anchor = (f'semantic_reads.{variant}(qualifier, name, _) -> {{\n'
+                  f'      let (next, _) = {helper}(initial, qualifier, name)\n'
+                  '      next }')
+        for mode, replacement in [('discard', anchor.replace('      next }', '      initial }')),
+                                  ('trust', f'semantic_reads.{variant}(_, _, _) -> return Some(true)')]:
+            qualified_variants.append((mode + '-' + helper, 'cx',
+                                       original[:start] + edit(body, anchor, replacement) + original[end:],
+                                       qualified_owner))
+    subjects.extend(qualified_variants)
     with tempfile.TemporaryDirectory(prefix='dawn-context-revalidation-') as temp:
         root = Path(temp)
         for directory in ('selfhost', 'compiler-plan'):
@@ -68,17 +85,18 @@ def main():
             (root / 'selfhost/src/check/checker.dawn').write_text(checker)
             target = root / f'selfhost/src/check/{module}.dawn'
             target.write_text(text)
-            status, output = run('test', target)
+            test_module = 'checker' if test == qualified_owner else module
+            status, output = run('test', root / f'selfhost/src/check/{test_module}.dawn')
             if test is None:
                 if status or 'test(s) passed' not in output:
                     raise RuntimeError('Positive failed\n' + output)
             else:
-                failure = re.compile(r'^FAIL\s+check/' + module + r' :: ' + re.escape(test) +
+                failure = re.compile(r'^FAIL\s+check/' + test_module + r' :: ' + re.escape(test) +
                                      r'\n\s+assertion failed:', re.M)
                 if not status or not failure.search(output) or re.search(r'^error:', output, re.M):
                     raise RuntimeError(name + ' missed its assertion owner\n' + output)
             print('OK: context revalidation ' + name, flush=True)
-    print(f'OK: {len(variants) + len(dispatch_variants)} compiling context controls, {time.monotonic() - started:.2f}s')
+    print(f'OK: {len(variants) + len(dispatch_variants) + len(qualified_variants)} compiling context controls, {time.monotonic() - started:.2f}s')
 
 
 if __name__ == '__main__':
