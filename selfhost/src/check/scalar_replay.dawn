@@ -13,7 +13,7 @@ use check/tast.{TFun}
 use check/body_execution
 use check/body_execution.{Recorded, Saved, SavedFunction, FunctionInput}
 use check/body_product
-use check/body_product.{Product, BodyProduct}
+use check/body_product.{Product, BodyProduct, Change}
 use check/identity
 use check/identity.{ModuleKey, DeclKey}
 use check/allocation
@@ -825,12 +825,14 @@ test "scalar replay inferred products guard exact signature publication" {
       assert product.function_reads == Some([])
       let changed_sig = Sig { ..product.tree.sig, param_names: ["unexpected"] }
       let changed_tree = TFun { ..product.tree, sig: changed_sig }
+      let changed_publication = Change { key: product.signatures[0].key, value: Some(changed_sig) }
       let bad: List[Product] = [
         BodyProduct { ..product, signatures: [] },
         BodyProduct { ..product, signatures: product.signatures ++ product.signatures },
         BodyProduct { ..product, body_writes: Some([]) },
         BodyProduct { ..product, function_reads: None },
-        BodyProduct { ..product, tree: changed_tree }
+        BodyProduct { ..product, tree: changed_tree },
+        BodyProduct { ..product, tree: changed_tree, signatures: [changed_publication] }
       ]
       for p in bad {
         let malformed = Recorded { ..saved, entries: [SavedFunction(key, input, p)] }
