@@ -1021,40 +1021,42 @@ fn module_step_with_recording(
           }
           None -> None
         }
-        if snapshot != None {
-          let revision = snapshot.expect("verified source binding")
-          let (bodies, admitted, counts) = match prior {
-            Some(old) -> {
-              let renewed = scalar_replay.replay_and_record(old, headers, revision)
-              let pass = renewed.replayed
-              (pass.bodies, renewed.admitted, ModuleBodyCounts {
-                checked: pass.checked, reused: pass.reused,
-                cold_unadmitted: pass.cold_unadmitted, cold_rejected: pass.cold_rejected,
-                visited: renewed.visited, capture_refused: renewed.capture_refused,
-                retained: scalar_replay.admitted_count(renewed.admitted)
-              })
+        match snapshot {
+          Some(revision) -> {
+            let (bodies, admitted, counts) = match prior {
+              Some(old) -> {
+                let renewed = scalar_replay.replay_and_record(old, headers, revision)
+                let pass = renewed.replayed
+                (pass.bodies, renewed.admitted, ModuleBodyCounts {
+                  checked: pass.checked, reused: pass.reused,
+                  cold_unadmitted: pass.cold_unadmitted, cold_rejected: pass.cold_rejected,
+                  visited: renewed.visited, capture_refused: renewed.capture_refused,
+                  retained: scalar_replay.admitted_count(renewed.admitted)
+                })
+              }
+              None -> {
+                let recorded = body_execution.record(scope, headers)
+                let admitted = scalar_replay.admit(scope, headers, revision, recorded)
+                (recorded.bodies, admitted, ModuleBodyCounts {
+                  checked: recorded.checked, reused: 0,
+                  cold_unadmitted: recorded.checked, cold_rejected: 0,
+                  visited: recorded.checked, capture_refused: recorded.refused,
+                  retained: scalar_replay.admitted_count(admitted)
+                })
+              }
             }
-            None -> {
-              let recorded = body_execution.record(scope, headers)
-              let admitted = scalar_replay.admit(scope, headers, revision, recorded)
-              (recorded.bodies, admitted, ModuleBodyCounts {
-                checked: recorded.checked, reused: 0,
-                cold_unadmitted: recorded.checked, cold_rejected: 0,
-                visited: recorded.checked, capture_refused: recorded.refused,
-                retained: scalar_replay.admitted_count(admitted)
-              })
+            body_counts = Some(counts)
+            if counts.retained > 0 {
+              body_cache = Some(ModuleBodyCacheData { scope: scope, admitted: admitted })
             }
+            assemble_module_bodies(bodies)
           }
-          body_counts = Some(counts)
-          if counts.retained > 0 {
-            body_cache = Some(ModuleBodyCacheData { scope: scope, admitted: admitted })
-          }
-          assemble_module_bodies(bodies)
-        } else if record_bodies {
-          let recorded = body_execution.record(scope, headers)
-          body_records = Some(recorded.entries)
-          assemble_module_bodies(recorded.bodies)
-        } else { check_module_bodies(headers) }
+          None -> if record_bodies {
+            let recorded = body_execution.record(scope, headers)
+            body_records = Some(recorded.entries)
+            assemble_module_bodies(recorded.bodies)
+          } else { check_module_bodies(headers) }
+        }
       }
     }
     check_runs = 1
