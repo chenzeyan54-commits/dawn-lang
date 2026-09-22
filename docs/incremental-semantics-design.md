@@ -386,10 +386,35 @@ Product仍记录alias_resolved变化作为显式写集，不声称正常body必�
 | 1 | 冷路径对照、阶段基线、Java 观测 | 已验收；证据汇入第2期报告 |
 | 2 | workspace 前缀缓存、生命周期、基本逐出 | #107已合并；[验收报告](history/incremental-semantics-p2-report.md) |
 | 3 | 稳定身份、具名产物及准入 | 声明/树/状态迁移已分批实现，完整生产接线未完成 |
-| 4 | query runtime、依赖失效和 header 接线 | 人工查询图运行时实现中，真实 checker 读取未接线 |
+| 4 | Query runtime, dependency invalidation, and header integration | Real checker facts are recorded and revalidated; the opt-in body executor shares candidate-local query verdicts. Cross-revision input invalidation and production scheduling remain incomplete. |
 | 5 | 函数 body 增量、standalone/Playground | 未开始；验收后报告 |
 | 6 | comptime/Java/索引与工具消费者收口 | 未开始 |
 | 7 | 长会话内存、完整差分、性能与发布验收 | 未开始；验收后报告 |
+
+### M2 invalidation evidence and remaining boundary
+
+The query runtime is no longer limited to synthetic graphs. The opt-in
+`check/scalar_replay` executor shares `AssignableType` and `BuiltinTypeAnswer`
+verdicts within one candidate revision. Signature-scoped facts use that body's
+binder context instead. Every `prepare` starts a fresh memo; this is not a
+cross-revision cache of query verdicts. The builtin memo fixture checks both a
+hit becoming absent and a miss becoming present in the next candidate table.
+
+Source-edit fixtures in `check/checker` now distinguish an unrelated impl
+addition from the implementation that satisfies a recorded lookup miss. A
+second fixture changes a generic impl's bound while preserving implementation
+presence and arity: its recorded conditional subgoals must still invalidate.
+Both compare observed checking with logging-disabled cold checking. The
+`witness-revalidation.py` controls must compile and fail their named assertions
+when missing implementations or old subgoals are trusted unconditionally.
+
+These checks establish query revalidation, not reuse of diagnosed bodies or
+general trait-dependent functions. Unsupported facts still refuse admission;
+function-call queries and broader body classes need further integration.
+The production module transition continues to disable body recording by
+default. Phase 5 and phase 7 acceptance reports remain pending, and phase 4
+must not be described as fully integrated merely because its private executor
+and synthetic query graph pass their contracts.
 
 常量产物迁移方案：共享检查状态增量采用带类型参数的BodyProduct[T]，函数仍通过
 Product别名携带TFun，常量通过ConstantProduct携带真实TConst，不构造虚假函数。

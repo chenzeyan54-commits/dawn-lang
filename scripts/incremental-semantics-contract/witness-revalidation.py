@@ -19,6 +19,17 @@ def main():
     owner = 'witness revalidation recomputes candidate facts and refuses unknown queries'
     structural = 'witness reads preserve nominal recursion guards and substituted first gaps'
     variants = [
+        ('trust-missing-implementation',
+         'semantic_reads.ImplementationPresence(id, subject, _) -> {',
+         'semantic_reads.ImplementationPresence(id, subject, answer) -> {\n'
+         '      if not answer { return Some(true) }',
+         'implementation lookup misses invalidate after source edits but unrelated impls do not'),
+        ('trust-implementation-subgoals',
+         'semantic_reads.ImplementationSubgoals(id, subject, _) -> {\n'
+         '      let (next, _) = implementation_subgoals_read(initial, id, subject)\n'
+         '      next\n    }',
+         'semantic_reads.ImplementationSubgoals(_, _, _) -> return Some(true)',
+         'conditional implementation edits invalidate recorded consumer subgoals'),
         ('accept-changed-answer', 'Some(semantic_reads.observed_equal(fact, observed.function_reads))',
          'Some(true)', owner),
         ('accept-missing-trait', 'if not map.has(initial.traits, id) { return Some(false) }',
