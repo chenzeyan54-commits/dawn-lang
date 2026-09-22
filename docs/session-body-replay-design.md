@@ -1,5 +1,7 @@
 # Session-owned body replay
 
+> Status: current. Opt-in implementation and outstanding production acceptance.
+
 This is the production integration work following the opt-in body executor,
 single-pass renewal, and primitive inferred publication. It is not a phase-5
 acceptance report. No speedup is asserted: the repaired production benchmarks
@@ -78,6 +80,28 @@ unadmitted/rejected bodies, capture refusals, and retained products separately.
 Changing the captured project plan, standard library, options, or Java lease
 constructs a new owner. FFI runs and unproven Java queries must not retain an
 apparently pure prefix. Eviction and the explicit cold switch affect only speed.
+
+The implemented owner uses `new_with_body_cache`; `new` keeps prefix-only
+behavior. Prefix and body representations are charged separately against the
+same module/text budgets, even when they refer to one source file. Current body
+products take priority at each module; a product set that exceeds the remaining
+product budget is not retained. Budget pressure may stop prefix retention but
+does not prohibit later smaller body entries that fit. All accounting is for
+the returned generation, not every version of the immutable owner a caller
+could choose to retain externally.
+
+`retained_modules` and `retained_text_units` retain their prefix-only meanings;
+the `retained_total_*` and `retained_body_*` fields describe aggregate storage.
+Body execution counts exclude whole-prefix hits. `unobserved_modules` reports
+module checks on paths where no body counter ran; zero observed body checks is
+not a claim that those modules did no work. `evict` clears both cache tables but
+allows the next revision to record anew. `disable_reuse` clears both, disables
+body recording, and sets retention budgets to zero for subsequent updates.
+
+Body keys contain raw module/class/path identity, canonical path, and current
+standard-library identity. A collision in effective module name, class name or
+canonical source path disables both caches for that run. Source deletion removes
+its entry; changing canonical path prevents borrowing either representation.
 
 ## Consumers and acceptance
 
