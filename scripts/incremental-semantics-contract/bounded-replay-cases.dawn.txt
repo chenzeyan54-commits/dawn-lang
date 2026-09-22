@@ -2,6 +2,7 @@
 # complete original read log unless the read itself is the mutated evidence.
 use std/list
 use std/io
+use std/str
 use compiler/check/tast.{TExpr, TFun, XBinary, XCallFn, XLocal, WForward}
 use compiler/check/semantic_reads.{UnificationRead, InferenceBindings}
 use compiler/driver/analyze.{Program, CheckedMod, prepare_standalone, prepared_result, analyze_program}
@@ -139,6 +140,36 @@ fn prepared_bounded_cases() -> List[ProgramPair] !io = io.with_fs_real(() => io.
     pairs = pairs ++ [ProgramPair { cold: cold, actual: actual.program }]
     session = actual.session
     index = index + 1
+  }
+  # Positional calls remain well typed when only the trait parameter spelling
+  # changes, but their canonical signature facts must still be replaced.
+  let two_traits = support ++ "trait Stamp[T] { fn stamp(x: T) -> Int }\n"
+  let renamed = str.replace(two_traits, "scale(x: T, k: Int)", "scale(x: T, factor: Int)")
+  let stamp = "impl Stamp[Coin] { fn stamp(x: Coin) -> Int = x.value }\n"
+  let more_bounds = str.replace(first, "T: Scale", "T: Scale + Stamp")
+  let bad_header = str.replace(renamed, "factor: Int) -> Int", "factor: Int) -> Bool")
+  let bad_impl = "impl Scale[Coin] { fn scale(x: Coin, k: Int) -> Bool = true }\n"
+  session = incremental.new_with_body_cache(std, ct_default(), oracle, refused_probe, 8, 100000, 20)
+  for (text, checked, reused, broken) in [
+    (two_traits ++ implementation ++ stamp ++ first ++ second, 4, 0, false),
+    (renamed ++ implementation ++ stamp ++ first ++ second, 4, 0, false),
+    ("# renamed recovery\n" ++ renamed ++ implementation ++ stamp ++ first ++ second, 2, 2, false),
+    (renamed ++ implementation ++ stamp ++ more_bounds ++ second, 3, 1, false),
+    ("# bounds recovery\n" ++ renamed ++ implementation ++ stamp ++ more_bounds ++ second, 2, 2, false),
+    (bad_header ++ bad_impl ++ stamp ++ more_bounds ++ second, 4, 0, true),
+    (renamed ++ implementation ++ stamp ++ more_bounds ++ second, 4, 0, false),
+    ("# repaired recovery\n" ++ renamed ++ implementation ++ stamp ++ more_bounds ++ second, 2, 2, false)
+  ] {
+    let input = prepare_standalone("<lsp>", text)
+    GenericTrace.reset()
+    let actual = incremental.analyze_prepared(session, input)
+    if actual.stats.checked_bodies != checked || actual.stats.reused_bodies != reused ||
+      GenericTrace.count() != checked || (len(actual.program.diags) != 0) != broken {
+      panic("bounded replay real dependency transition")
+    }
+    let cold = analyze_program(prepared_result(input), std, ct_default(), oracle)
+    pairs = pairs ++ [ProgramPair { cold: cold, actual: actual.program }]
+    session = actual.session
   }
   pairs
 }))

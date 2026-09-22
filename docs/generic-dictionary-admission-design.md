@@ -1,16 +1,16 @@
 # Bounded generic dictionary admission: trace-first slice
 
-> Status: current. Production refusal baseline and proposed entry proof; admission remains unchanged.
+> Status: current. Pure explicit bounded trait-call replay is implemented; correctness fixtures pass, but the original G3 value gate fails. Earlier refusal and entry-only sections below are historical evidence.
 
-This is an M3.3 prerequisite, not a new admission class or a completed G3 gate.
+This tracks the M3.3 prerequisites and subsequent bounded admission class, not a completed G3 gate.
 The original workload remains `Scale[T]`: a nominal `Coin` implementation and
 explicit-return generic functions making three dictionary-dispatched calls.
 Unbounded identity functions are not a substitute. Additional fixtures use two
 bounds and two bounded type parameters to expose dictionary ordering and key
-axis mistakes. Production recording, admission, replay, and renewal remain
-unchanged in this slice.
+axis mistakes. The initial trace-only slice did not change admission; the
+current implementation described below admits the proven pure bounded class.
 
-## Baseline contract
+## Historical refusal-baseline contract
 
 Capture each fixture through `body_execution.record`, then use
 `scalar_replay.admit`, `replay`, and `replay_and_record` over repeated, shifted,
@@ -23,7 +23,7 @@ read, write, typed tree, symbol, bound delta, and dictionary frame through a
 private reflection trace rather than introducing broad printing dictionaries
 into the compiler.
 
-## Candidate entry proof to review before admission
+## Historical candidate entry-proof proposal
 
 The proposed helper takes the candidate scheduler entry `Cx`, exact candidate
 declaration and signature, and projected saved product. It returns a temporary
@@ -48,14 +48,14 @@ fact family becomes shared memo evidence in this slice.
 
 ## Deferred work
 
-Production guard changes require trace review and independent compiling
+The implemented guard changes passed trace review and independent compiling
 negative controls. Effect evidence, inferred generic signatures, associated
 outputs, defaults, lambdas, and wider nominal values remain separate classes.
 G3 still requires the original 1000-function generic workload, truthful cold
 implementation-body denominators, real edit hit rates, and replay per-body
 cost below cold checking. No speedup follows from this refusal baseline.
 
-## Observed production baseline
+## Historical observed production refusal baseline
 
 The private `scripts/incremental-semantics-contract/generic-trace.py` fixture
 retains two original `g0`/`g1` functions, each making the benchmark's three
@@ -274,12 +274,12 @@ matcher and length-only presence checks reduced it from 5,977 lines /
 unnecessary diagnostic/change-list equality derivations disappeared. Required
 signature, frame, symbol and journal comparisons remain; so do temporary
 entry allocation and their runtime costs. No zero-overhead claim is made.
-No golden was re-recorded, and production replay does not call this module
-yet. Integrated workload cost remains acceptance work before introducing it.
+No golden was re-recorded at this prerequisite stage, and production replay
+did not yet call the module. The subsequent admission below now does so.
 
 ## Pure bounded trait-call replay
 
-The next implementation enables the original `Scale[T]`, multiple-bound and
+The current implementation enables the original `Scale[T]`, multiple-bound and
 two-type-parameter workloads as a separately validated replay class. Ordinary
 callee indexing and shared-query memo rules remain unchanged. Admission pairs
 source and signatures exactly as before, reconstructs a temporary canonical
@@ -326,5 +326,35 @@ defenses, not an AST-to-TAST rechecker or proof against arbitrary fabrication.
 
 The original 1,000-function `Scale[T]` benchmark keeps its exact source and
 1,001-body denominator, including its unsupported implementation method. Its
-generic hit expectation is now 1,000. Measurements and integrated acceptance
-remain pending; no production speedup is claimed by these correctness results.
+generic hit expectation is now 1,000. Integrated acceptance remains pending;
+the first isolated value measurement below is negative.
+
+## Real dependency invalidation and recovery
+
+The expanded fixture now compares twelve complete prepared Session/cold
+Programs. A full trait-signature change (parameter spelling) rejects both
+unchanged callers: four actual cold checks, then two cold/two hits on the next
+source move. Adding a second bound to one caller yields three cold/one hit,
+then two cold/two hits. Changing the trait result to Bool produces diagnostics
+and four cold checks; repair remains cold, then the next generation recovers
+two hits. Full syntax, typed/comptime products, contexts, diagnostics and views
+remain equal to fresh cold analysis. The FunctionAnswer-only bypass fails the
+exact dependency-transition owner. The positive and all eleven compiling
+controls passed in 81.81s; these are correctness-fixture times, not latency.
+
+## Original workload value result
+
+The unchanged 1,000-function Scale workload was measured in isolated fresh
+JVMs, 30 rounds with 12 warmups (18 measured samples), keeping the 1,001-body
+census and complete cold oracle. Median operation times were cold 52.613 ms,
+record 165.253 ms, admit 7.812 ms, replay 124.647 ms and renewal 232.101 ms.
+Replay is approximately 2.37 times slower than cold: **G3 is not met**.
+These are operation wall times, not CPU or retained semantic-cache memory.
+
+Private exact-method instrumentation on the identical frozen benchmark JAR
+attributes 77.227 ms of a 133.148 ms instrumented replay to 1,000 exact source
+text comparisons. Renewal additionally spends 80.075 ms in 1,001 capture
+environment comparisons. The adjacent uninstrumented/instrumented medians
+differ by about 4.1% for replay and 1.5% for renewal; instrumentation and JIT
+effects preclude treating phase sums as uninstrumented latency. Preserve every
+proof and the original workload while addressing these measured costs.
