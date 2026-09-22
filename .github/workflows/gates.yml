@@ -1458,6 +1458,8 @@ jobs:
 
       # was the incremental-witness job until 2026-09-11.
       # Two positive modules plus 31 compiling controls took 108.71s on 2026-09-09.
+      # 2026-09-22: one positive module and 13 remaining controls took 80.12s;
+      # keep the existing 205s witness allocation, including runner headroom.
       - name: Witness observation and candidate revalidation contracts
         run: python3 scripts/incremental-semantics-contract/witness-revalidation.py
 
