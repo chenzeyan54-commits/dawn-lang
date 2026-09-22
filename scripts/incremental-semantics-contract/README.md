@@ -787,6 +787,19 @@ reuse counts alone cannot prove parse avoidance: the legacy Session entry can
 reparse safely while reusing the same bodies. The builder's `--self-test`
 checks policy injection and fail-closed anchors, not compiler semantics.
 
+`lsp-edit-matrix.py --functions 1000 --output <new-dir> -- <server-command>`
+exercises ten real untitled-document revisions: initial analysis, whitespace,
+body edit, inferred signature change, reorder, deletion, insertion, error,
+recovery, and an identical revision. This is synthetic correctness/count
+coverage, not a latency experiment or a real-application hit-rate corpus.
+`--expect-reuse` requires actual observed body reuse on four edit classes.
+`--compare <prior-output>` requires identical source hashes and complete
+diagnostics/hover/definition/completion responses across independently selected
+policies. Counts are stored separately and excluded from semantic equality;
+uninstrumented servers can therefore use the same comparison. Generic,
+method/default, project dependency, and retained-memory acceptance remain
+separate requirements.
+
 单大模块错误恢复使用 `standalone-large.dawn.txt`（500个简单函数及一个入口，
 合成语料，不冒充真实大型应用）。在上述参数后加
 `--uri untitled:incremental-large --error-round 5`，entry/edit 指向同一份文件，
