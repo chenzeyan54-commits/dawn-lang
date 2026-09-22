@@ -840,6 +840,10 @@ These are project totals, not source-attributed proof that each module is
 processed once. This is a
 small synthetic cross-module correctness/count fixture, not latency or
 real-application hit-rate evidence.
+Edit substitutions require exactly one anchor. Metadata also records hashes
+of explicit launch executables, jar arguments, and classpath files; this is
+not a transitive runtime-classpath attestation. Supply independently configured
+cold and prepared artifacts and retain their builder metadata alongside runs.
 
 单大模块错误恢复使用 `standalone-large.dawn.txt`（500个简单函数及一个入口，
 合成语料，不冒充真实大型应用）。在上述参数后加

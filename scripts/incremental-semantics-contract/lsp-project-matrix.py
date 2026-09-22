@@ -7,7 +7,9 @@ an unrelated consumer body. This validates protocol behavior, not latency.
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
 import sys
 
 from lsp_stats import decode
@@ -28,6 +30,31 @@ EXPECTED_COUNTS = {
     "close-provider": (3, 1, 0, 1, 0, 2),
     "reopen-provider": (3, 1, 0, 0, 0, 4),
 }
+
+
+def replace_once(text, old, new):
+    if text.count(old) != 1:
+        raise ValueError("project edit anchor is missing or ambiguous")
+    return text.replace(old, new)
+
+
+def artifact_hashes(command):
+    # Record explicit launch inputs, not a claim about the transitive classpath.
+    paths = []
+    executable = shutil.which(command[0])
+    if executable:
+        paths.append(Path(executable))
+    for index, argument in enumerate(command):
+        if index and command[index - 1] in {"-cp", "-classpath", "--class-path"}:
+            for entry in argument.split(os.pathsep):
+                path = Path(entry)
+                if path.is_file():
+                    paths.append(path)
+                elif path.is_dir():
+                    paths.extend(path.rglob("*.class"))
+        elif argument.endswith(".jar") and Path(argument).is_file():
+            paths.append(Path(argument))
+    return {str(path.resolve()): hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(set(paths))}
 
 
 def validate_counts(counts, label):
@@ -62,6 +89,13 @@ def validate_versions(publishes, expected):
 
 
 def selftest():
+    assert replace_once("a target b", "target", "changed") == "a changed b"
+    for invalid in ("absent", "target target"):
+        try:
+            replace_once(invalid, "target", "changed")
+        except ValueError:
+            continue
+        raise AssertionError("drifted project edit anchor accepted")
     clean = {"uri": "main", "version": 2, "diagnostics": []}
     error = {"uri": "lib", "version": 3, "diagnostics": [{"message": "expected error"}]}
     validate_epoch([clean], "main", 2, None, None)
@@ -123,14 +157,16 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     metadata = {
         "command": command, "sources": fingerprints, "timing_evidence": False,
+        "launch_artifacts": artifact_hashes(command),
+        "artifact_scope": "explicit executable, jar arguments and classpath files; not transitive classpath attestation",
     }
-    boolean_lib = texts["lib"].replace("exported(x: Int) -> Int = x + 1", "exported(x: Int) -> Bool = true")
-    boolean_main = texts["main"].replace("probe(x: Int) -> Int", "probe(x: Int) -> Bool")
+    boolean_lib = replace_once(texts["lib"], "exported(x: Int) -> Int = x + 1", "exported(x: Int) -> Bool = true")
+    boolean_main = replace_once(texts["main"], "probe(x: Int) -> Int", "probe(x: Int) -> Bool")
     steps = [
-        ("provider-body", "lib", texts["lib"].replace("x + 1", "x + 9"), None),
+        ("provider-body", "lib", replace_once(texts["lib"], "x + 1", "x + 9"), None),
         ("provider-signature", "lib", boolean_lib, "main"),
         ("consumer-recovery", "main", boolean_main, None),
-        ("provider-error", "lib", boolean_lib.replace("= true", "= missing_value"), "lib"),
+        ("provider-error", "lib", replace_once(boolean_lib, "= true", "= missing_value"), "lib"),
         ("provider-recovery", "lib", boolean_lib, None),
         ("provider-move", "lib", "# moved provider\n\n" + boolean_lib, None),
         ("close-provider", "lib", None, "main"),
