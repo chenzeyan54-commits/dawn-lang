@@ -1942,8 +1942,10 @@ jobs:
     # 2026-09-11: 581s (run 34484938024) over the 25 completed main runs of
     # 09-08T00:18Z .. 09-10T13:48Z (the 2026-09-10 CI audit's obs.json),
     # 91s over the 490s claim.
-    # budget: 3x 581s worst observed
-    timeout-minutes: 30
+    # 2026-09-22: source-resolution's positive and 13 compiling controls
+    # took 108.72s locally. Planning allowance: 581 + 2 * 109 = 799s.
+    # budget: 3x 799s planning value (prior baseline plus source resolution controls)
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -1951,6 +1953,8 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: LSP workspace ownership and mutants
         run: ./scripts/lsp-workspace-contract/run.sh
+      - name: resolved source snapshot binding controls
+        run: python3 scripts/incremental-semantics-contract/source-resolution.py
 
       # The language server's *scheduling*, which nothing else here can see:
       # selfhost-lsp-diff.sh compares output bytes, and a server that spins a
@@ -2179,8 +2183,10 @@ jobs:
     # 2026-09-11: 491s (run 34259782743) over the 25 completed main runs of
     # 09-08T00:18Z .. 09-10T13:48Z (the 2026-09-10 CI audit's obs.json),
     # 79s over the 412s claim.
-    # budget: 3x 491s worst observed
-    timeout-minutes: 25
+    # 2026-09-22: cached-module subjects measured up to 54.59s locally.
+    # Three controls and an independent positive: 491 + 2 * (4 * 55) = 931s.
+    # budget: 3x 931s planning value (prior baseline plus cached module shard 0)
+    timeout-minutes: 47
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -2188,6 +2194,8 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: checker diagnostic corpus
         run: ./scripts/checker-corpus/run.sh
+      - name: cached module transition controls shard 0
+        run: python3 scripts/incremental-semantics-contract/cached-module.py --suite driver --shards 3 --shard 0
 
       # SEM-06: an erased Java Object must not acquire a hidden CHECKCAST just
       # because an overload wants a concrete reference. The contract also
@@ -2326,8 +2334,10 @@ jobs:
     # 2026-09-04, post-prune window: 589s (run 33846134581) over the 20
     # completed main runs of 09-03T17:42Z .. 09-04T12:10Z, all after the std
     # pruning knife (e797abb0), 277s over the 312s claim.
-    # budget: 3x 589s worst observed
-    timeout-minutes: 30
+    # 2026-09-22: two cached-module controls and an independent positive,
+    # at the rounded 54.59s local maximum: 589 + 2 * (3 * 55) = 919s.
+    # budget: 3x 919s planning value (prior baseline plus cached module shard 1)
+    timeout-minutes: 46
     steps:
       - uses: actions/checkout@v4
 
@@ -2345,6 +2355,8 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: documentation checks
         run: ./scripts/doc-check.py
+      - name: cached module transition controls shard 1
+        run: python3 scripts/incremental-semantics-contract/cached-module.py --suite driver --shards 3 --shard 1
 
       - name: site tests
         run: ./bin/dawn test site
@@ -2389,8 +2401,10 @@ jobs:
     # 2026-09-11: 534s (run 34484938024) over the 25 completed main runs of
     # 09-08T00:18Z .. 09-10T13:48Z (the 2026-09-10 CI audit's obs.json),
     # 8s over the 526s claim.
-    # budget: 3x 534s worst observed
-    timeout-minutes: 27
+    # 2026-09-22: cached-module observer positive and both compiling controls
+    # took 130.31s locally. Planning allowance: 534 + 2 * 131 = 796s.
+    # budget: 3x 796s planning value (prior baseline plus cached module observer controls)
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
@@ -2409,6 +2423,8 @@ jobs:
       # differential below reuses the binary instead of building a second one.
       - name: the native release artifact
         run: ./scripts/release-native.sh -o dawnc-linux-x86_64
+      - name: cached module observer and current host oracle controls
+        run: python3 scripts/incremental-semantics-contract/cached-module.py --suite observer
 
       # The same transcripts on the other backend (K-B2, extended by K-B3).
       # Every step in prev-diff runs ./bin/dawn, which is the JVM toolchain and
@@ -2673,8 +2689,10 @@ jobs:
     # includes the corpus, and check-gate-budgets.py --observed refuses a
     # claim under the window's maximum. Restate it from the first window with
     # no pre-move run left in it.
-    # budget: 3x 250s worst observed
-    timeout-minutes: 13
+    # 2026-09-22: two cached-module controls and an independent positive,
+    # at the rounded 54.59s local maximum: 250 + 2 * (3 * 55) = 580s.
+    # budget: 3x 580s planning value (prior baseline plus cached module shard 2)
+    timeout-minutes: 29
     steps:
       - uses: actions/checkout@v4
         with:
@@ -2690,6 +2708,8 @@ jobs:
 
       - name: N vs N-1 differential
         run: ./scripts/selfhost-prev-diff.sh
+      - name: cached module transition controls shard 2
+        run: python3 scripts/incremental-semantics-contract/cached-module.py --suite driver --shards 3 --shard 2
 
       - name: run/test transcript vs N-1
         run: ./scripts/selfhost-run-diff.sh

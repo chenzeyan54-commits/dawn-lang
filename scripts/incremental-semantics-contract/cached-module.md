@@ -28,6 +28,10 @@ without touching the previous generation's oracle. A warm hit must occur before
 the host assertions are meaningful. The fixture does not put Java imports in
 `selfhost` and does not duplicate the semantic engine.
 
-These controls are intentionally not wired into CI here. Scheduling must account
-for measured full dependency-closure costs; adding this script to an existing
-job without measuring its headroom is not part of this change.
+CI runs the three driver partitions in checker-corpus, docs, and prev-diff;
+prev-diff-native runs the separate observer suite. No controls are omitted or
+duplicated, and each partition retains its positive. Budget planning uses the
+54.59-second maximum measured driver subject, rounded to 55 seconds, and the
+130.31-second observer suite, rounded to 131 seconds. Each local allowance is
+doubled before adding it to the prior job baseline; the 950-second pole remains
+unchanged. These are conservative gate allocations, not semantic speedup claims.
