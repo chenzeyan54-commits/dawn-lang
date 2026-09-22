@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Observe real checker reads without claiming complete dependency coverage.
+"""Observe and revalidate real function queries without claiming full coverage.
 
 Mutants alter the recording sites and captured facts, not the owning tests.
 Compilation/link failures are never evidence that an observation was kept.
 """
+import argparse
 import re
 import shutil
 import tempfile
@@ -13,7 +14,40 @@ from pathlib import Path
 from cold import ROOT, edit, run
 
 
+def select_subjects(subjects, owners, suite):
+    if suite == 'all':
+        return subjects
+    selected = [subject for subject in subjects if subject[1] != 'positive' and
+                ((subject[1] in owners) == (suite == 'revalidation'))]
+    modules = {subject[0] for subject in selected}
+    return [subject for subject in subjects if
+            (subject[1] == 'positive' and subject[0] in modules) or subject in selected]
+
+
+def selection_selftest():
+    subjects = [('checker', 'positive', 'base'), ('semantic_reads', 'positive', 'base'),
+                ('checker', 'observe', 'one'), ('semantic_reads', 'record', 'two'),
+                ('checker', 'query', 'three')]
+    owners = {'query': 'owner'}
+    observation = select_subjects(subjects, owners, 'observation')
+    revalidation = select_subjects(subjects, owners, 'revalidation')
+    assert select_subjects(subjects, owners, 'all') == subjects
+    assert observation == subjects[:4]
+    assert revalidation == [subjects[0], subjects[4]]
+    names = [s[1] for s in observation + revalidation if s[1] != 'positive']
+    assert sorted(names) == ['observe', 'query', 'record']
+    assert len(names) == len(set(names))
+    print('OK: function query suite partition and independent positive baselines')
+
+
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--suite', choices=('all', 'observation', 'revalidation'), default='all')
+    parser.add_argument('--self-test', action='store_true')
+    args = parser.parse_args()
+    if args.self_test:
+        selection_selftest()
+        return
     started = time.monotonic()
     variants = [
         ("checker", "qualified-recording", "Some(_) -> Cx { ..cx, function_reads: semantic_reads.qualified(cx.function_reads, qualifier, name, answer) }", "Some(_) -> cx"),
@@ -49,17 +83,39 @@ def main():
         ("semantic_reads", "read-suffix", "Some(Some(list.drop(entries, len(prefix))))", "Some(Some(entries))"),
         ("header_product", "header-invariant", "a.function_reads == b.function_reads", "true"),
     ]
+    revalidation_owner = 'function query revalidation preserves lookup precedence pools and isolation'
+    qualified_owner = 'qualified function query revalidation tracks providers aliases and misses'
+    source_owner = 'function query revalidation distinguishes source signature edits from body edits'
+    query_controls = [
+        ('query-dispatch', 'if function_answer != None { return function_answer }',
+         'if false { return function_answer }', source_owner),
+        ('query-accept-changed', 'Some(semantic_reads.observed_equal(fact, recomputed.function_reads))',
+         'Some(true)', source_owner),
+        ('query-log-isolation', 'let isolated = Cx { ..candidate, function_reads: Some([]) }',
+         'let isolated = candidate', revalidation_owner),
+        ('query-qualified-identity', 'module_fn_read(isolated, qualifier, query.name)',
+         'lookup_fn_sig_read(isolated, query.name)', qualified_owner),
+        ('query-alias-answer', 'let (answer_cx, _) = module_alias_read(isolated, qualifier)\n      answer_cx',
+         'let (answer_cx, _) = module_alias_read(isolated, qualifier)\n      isolated', qualified_owner),
+        ('query-pool-answer', 'let (answer_cx, _) = fn_pool_read(isolated)\n      answer_cx',
+         'let (answer_cx, _) = fn_pool_read(isolated)\n      isolated', revalidation_owner),
+    ]
+    owners = {name: owner for name, _, _, owner in query_controls}
+    variants.extend(('checker', name, old, new) for name, old, new, _ in query_controls)
     sources = {name: (ROOT / "selfhost/src/check" / (name + ".dawn")).read_text()
                for name in ("checker", "semantic_reads", "header_product")}
     subjects = [(module, "positive", source) for module, source in sources.items()]
     subjects += [(module, name, edit(sources[module], old, new)) for module, name, old, new in variants]
+    subjects = select_subjects(subjects, owners, args.suite)
     with tempfile.TemporaryDirectory(prefix="dawn-function-reads-") as temp:
         root = Path(temp)
         for directory in ("selfhost", "compiler-plan"):
             shutil.copytree(ROOT / directory, root / directory,
                             ignore=shutil.ignore_patterns("build", ".dawn"))
         (root / "packages").symlink_to(ROOT / "packages", target_is_directory=True)
+        query_seconds = 0.0
         for module, name, source in subjects:
+            subject_started = time.monotonic()
             target = root / "selfhost/src/check" / (module + ".dawn")
             target.write_text(source)
             status, output = run("test", target)
@@ -67,10 +123,18 @@ def main():
             if name == "positive":
                 if status:
                     raise RuntimeError("Positive " + module + " failed\n" + output)
+            elif name in owners:
+                failure = r'^FAIL\s+check/checker :: ' + re.escape(owners[name]) + r'\n\s+assertion failed:'
+                if not status or not re.search(failure, output, re.M) or re.search(r'^error:', output, re.M):
+                    raise RuntimeError(name + ' did not compile and reach its owning assertion\n' + output)
+                query_seconds += time.monotonic() - subject_started
             elif not status or not re.search(r"^FAIL\s+(?:check/\w+ :: )?(?:function reads|semantic reads|header product) [^\n]*\n\s+assertion failed:", output, re.M):
                 raise RuntimeError(name + " did not reach its owning assertion\n" + output)
             print("OK: function reads " + module + " " + name, flush=True)
-    print(f"OK: function reads and {len(variants)} compiling mutants, {time.monotonic() - started:.2f}s")
+    query_count = sum(name in owners for _, name, _ in subjects)
+    mutant_count = sum(name != 'positive' for _, name, _ in subjects)
+    print(f'OK: {query_count} function revalidation controls, {query_seconds:.2f}s', flush=True)
+    print(f"OK: function reads and {mutant_count} compiling mutants, {time.monotonic() - started:.2f}s")
 
 
 if __name__ == "__main__":

@@ -204,6 +204,24 @@ typed tree 的跨度、符号的声明位置与 frame 记下的效果见证位�
 
 ## 五、七期与报告
 
+### Function namespace query revalidation
+
+Before admitting call-bearing bodies, revalidate recorded function answers
+through the same canonical readers that produced them. This covers unqualified
+lookup precedence, qualified provider signatures, module-alias paths, and the
+ordered function-name suggestion pool. Absence is a recorded answer: adding a
+previously missing function invalidates it. Compare complete signatures using
+their stable identities, not rendered text or a whole-context fingerprint.
+
+Each recomputation uses an isolated read log and must yield exactly the queried
+fact. It must not mutate the caller's observations or diagnostics. A changed
+implementation with an unchanged explicit signature leaves the signature query
+valid; this is not permission to reuse a comptime consumer of that implementation.
+Default-value body dependencies and inferred-signature publication remain
+separate scheduler obligations, not properties of signature-query equality.
+Unsupported families still return no validation result. This boundary does not
+expand body admission, share these facts in the memo, or enable production replay.
+
 ### Candidate-local builtin query memo
 
 Extend the existing opt-in replay memo to `BuiltinTypeAnswer`, including
