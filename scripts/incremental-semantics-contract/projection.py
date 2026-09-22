@@ -91,6 +91,12 @@ def main():
             ("changed-spelling", "x.kinds == y.kinds && x.texts == y.texts", "x.kinds == y.kinds"),
             ("unchecked-range", "x.lo == old_lo && x.hi == old_hi && y.lo == new_lo && y.hi == new_hi &&\n      ", ""),
             ("misaligned-slice", "if t.lo < lo || t.hi > hi { aligned = false }", ""),
+        ]),
+        # Declaration-aligned examples now hit the exact raw cache. This
+        # mutant changes only the arbitrary-range fallback, so its owner is
+        # the independent range-product oracle. source-equality.py separately
+        # mutates cached equality and owns the equal-width trivia assertion.
+        ("source_projection", "source text equality matches the raw oracle over code point ranges", [
             ("byte-identity", "str.slice(a.text, old_lo, old_hi) == str.slice(b.text, new_lo, new_hi)", "true"),
         ]),
         ("checker", "evidence reads preserve distinct origins behind the same runtime key", [

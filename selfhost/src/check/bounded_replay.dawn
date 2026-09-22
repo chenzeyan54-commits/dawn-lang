@@ -7,12 +7,12 @@ use check/checker
 use check/cx.{Cx}
 use check/types.{Ty, TyInt, TyVar, Sig, Sym, Eff, EPure, subst}
 use check/tast.{TExpr, XInt, XLocal, XCallFn, XBinary, XUnary, XBlock,
-  BAdd, BSub, BMul, BDiv, BMod, UNeg, WForward, WitRef, tex_ty}
+  BAdd, BSub, BMul, BDiv, BMod, UNeg, WForward, WitRef, tex_ty }
 use check/body_product.{Product}
 use check/semantic_reads
 use check/semantic_reads.{FunctionRead}
 use front/ast.{FnDecl, Expr, EInt, EVar, EApply, EBinary, EUnary, EBlock,
-  OpAdd, OpSub, OpMul, OpDiv, OpMod, OpNeg}
+  OpAdd, OpSub, OpMul, OpDiv, OpMod, OpNeg }
 
 pub fn header(d: FnDecl, sig: Sig) -> Bool = {
   if sig.inferring || sig.is_builtin || sig.trait_id != None || sig.op_of != None ||
