@@ -804,6 +804,25 @@ uninstrumented servers can therefore use the same comparison. Generic,
 method/default, project dependency, and retained-memory acceptance remain
 separate requirements.
 
+The shared `contract.SourceParseCounts` host observer also accepts `--lsp
+<compiler.jar>` to count actual parser/index/projection method entries in an
+executable compiler. Compile it with ASM 9.7.1; launch it with that observer
+directory and ASM on the classpath, not the compiler jar (the observer loads
+the compiler privately). Include `--add-exports=java.base/jdk.internal.vm=ALL-UNNAMED`,
+matching the compiler manifest's export that `java -jar` normally applies.
+Executable modules and imported selfhost fixtures have distinct namespace
+prefixes; both variants require the complete exact descriptor set.
+`lsp-edit-matrix.py --expect-parse-counts prepared` requires `(1, 1, 1)` per
+revision; `cold` requires `(1, 0, 0)`. Startup parsing is outside each edit's
+interval. Protocol replies still compare to the uninstrumented reference.
+These counts prove invocation behavior for this matrix, not parser latency,
+project dependency behavior, or default activation readiness.
+The private builder's `--reparse-control standalone` (or `project`) keeps the
+prepared loader but calls the safe legacy Session consumer, forcing it to
+construct another snapshot. This is a compiling negative control, not an
+optimization mode. Semantic equality and body reuse must still be checked;
+only the independent method-entry count oracle should reject reparsing.
+
 单大模块错误恢复使用 `standalone-large.dawn.txt`（500个简单函数及一个入口，
 合成语料，不冒充真实大型应用）。在上述参数后加
 `--uri untitled:incremental-large --error-round 5`，entry/edit 指向同一份文件，

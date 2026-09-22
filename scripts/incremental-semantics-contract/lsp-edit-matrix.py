@@ -77,6 +77,7 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--functions", type=int, default=1000)
     parser.add_argument("--expect-reuse", action="store_true")
+    parser.add_argument("--expect-parse-counts", choices=("prepared", "cold"))
     parser.add_argument("--compare", type=Path, help="prior matrix output directory")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -121,16 +122,25 @@ def main():
                     raise RuntimeError(f"{label}: unresolved query target {needle!r}")
             counts = [decode(line) for line in client.stderr_text()[stderr_mark:].splitlines()
                       if line.startswith("LSP_BODY_STATS\t")]
+            entries = [line.split("\t")[1:] for line in client.stderr_text()[stderr_mark:].splitlines()
+                       if line.startswith("LSP_PARSE_ENTRY\t")]
+            if any(entry not in (["0"], ["1"], ["2"]) for entry in entries):
+                raise RuntimeError("invalid parser method-entry trace")
+            parse_counts = [entries.count([str(index)]) for index in range(3)] if entries else None
+            if args.expect_parse_counts:
+                expected = [1, 1, 1] if args.expect_parse_counts == "prepared" else [1, 0, 0]
+                if parse_counts != expected:
+                    raise RuntimeError(f"{label}: parse/index/projection counts {parse_counts} != {expected}")
             if args.expect_reuse:
                 validate_counts(counts, expected_counts(args.functions)[label])
             rows.append({"label": label, "version": version, "diagnostics": publishes,
-                         "replies": replies, "analysis_counts": counts})
+                         "replies": replies, "analysis_counts": counts, "parse_counts": parse_counts})
             (args.output / "samples.json").write_text(json.dumps(rows, indent=2) + "\n")
         client.shutdown_exit()
     finally:
         (args.output / "stderr.txt").write_text(client.stderr_text())
         client.close()
-    semantic = [{key: value for key, value in row.items() if key != "analysis_counts"} for row in rows]
+    semantic = [{key: value for key, value in row.items() if key not in {"analysis_counts", "parse_counts"}} for row in rows]
     (args.output / "semantic.json").write_text(json.dumps(semantic, indent=2) + "\n")
     if args.compare:
         reference_meta = json.loads((args.compare / "metadata.json").read_text())
