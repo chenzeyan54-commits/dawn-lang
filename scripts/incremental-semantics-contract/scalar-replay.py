@@ -10,7 +10,9 @@ diagnostic order are the shared scheduler's and cannot be broken from inside the
 replay module: a control for either one has to reach where the order is made,
 and the assertion it reddens is still a replay assertion.
 """
+import argparse
 import re
+import shlex
 import shutil
 import tempfile
 import time
@@ -25,7 +27,92 @@ CONTEXT = 'selfhost/src/check/cx.dawn'
 SHAPE = 'selfhost/src/check/scalar_shape.dawn'
 
 
+def select_variants(variants, suite, shards=1, shard=0):
+    if shards < 1 or shard < 0 or shard >= shards:
+        raise ValueError('require --shards >= 1 and 0 <= --shard < --shards')
+    selected = variants if suite == 'all' else [
+        variant for variant in variants
+        if variant[0].startswith('call-') == (suite == 'calls')]
+    if shards > len(selected):
+        raise ValueError('--shards exceeds the selected suite control count')
+    # Partition after suite selection, so call additions cannot renumber core
+    # shards. Every nonempty shard gets its own positive below.
+    selected = [variant for index, variant in enumerate(selected)
+                if index % shards == shard]
+    if not selected:
+        raise ValueError('selected shard contains no controls')
+    return selected
+
+
+def subjects(variants, originals):
+    return [('positive', SUBJECT, originals[SUBJECT])] + [
+        (name, target, edit(originals[target], old, new))
+        for name, target, old, new in variants]
+
+
+def workflow_inventory(variants, parser, text):
+    flags = re.findall(
+        r'^\s*(?:run:\s*)?python3 scripts/incremental-semantics-contract/scalar-replay\.py([^\n]*)$',
+        text, re.M)
+    names = []
+    for flag_line in flags:
+        args = parser.parse_args(shlex.split(flag_line))
+        if not args.self_test:
+            names.extend(v[0] for v in select_variants(variants, args.suite, args.shards, args.shard))
+    assert sorted(names) == sorted(v[0] for v in variants), 'workflow loses or duplicates scalar controls'
+
+
+def selection_selftest(variants, parser):
+    core = select_variants(variants, 'core')
+    calls = select_variants(variants, 'calls')
+    assert select_variants(variants, 'all') == variants
+    assert len(core) == 41 and len(calls) == 7
+    names = [variant[0] for variant in core + calls]
+    assert len(names) == len(set(names))
+    assert sorted(names) == sorted(variant[0] for variant in variants)
+    assert all(variant[1] == SUBJECT for variant in calls)
+    partitions = [select_variants(variants, 'core', 3, shard) for shard in range(3)]
+    assert [len(part) for part in partitions] == [14, 14, 13]
+    assert all(part == core[index::3] for index, part in enumerate(partitions))
+    partitions.append(calls)
+    partitioned_names = [variant[0] for part in partitions for variant in part]
+    assert sorted(partitioned_names) == sorted(names)
+    assert len(partitioned_names) == len(set(partitioned_names))
+    originals = {p: (ROOT / p).read_text() for p in {SUBJECT} | {v[1] for v in variants}}
+    for part in partitions:
+        selected = subjects(part, originals)
+        assert selected[0] == ('positive', SUBJECT, originals[SUBJECT])
+        assert len(selected) == len(part) + 1
+        assert [entry[0] for entry in selected[1:]] == [variant[0] for variant in part]
+    for suite, shards, shard in [
+            ('core', 0, 0), ('calls', -1, 0), ('core', 3, -1),
+            ('core', 3, 3), ('calls', 8, 0), ('calls', 8, 7), ('all', 49, 48)]:
+        try:
+            select_variants(variants, suite, shards, shard)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f'accepted invalid or empty shard: {suite}/{shards}/{shard}')
+    workflow_inventory(variants, parser, (ROOT / '.github/workflows/gates.yml').read_text())
+    command = 'python3 scripts/incremental-semantics-contract/scalar-replay.py'
+    workflow_inventory(variants, parser, command + '\n')
+    for broken in ['', command + '\n' + command + '\n', command + ' --suite calls\n']:
+        try:
+            workflow_inventory(variants, parser, broken)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError('accepted incomplete or duplicate workflow coverage')
+    print('OK: scalar replay partitions and workflow preserve all 48 controls and independent positives')
+
+
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--suite', choices=('all', 'core', 'calls'), default='all')
+    parser.add_argument('--shards', type=int, default=1, help='partition the selected suite')
+    parser.add_argument('--shard', type=int, default=0, help='zero-based suite partition')
+    parser.add_argument('--self-test', action='store_true')
+    args = parser.parse_args()
     started = time.monotonic()
     own = [
         ('call-header-lifecycle',
@@ -204,16 +291,23 @@ def main():
          'SLet(name, false, None, init, _, _) -> { out = binders(init, out)? ++ [name] }'),
     ]
     variants = [(name, SUBJECT, old, new) for name, old, new in own] + shared
-    originals = {p: (ROOT / p).read_text() for p in {v[1] for v in variants}}
+    try:
+        selected = select_variants(variants, args.suite, args.shards, args.shard)
+    except ValueError as error:
+        parser.error(str(error))
+    if args.self_test:
+        selection_selftest(variants, parser)
+        return
+    variants = selected
+    originals = {p: (ROOT / p).read_text() for p in {SUBJECT} | {v[1] for v in variants}}
     with tempfile.TemporaryDirectory(prefix='dawn-scalar-replay-') as temp:
         root = Path(temp)
         for directory in ('selfhost', 'compiler-plan'):
             shutil.copytree(ROOT / directory, root / directory,
                             ignore=shutil.ignore_patterns('build', '.dawn'))
         (root / 'packages').symlink_to(ROOT / 'packages', target_is_directory=True)
-        for name, target, source in [('positive', SUBJECT, originals[SUBJECT])] + [
-                (name, target, edit(originals[target], old, new))
-                for name, target, old, new in variants]:
+        for name, target, source in subjects(variants, originals):
+            subject_started = time.monotonic()
             for other, text in originals.items():
                 (root / other).write_text(text)
             (root / target).write_text(source)
@@ -225,8 +319,9 @@ def main():
                     r'^FAIL\s+check/scalar_replay :: scalar replay [^\n]*\n\s+assertion failed:',
                     output, re.M) or re.search(r'^error:', output, re.M):
                 raise RuntimeError(name + ' missed its assertion owner\n' + output)
-            print('OK: scalar replay ' + name, flush=True)
-    print(f'OK: {len(variants)} compiling scalar replay controls, {time.monotonic() - started:.2f}s')
+            print(f'OK: scalar replay {name}, {time.monotonic() - subject_started:.2f}s', flush=True)
+    print(f'OK: {len(variants)} compiling scalar replay controls '
+          f'({args.suite}, shard {args.shard}/{args.shards}), {time.monotonic() - started:.2f}s')
 
 
 if __name__ == '__main__':

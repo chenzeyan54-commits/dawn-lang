@@ -745,8 +745,12 @@ jobs:
     # 2026-09-04, post-prune window: 409s (run 33801126953) over the 20
     # completed main runs of 09-03T17:42Z .. 09-04T12:10Z, all after the std
     # pruning knife (e797abb0), 127s over the 282s claim.
-    # budget: 3x 409s worst observed
-    timeout-minutes: 21
+    # 2026-09-22: core replay controls are partitioned across existing jobs.
+    # Shard 0's observed subject times sum to 156.08s including its positive.
+    # Add 5s invocation overhead, round up and double: 409 + 2 * 162 = 733s.
+    # This is a derived planning value, not an isolated shard observation.
+    # budget: 3x 733s planning value (prior baseline plus core replay shard 0)
+    timeout-minutes: 37
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -754,6 +758,8 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: classfile Never mutants
         run: ./scripts/classfile-verify/run.sh --never-mutants-only
+      - name: Scalar replay core controls shard 0
+        run: python3 scripts/incremental-semantics-contract/scalar-replay.py --suite core --shards 3 --shard 0
 
   # The core suite: the compiler's own tests, the self-hosting proof and the
   # gates that read the compiler's source or grammar rather than its products.
@@ -1502,8 +1508,12 @@ jobs:
     # terms above: add 2 * (59 - 35) + 2 * (40 - 21) = 86s, for 736s.
     # 2026-09-13: prefix's shard 2 lands here, four of its thirteen subjects,
     # 153s of its 497s observation, for 736 + 153 = 889s.
-    # budget: 3x 889s planning value (body execution contracts plus prefix's shard 2)
-    timeout-minutes: 45
+    # 2026-09-22: move the complete scalar suite into four existing jobs.
+    # Remove only its documented 2 * 59s term; preserve other headroom.
+    # The expanded recorder moves intact to std-version below. Remove only
+    # its documented 2 * 55s term: 771 - 110 = 661s; retain other headroom.
+    # budget: 3x 661s planning value (prior baseline less the relocated recorder's 110s term)
+    timeout-minutes: 34
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -1513,16 +1523,12 @@ jobs:
         run: python3 scripts/incremental-semantics-contract/body-executor.py
       - name: Full-product frozen body scheduler oracle
         run: python3 scripts/incremental-semantics-contract/body-scheduler.py
-      - name: Opt-in body recording contracts
-        run: python3 scripts/incremental-semantics-contract/body-recording.py
       - name: Body write journal contracts
         run: python3 scripts/incremental-semantics-contract/write-journal.py
       - name: Body table writer ownership inventory
         run: python3 scripts/incremental-semantics-contract/journal-coverage.py
       - name: Canonical body writer consumer contracts
         run: python3 scripts/incremental-semantics-contract/journal-consumers.py
-      - name: Scalar cross-revision executor contracts
-        run: python3 scripts/incremental-semantics-contract/scalar-replay.py
       - name: Scalar full-product and real execution oracle
         run: python3 scripts/incremental-semantics-contract/scalar-oracle.py
 
@@ -1840,8 +1846,11 @@ jobs:
     # 2026-09-11: 376s (run 34259782743) over the 25 completed main runs of
     # 09-08T00:18Z .. 09-10T13:48Z (the 2026-09-10 CI audit's obs.json),
     # 39s over the 337s claim.
-    # budget: 3x 376s worst observed
-    timeout-minutes: 19
+    # 2026-09-22: replay core shard 1's subject times sum to 157.02s,
+    # including its positive. With 5s invocation overhead and doubled rounded
+    # headroom: 376 + 2 * 163 = 702s. Derived, not separately observed.
+    # budget: 3x 702s planning value (prior baseline plus core replay shard 1)
+    timeout-minutes: 36
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -1849,6 +1858,8 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: check and doc target Java classpaths
         run: ./scripts/java-target-classpath-contract/run.sh
+      - name: Scalar replay core controls shard 1
+        run: python3 scripts/incremental-semantics-contract/scalar-replay.py --suite core --shards 3 --shard 1
 
       # The guards in front of the bootstrap, none of which a green build can
       # see: bin/dawn's cache generation (input coverage, fail-closed manifest
@@ -2031,13 +2042,25 @@ jobs:
     # completed main runs since 09-02 is 341s (run 33748678694), which the
     # 300s claim was 41s under. scripts/gate-observations.py pulled it;
     # scripts/check-gate-budgets.py --observed is the audit that named it.
-    # budget: 3x 341s worst observed
-    timeout-minutes: 18
+    # 2026-09-22: replay core shard 2's subject times sum to 148.74s,
+    # including its positive. With 5s invocation overhead and doubled rounded
+    # headroom: 341 + 2 * 154 = 649s. Derived, not separately observed.
+    # Callee publication's positive and eleven compiling controls measured
+    # 117.67s locally on 2026-09-22. Add doubled rounded headroom to the
+    # existing allocation: 649 + 2 * 118 = 885s, below the 950s run pole.
+    # budget: 3x 885s planning value (prior allocation plus callee publication controls)
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scalar replay core controls shard 2
+        run: python3 scripts/incremental-semantics-contract/scalar-replay.py --suite core --shards 3 --shard 2
+
+      - name: Callee publication controls
+        run: python3 scripts/incremental-semantics-contract/callee-publication.py
 
       # A version is a name; the checksum is the identity. The bytes GitHub
       # serves under a tag can be re-uploaded, and this runner then executes
@@ -2542,8 +2565,14 @@ jobs:
     # 2026-09-11: 397s (run 34484938024) over the 25 completed main runs of
     # 09-08T00:18Z .. 09-10T13:48Z (the 2026-09-10 CI audit's obs.json),
     # 45s over the 352s claim.
-    # budget: 3x 397s worst observed
-    timeout-minutes: 20
+    # 2026-09-22: seven call controls and their independent positive took
+    # 141.18s locally under concurrent validation load. Preserve that loaded
+    # observation and prior headroom: 397 + 2 * 142 = 681s.
+    # Single-pass cache renewal adds six compiling controls and a positive.
+    # Their complete local run took 86.65s: 681 + 2 * 87 = 855s.
+    # This remains a planning value until a complete runner observation.
+    # budget: 3x 855s planning value (prior baseline plus cache renewal controls)
+    timeout-minutes: 43
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -2551,6 +2580,12 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: list element contract
         run: ./scripts/list-elems-contract/run.sh
+      - name: Scalar replay partition contract
+        run: python3 scripts/incremental-semantics-contract/scalar-replay.py --self-test
+      - name: Explicit-call replay contracts
+        run: python3 scripts/incremental-semantics-contract/scalar-replay.py --suite calls
+      - name: Single-pass body cache renewal contracts
+        run: python3 scripts/incremental-semantics-contract/body-renewal.py
 
   # Phase 2 measures process semantics, not runner hardware. The complete
   # contract measured 60s locally, and the reused toolchain setup has a 29s
@@ -2584,8 +2619,15 @@ jobs:
     # corrupts the compiled-in std. 63s locally. java-member-dispatch's ten
     # builds cost 158s locally and 292s on the runner, which puts this one at
     # about 205s here; restate the number from the first run that carries it.
-    # budget: 3x 205s predicted from java-member-dispatch's local/runner ratio
-    timeout-minutes: 11
+    # 2026-09-22: the complete expanded recorder moves from body execution.
+    # Its positive and twelve compiling controls took 193.84s locally under
+    # concurrent validation load. Preserve that reading and existing baseline:
+    # 205 + 2 * 194 = 593s. This is planning, not a runner observation.
+    # Inferred replay's positive and twelve compiling controls measured
+    # 104.34s locally on 2026-09-22. Add doubled rounded headroom to the
+    # existing allocation: 593 + 2 * 105 = 803s, below the 950s run pole.
+    # budget: 3x 803s planning value (prior allocation plus inferred replay controls)
+    timeout-minutes: 41
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -2593,6 +2635,10 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Std version contract
         run: ./scripts/std-version-contract/run.sh
+      - name: Opt-in body recording contracts
+        run: python3 scripts/incremental-semantics-contract/body-recording.py
+      - name: Inferred body replay controls
+        run: python3 scripts/incremental-semantics-contract/inferred-replay.py
 
   # N vs N-1 (scripts/selfhost-prev-diff.sh): the previous release and HEAD
   # compile the same corpus and any byte difference must be declared in a
