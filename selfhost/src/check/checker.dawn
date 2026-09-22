@@ -1212,6 +1212,68 @@ test "witness revalidation recomputes candidate facts and refuses unknown querie
   assert initial.function_reads == Some([]) && initial.diags == []
 }
 
+test "implementation lookup misses invalidate after source edits but unrelated impls do not" {
+  let declarations = "type Grid = { value: Int }\ntype Other = { value: Int }\n"
+  let consumer = "fn read(g: Grid) -> Int = g[0]\n"
+  let implementation = (name: String) => "impl Index[" ++ name ++ "] {\n" ++
+    "type Idx = Int\ntype Item = Int\nfn index(g: " ++ name ++ ", i: Int) -> Int = g.value + i\n}\n"
+  let base = Cx { ..cx_new(Some("sample"), None), function_reads: Some([]) }
+  let (before, pd) = parser.parse_module(declarations ++ consumer)
+  assert pd == []
+  let (missing, _) = check_module(base, before, map.empty())
+  assert len(missing.diags) > 0
+  let subject = TyAdt(map.get(missing.adts_by_name, "Grid").expect("Grid"), [])
+  let fact = semantic_reads.ImplementationPresence(INDEX_ID, subject, false)
+  assert list.contains(missing.function_reads.expect("consumer queries"), fact)
+  assert revalidate_read(missing, fact) == Some(true)
+  for name in ["Other", "Grid"] {
+    let (syntax, errors) = parser.parse_module(declarations ++ implementation(name) ++ consumer)
+    assert errors == []
+    let (candidate, module) = check_module(base, syntax, map.empty())
+    let (cold, cold_module) = check_module(Cx { ..base, function_reads: None }, syntax, map.empty())
+    assert candidate.diags == cold.diags && module == cold_module
+    assert map.get(candidate.adts_by_name, "Grid") == map.get(missing.adts_by_name, "Grid")
+    let found = name == "Grid"
+    assert (len(candidate.diags) == 0) == found
+    assert revalidate_read(candidate, fact) == Some(not found)
+    let current = semantic_reads.ImplementationPresence(INDEX_ID, subject, found)
+    assert list.contains(candidate.function_reads.expect("candidate queries"), current)
+    assert revalidate_read(candidate, current) == Some(true)
+    assert revalidate_read(missing, current) == Some(not found)
+  }
+}
+
+test "conditional implementation edits invalidate recorded consumer subgoals" {
+  let source = (bound: String) => "type Grid[T] = { value: T }\n" ++
+    "impl[T: " ++ bound ++ "] Index[Grid[T]] {\n" ++
+    "type Idx = Int\ntype Item = Int\nfn index(g: Grid[T], i: Int) -> Int = i\n}\n" ++
+    "fn read(g: Grid[Int]) -> Int = g[0]\n"
+  let base = Cx { ..cx_new(Some("sample"), None), function_reads: Some([]) }
+  let (syntax, pd) = parser.parse_module(source("Eq"))
+  assert pd == []
+  let (before, _) = check_module(base, syntax, map.empty())
+  assert before.diags == []
+  let subject = TyAdt(map.get(before.adts_by_name, "Grid").expect("Grid"), [TyInt])
+  let old = semantic_reads.ImplementationSubgoals(INDEX_ID, subject, [(EQ_ID, TyInt)])
+  assert list.contains(before.function_reads.expect("consumer subgoals"), old)
+  for bound in ["Eq", "Hash"] {
+    let (changed, errors) = parser.parse_module(source(bound))
+    assert errors == []
+    let (candidate, module) = check_module(base, changed, map.empty())
+    let (cold, cold_module) = check_module(Cx { ..base, function_reads: None }, changed, map.empty())
+    assert candidate.diags == [] && candidate.diags == cold.diags && module == cold_module
+    let same = bound == "Eq"
+    assert revalidate_read(candidate, old) == Some(same)
+    let expected = if same { EQ_ID } else { HASH_ID }
+    let current = semantic_reads.ImplementationSubgoals(INDEX_ID, subject, [(expected, TyInt)])
+    assert list.contains(candidate.function_reads.expect("candidate subgoals"), current)
+    assert revalidate_read(candidate, current) == Some(true)
+    assert revalidate_read(before, current) == Some(same)
+    assert revalidate_read(candidate, semantic_reads.ImplementationPresence(INDEX_ID, subject, true)) == Some(true)
+    assert revalidate_read(candidate, semantic_reads.ImplementationArity(INDEX_ID, subject, Some(1))) == Some(true)
+  }
+}
+
 test "witness revalidation rejects changed conditional bound order" {
   let base = Cx { ..test_cx(), function_reads: Some([]) }
   let imp = ImplI { trait_id: EQ_ID, subject: TyList(TyVar("T", 700)), tparams: [TyVar("T", 700)],
