@@ -5,8 +5,8 @@ Local tooling only. Nothing in CI reads this file, and gates.yml does not know
 it exists.
 
 The invocation list is parsed out of .github/workflows/gates.yml on every run
-rather than written down here, so a harness added to one of the incremental
-jobs is swept without anyone remembering to edit a second list. A list that has
+rather than written down here, so a harness remains swept even when budget
+balancing moves its command into an ordinary job. A list that has
 to be kept by hand is the failure this whole script exists to avoid: harness
 mutation anchors are literal source strings, they drift silently, and a sweep
 that quietly runs a subset is worth less than no sweep at all.
@@ -19,14 +19,14 @@ log where there is one, and otherwise from the static table below.
 Modes:
   (default)        one TAB-separated `name<TAB>command` line per deduplicated
                    invocation, longest hint first.
-  --jobs           the incremental job names, one per line.
+  --jobs           the jobs containing swept contracts, one per line.
   --raw-count      the pre-deduplication invocation count.
   --default-log    the log path sweep.sh writes, and the fallback hint source.
   --hints PATH     prefer this log as the duration hints (with any mode).
   --show-hints     the plan as `seconds<TAB>name<TAB>command`, after a
                    comment line naming which hint source was used.
   --self-test      parse checks; sweep.sh --self-test additionally compares
-                   these numbers against a plain grep of the same file. The
+                   these numbers against a line scan of the same file. The
                    checks are over the set and the count, never the order: the
                    order is a scheduling hint and is allowed to move.
   --anchor-report  read a failed harness's output, print the mutation anchor it
@@ -46,12 +46,13 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 GATES = ROOT / ".github/workflows/gates.yml"
 
-# A job whose name starts with this is part of the incremental-semantics
-# contract family. That is the same prefix the plain-grep cross-check in
-# sweep.sh uses, and the two are compared against each other by --self-test.
+# Dedicated jobs validate every command. Other jobs contribute relevant run
+# steps, whose complete command blocks must also be supported. Unrelated setup
+# steps stay outside the sweep; setup within a relevant block fails closed.
 JOB_PREFIX = "incremental"
+CONTRACT_PATH = "scripts/incremental-semantics-contract"
 
-JOB_HEADER = re.compile(r"^  (" + JOB_PREFIX + r"[-a-z0-9]*):$", re.M)
+JOB_HEADER = re.compile(r"^  ([-a-zA-Z0-9_]+):$", re.M)
 COMMAND_LINE = re.compile(
     r"^ +(run: )?(python3 scripts/incremental-semantics-contract/"
     r"|\./bin/dawn test scripts/incremental-semantics-contract)",
@@ -141,40 +142,60 @@ def unknown_hint(table, census):
     return 0.0
 
 
-def load_jobs():
-    """The incremental jobs from gates.yml, in file order, as (name, job)."""
-    document = yaml.safe_load(GATES.read_text())
+def relevant(command):
+    return not command.lstrip().startswith("#") and CONTRACT_PATH in command
+
+
+def load_jobs(text=None):
+    """Dedicated jobs and ordinary jobs containing contract commands."""
+    document = yaml.safe_load(GATES.read_text() if text is None else text)
     return [
         (name, job)
         for name, job in document["jobs"].items()
-        if name.startswith(JOB_PREFIX)
+        if name.startswith(JOB_PREFIX) or any(
+            relevant(line)
+            for step in job.get("steps") or []
+            for line in (step.get("run") or "").splitlines()
+        )
     ]
 
 
-def invocations():
+def invocations(text=None):
     """Every `run:` command line in those jobs, pre-deduplication.
 
     Returns (job_name, command) pairs in the order gates.yml lists them.
     """
     found = []
-    for job_name, job in load_jobs():
+    for job_name, job in load_jobs(text):
         for step in job.get("steps") or []:
             run = step.get("run")
             if not run:
                 continue
+            dedicated = job_name.startswith(JOB_PREFIX)
+            if not dedicated and not any(relevant(line) for line in run.splitlines()):
+                continue
+            # A preceding continuation or control structure changes the
+            # meaning of an otherwise ordinary contract line. Refuse the
+            # relevant block rather than discard its shell wrapper.
             for line in run.splitlines():
                 command = line.strip()
-                if not command:
+                if not command or command.startswith("#"):
+                    continue
+                if (any(token in command for token in ("\\", ";", "&", "|", chr(96), "$(", "<", ">")) or
+                        re.match(r"^(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|function)\b", command) or
+                        command in ("{", "}", "(", ")")):
+                    raise SystemExit(
+                        f"sweep-plan: {job_name} step {step.get('name')!r} has a "
+                        f"compound command, not one invocation: {command!r}"
+                    )
+            for line in run.splitlines():
+                command = line.strip()
+                if not command or command.startswith("#"):
                     continue
                 if not command.startswith(COMMAND_PREFIXES):
                     raise SystemExit(
                         f"sweep-plan: {job_name} step {step.get('name')!r} has a "
                         f"command this parser cannot split safely: {command!r}"
-                    )
-                if command.endswith("\\") or "&&" in command or "|" in command:
-                    raise SystemExit(
-                        f"sweep-plan: {job_name} step {step.get('name')!r} is a "
-                        f"compound command, not one invocation: {command!r}"
                     )
                 found.append((job_name, command))
     return found
@@ -293,12 +314,78 @@ def anchor_report(name, output_path):
     return True
 
 
+def scanned_jobs(text):
+    """Independent line scan: job headers and non-comment contract references."""
+    headers = list(JOB_HEADER.finditer(text))
+    found = []
+    for i, header in enumerate(headers):
+        end = headers[i + 1].start() if i + 1 < len(headers) else len(text)
+        block = text[header.end():end]
+        if header[1].startswith(JOB_PREFIX) or any(
+                not line.lstrip().startswith("#") and CONTRACT_PATH in line
+                for line in block.splitlines()):
+            found.append(header[1])
+    return found
+
+
+def discovery_self_test():
+    contract = "python3 scripts/incremental-semantics-contract/scalar-replay.py --suite calls"
+
+    def fixture(job, run, extra_steps=None):
+        return yaml.safe_dump({"jobs": {job: {"steps": (extra_steps or []) + [
+            {"name": "contract", "run": run}]}}}, sort_keys=False)
+
+    original = fixture("incremental-body", contract)
+    relocated = fixture("ordinary-contract", "# contract invocation\n" + contract, [
+        {"uses": "actions/checkout@v4"},
+        {"run": "echo unrelated && echo setup"},
+    ])
+    assert invocations(original) == [("incremental-body", contract)]
+    assert invocations(relocated) == [("ordinary-contract", contract)]
+    assert [name for name, _ in load_jobs(relocated)] == ["ordinary-contract"]
+    assert scanned_jobs(relocated) == ["ordinary-contract"]
+    assert invocations(fixture("ordinary", "echo unrelated")) == []
+    assert invocations(fixture("ordinary", "# " + contract)) == []
+    mixed = yaml.safe_dump({"jobs": {
+        "incremental-body": {"steps": [{"run": contract}]},
+        "ordinary-contract": {"steps": [{"run": contract}]},
+        "unrelated": {"steps": [{"run": "echo setup && echo done"}]},
+    }}, sort_keys=False)
+    assert invocations(mixed) == [
+        ("incremental-body", contract), ("ordinary-contract", contract)]
+    assert scanned_jobs(mixed) == ["incremental-body", "ordinary-contract"]
+    dawn = "./bin/dawn test scripts/incremental-semantics-contract"
+    assert invocations(fixture("ordinary", dawn)) == [("ordinary", dawn)]
+    rejected = [
+        "echo setup && " + contract, contract + " | tee result",
+        contract + "; echo done", contract + " &", contract + " > result",
+        "env FLAG=1 " + contract, "bash " + CONTRACT_PATH + "/probe.py",
+        "echo setup\n" + contract,
+        "cd other\n" + contract,
+        "export MODE=changed\n" + contract,
+        "echo setup \\\n" + contract,
+        "if true; then\n" + contract + "\nfi",
+        "(\n" + contract + "\n)",
+    ]
+    for job, run in [("ordinary", run) for run in rejected] + [
+            ("incremental-body", "echo unsupported"),
+            ("incremental-body", "echo setup\n" + contract)]:
+        try:
+            invocations(fixture(job, run))
+        except SystemExit as error:
+            assert "sweep-plan:" in str(error)
+        else:
+            raise AssertionError(f"accepted unsupported contract block: {job}: {run}")
+    print("OK: sweep discovery follows relocated contracts and rejects shell wrappers")
+
+
 def self_test():
+    discovery_self_test()
     text = GATES.read_text()
     failures = []
 
     parsed_jobs = [name for name, _ in load_jobs()]
-    grepped_jobs = JOB_HEADER.findall(text)
+    grepped_jobs = scanned_jobs(text)
     if parsed_jobs != grepped_jobs:
         failures.append(f"jobs: parser {parsed_jobs} vs header scan {grepped_jobs}")
     if not parsed_jobs:
@@ -348,7 +435,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hints", help="a previous sweep log to take durations from")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--jobs", action="store_true", help="print the incremental job names")
+    group.add_argument("--jobs", action="store_true", help="print jobs containing swept contracts")
     group.add_argument("--raw-count", action="store_true", help="print the pre-dedup count")
     group.add_argument("--default-log", action="store_true", help="print the default log path")
     group.add_argument("--show-hints", action="store_true", help="print the plan with hints")
