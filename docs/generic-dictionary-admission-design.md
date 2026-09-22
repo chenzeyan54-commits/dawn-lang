@@ -203,3 +203,76 @@ existing Core function is unchanged. The return-record constructor, field
 loads and release are visible in Core; no new equality or printing dictionary
 is generated. No golden was re-recorded in this slice. Native and full-suite
 integration remain separate acceptance work.
+
+## Entry-only candidate proof
+
+The bounded API is `function_entry_proof.prove(candidate, declaration,
+signature, product) -> Option[Proof]`, with an opaque temporary result and
+context/ordered-symbol accessors. It proves only entry correspondence, not
+source pairing, expression shape, call witnesses, or complete dependency
+validity. The caller must supply the real candidate scheduler context and an
+already paired/projected product. A successful result cannot authorize replay
+on its own and must not be retained in a cache or installed into the scheduler.
+
+This first proof accepts the measured entry-only bounded class: explicit pure
+primitive return, ordinary top-level function, own type binders and primitive
+or own-binder parameter types, nonempty trait bounds, no defaults or effects,
+and no body-local allocations. It resolves written bounds through the existing
+canonical header helper, verifies published signature and packed binder/header
+slots, and reconstructs dictionary/parameter symbols with `function_entry`.
+Saved metadata, relative spans, roles, dictionary axes/order, final frame,
+entry journal and product allocation must match that independently generated
+entry. No saved frame is used to reconstruct the proof context. Missing logs,
+diagnostics, unsupported writes, or extra body allocations refuse cleanly.
+
+Positive and compiling-negative tests precede any production admission change.
+Body locals, effect evidence, defaults, inferred signatures, and general typed
+call witnesses remain separate proof extensions; this boundary is deliberately
+narrower than complete M3.3.
+
+The proof resets observation logs only in its detached context. The saved read
+log must begin with the complete canonical entry-read prefix; neither a missing
+log nor an empty-present replacement is accepted. The exact matcher admits
+only paired `TraitName(id, name)` facts, in order, after checking the saved
+length. Any unknown canonical entry fact refuses instead of being skipped;
+future entry-query extensions therefore require an explicit review. Existing live observation
+prefixes and unrelated bounds are preserved. This does not revalidate the
+remaining body reads: those still require a separately reviewed trait-call,
+substitution and witness proof before bounded generic replay can be enabled.
+
+`scripts/incremental-semantics-contract/bounded-entry-proof.py` exercises the
+three original bounded workloads through actual scheduler callbacks. Sixteen
+accepted entries cover unchanged and moved source with disabled and nonempty
+enclosing logs. Every product also passes the existing product projection and
+is proved again. Sixteen complete cold body/context histories include a real
+bound-order change plus effect, default and body-local refusals. Dictionary
+read axes must agree with the newly constructed caller-binder frame; the proof
+context is discarded before cold-checking the original live input.
+
+Forged inputs cover dictionary metadata, parameter roles/order, an empty
+dictionary frame, owner identity, allocation interval, entry writes, missing
+and borrowed reads, stale header bounds, invalid written bounds and an actual
+entry diagnostic caused by a module-alias/parameter collision. Ten private
+mutants remove individual entry gates or execute the whole body checker inside
+the proof. The latter must fail the actual checker-call counter around the
+proof invocation, not merely an output comparison. The negative classifier
+requires exit status one, the precise sole owning panic and only the expected
+reflection stack; its selftests reject wrong owners, extra exceptions,
+linkage/verification failures, signals and timeouts. Run `--positive-only` for
+the compiling positive fixture or `--self-test` for the classifier alone.
+
+The final validation on 2026-09-22 passed 377 focused tests (including the
+matcher and imported checker/product tests), the formatter check, classifier
+selftests and the positive plus all ten compiling controls in 66.57s. These
+are fixture measurements, not production latency measurements.
+
+Core lowering passed all 108 modules. All 107 helper-baseline modules remain
+byte-identical. The new proof module contains 3,465 lines / 131,004 bytes,
+53 functions and 20 dictionary declarations. Using an exact entry-family
+matcher and length-only presence checks reduced it from 5,977 lines /
+318,389 bytes, 105 functions and 34 dictionaries: whole `FunctionRead` and
+unnecessary diagnostic/change-list equality derivations disappeared. Required
+signature, frame, symbol and journal comparisons remain; so do temporary
+entry allocation and their runtime costs. No zero-overhead claim is made.
+No golden was re-recorded, and production replay does not call this module
+yet. Integrated workload cost remains acceptance work before introducing it.
