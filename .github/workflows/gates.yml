@@ -1112,8 +1112,13 @@ jobs:
     # 571 + 2 * (81 + 44) = 821s. No harness is removed from the run and no
     # job is added, so the account's queue floor is unchanged; what moves is
     # which runner does the work.
-    # budget: 3x 821s planning value (java-reads, prefix's shard 0, and the two steps that moved here)
-    timeout-minutes: 42
+    # 2026-09-22: function namespace revalidation adds six controls and an
+    # independent checker positive here rather than overfilling incremental-5.
+    # Controls took 48.09s under concurrent validation; the isolated full suite
+    # took 37.09s. Keep 49s for controls plus 8s positive headroom, doubled:
+    # 821 + 2 * (49 + 8) = 935s. Existing observation controls stay in shard 5.
+    # budget: 3x 935s planning value (prior baseline plus function query revalidation)
+    timeout-minutes: 47
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -1161,6 +1166,11 @@ jobs:
 
       - name: query runtime contracts
         run: python3 scripts/incremental-semantics-contract/query-runtime.py
+
+      - name: function namespace query revalidation contracts
+        run: |
+          python3 scripts/incremental-semantics-contract/function-reads.py --self-test
+          python3 scripts/incremental-semantics-contract/function-reads.py --suite revalidation
 
   incremental-2:
     runs-on: ubuntu-latest
@@ -1320,7 +1330,7 @@ jobs:
       # 33 controls on 2026-09-08: 2*(175+103)+38=594s, still under the pole.
       - name: semantic read and source projection contracts
         run: |
-          python3 scripts/incremental-semantics-contract/function-reads.py
+          python3 scripts/incremental-semantics-contract/function-reads.py --suite observation
           python3 scripts/incremental-semantics-contract/projection.py
 
       # was the incremental-projection job until 2026-09-11.

@@ -972,11 +972,41 @@ fn reduce_ty_effs(cx: Cx, t: Ty, m: Map[Int, Ty]) -> Ty =
 ## way in and the recorded answer on the way out; every domain a fact names is
 ## the same integer in both revisions now, so there was nothing for either
 ## half to do.
-pub fn revalidate_read(candidate: Cx, fact: semantic_reads.FunctionRead) -> Option[Bool] =
+pub fn revalidate_read(candidate: Cx, fact: semantic_reads.FunctionRead) -> Option[Bool] = {
+  let function_answer = revalidate_function_read(candidate, fact)
+  if function_answer != None { return function_answer }
   match revalidate_witness_read(candidate, fact) {
     Some(answer) -> Some(answer)
     None -> revalidate_context_read(candidate, fact)
   }
+}
+
+## Namespace facts are module questions, not local-variable resolution. Their
+## readers preserve lookup precedence and the complete ordered candidate pool.
+## The caller must separately validate any local-shadowing decisions it made.
+fn revalidate_function_read(candidate: Cx, fact: semantic_reads.FunctionRead) -> Option[Bool] = {
+  let isolated = Cx { ..candidate, function_reads: Some([]) }
+  let recomputed = match fact {
+    semantic_reads.FunctionAnswer(query) -> {
+      let (answer_cx, _) = lookup_fn_sig_read(isolated, query.name)
+      answer_cx
+    }
+    semantic_reads.QualifiedFunction(qualifier, query) -> {
+      let (answer_cx, _) = module_fn_read(isolated, qualifier, query.name)
+      answer_cx
+    }
+    semantic_reads.ModuleAlias(qualifier, _) -> {
+      let (answer_cx, _) = module_alias_read(isolated, qualifier)
+      answer_cx
+    }
+    semantic_reads.FunctionCandidates(_) -> {
+      let (answer_cx, _) = fn_pool_read(isolated)
+      answer_cx
+    }
+    _ -> return None
+  }
+  Some(semantic_reads.observed_equal(fact, recomputed.function_reads))
+}
 
 pub fn revalidate_witness_read(candidate: Cx,
   fact: semantic_reads.FunctionRead) -> Option[Bool] = {
@@ -1037,6 +1067,107 @@ pub fn revalidate_witness_read(candidate: Cx,
     _ -> return None
   }
   Some(semantic_reads.observed_equal(fact, observed.function_reads))
+}
+
+test "function query revalidation distinguishes source signature edits from body edits" {
+  let consumer = "fn caller() -> Int = target(1)\nfn missing() -> Int = absent(1)\n"
+  let base = Cx { ..cx_new(Some("sample"), None), function_reads: Some([]) }
+  let (syntax, pd) = parser.parse_module("fn target(x: Int) -> Int = x\n" ++ consumer)
+  assert pd == []
+  let (before, _) = check_module(base, syntax, map.empty())
+  let old_sig = map.get(before.fns, "target").expect("target signature")
+  let present = semantic_reads.FunctionAnswer(NamedFunctionRead { name: "target", answer: Some(old_sig) })
+  let missing = semantic_reads.FunctionAnswer(NamedFunctionRead { name: "absent", answer: None })
+  assert list.contains(before.function_reads.expect("recorded consumer"), present)
+  assert list.contains(before.function_reads.expect("recorded miss"), missing)
+  for (declaration, unchanged, added) in [
+    ("fn target(x: Int) -> Int = x + 1\n", true, false),
+    ("fn target(x: Int) -> Bool = true\n", false, false),
+    ("fn target(x: Int) -> Int = x\nfn absent(x: Int) -> Int = x\n", true, true),
+    ("", false, false)
+  ] {
+    let (changed, errors) = parser.parse_module(declaration ++ consumer)
+    assert errors == []
+    let (candidate, module) = check_module(base, changed, map.empty())
+    let (cold, cold_module) = check_module(Cx { ..base, function_reads: None }, changed, map.empty())
+    assert candidate.diags == cold.diags && module == cold_module
+    assert revalidate_read(candidate, present) == Some(unchanged)
+    assert revalidate_read(candidate, missing) == Some(not added)
+  }
+}
+
+test "function query revalidation preserves lookup precedence pools and isolation" {
+  let (syntax, _) = parser.parse_module("fn target(x: Int) -> Int = x\n")
+  let headers = check_module_headers(test_cx(), syntax, map.empty())
+  let local = map.get(headers.cx.fns, "target").expect("local")
+  let standard = Sig { ..local, owner: Some("std/example") }
+  let builtin = Sig { ..local, owner: None, is_builtin: true }
+  let initial = Cx { ..headers.cx, fns: map.from([("target", local)]), std_fns: map.from([("target", standard)]),
+    bins: map.from([("target", builtin)]), hidden_bins: set.empty(),
+    function_reads: Some([semantic_reads.StdModuleMode(false)]) }
+  for (candidate, expected) in [(initial, local),
+    (Cx { ..initial, fns: map.empty() }, standard),
+    (Cx { ..initial, fns: map.empty(), std_fns: map.empty() }, builtin)] {
+    let (recorded, answer) = lookup_fn_sig_read(Cx { ..candidate, function_reads: Some([]) }, "target")
+    assert answer == Some(expected)
+    let fact = recorded.function_reads.expect("lookup")[0]
+    assert revalidate_read(candidate, fact) == Some(true)
+    assert revalidate_read(Cx { ..candidate, fns: map.empty(), std_fns: map.empty(), bins: map.empty() }, fact) == Some(false)
+  }
+  let (recorded, pool) = fn_pool_read(Cx { ..initial, function_reads: Some([]) })
+  assert pool == ["target", "target", "target"]
+  let fact = recorded.function_reads.expect("pool")[0]
+  assert revalidate_read(initial, fact) == Some(true)
+  assert revalidate_read(Cx { ..initial, fns: map.insert(initial.fns, "added", local) }, fact) == Some(false)
+  assert revalidate_read(initial, semantic_reads.FunctionCandidates(["target"])) == Some(false)
+  let ordered = Cx { ..initial, std_fns: map.insert(initial.std_fns, "standard_only", standard),
+    bins: map.insert(initial.bins, "builtin_only", builtin) }
+  let (_, names) = fn_pool_read(ordered)
+  assert names != list.reverse(names)
+  assert revalidate_read(ordered, semantic_reads.FunctionCandidates(names)) == Some(true)
+  assert revalidate_read(ordered, semantic_reads.FunctionCandidates(list.reverse(names))) == Some(false)
+  let builtin_only = Cx { ..initial, fns: map.empty(), std_fns: map.empty(), hidden_bins: set.from(["target"]) }
+  let builtin_fact = semantic_reads.FunctionAnswer(NamedFunctionRead { name: "target", answer: Some(builtin) })
+  assert revalidate_read(builtin_only, builtin_fact) == Some(false)
+  assert revalidate_read(Cx { ..builtin_only, is_std_module: true }, builtin_fact) == Some(true)
+  let local_fact = semantic_reads.FunctionAnswer(NamedFunctionRead { name: "target", answer: Some(local) })
+  for changed in [Sig { ..local, param_tys: [TyBool] }, Sig { ..local, param_names: ["renamed"] },
+    Sig { ..local, param_defaults: [true] }, Sig { ..local, eff: EIo },
+    Sig { ..local, tparams: [TyVar("T", 700)] }, Sig { ..local, constraints: [[EQ_ID]] },
+    Sig { ..local, eparams: [EffVar("e", 701)] }, Sig { ..local, trait_id: Some(EQ_ID) },
+    Sig { ..local, op_of: Some((702, 0)) }, Sig { ..local, inferring: true },
+    Sig { ..local, is_builtin: true }, Sig { ..local, name: "renamed" }] {
+    assert revalidate_read(Cx { ..initial, fns: map.from([("target", changed)]) }, local_fact) == Some(false)
+  }
+  assert revalidate_read(initial, semantic_reads.FunctionAnswer(NamedFunctionRead { name: "target", answer: Some(standard) })) == Some(false)
+  assert revalidate_read(initial, semantic_reads.QualifiedConstant("h", "VALUE", None)) == None
+  assert initial.function_reads == Some([semantic_reads.StdModuleMode(false)]) && initial.diags == []
+}
+
+test "qualified function query revalidation tracks providers aliases and misses" {
+  let initial = Cx { ..cx_new(Some("main"), None), function_reads: Some([]) }
+  let (syntax, _) = parser.parse_module("pub fn target(x: Int) -> Int = x\n")
+  let (provider, _) = check_module(cx_new(Some("helper"), None), syntax, map.empty())
+  let exports = exports_of(provider, syntax, "helper", "helper")
+  let (consumer, _) = parser.parse_module("use helper as h\nfn go() -> Int = h.target(1)\nfn miss() -> Int = h.absent(1)\n")
+  let (before, _) = check_module(initial, consumer, map.from([("helper", exports)]))
+  let sig = map.get(before.module_fn_sigs, ("h", "target")).expect("provider signature")
+  let present = semantic_reads.QualifiedFunction("h", NamedFunctionRead { name: "target", answer: Some(sig) })
+  let missing = semantic_reads.QualifiedFunction("h", NamedFunctionRead { name: "absent", answer: None })
+  let alias_fact = semantic_reads.ModuleAlias("h", Some("helper"))
+  let reads = before.function_reads.expect("qualified consumer")
+  assert list.contains(reads, present) && list.contains(reads, missing) && list.contains(reads, alias_fact)
+  for fact in [present, missing, alias_fact] { assert revalidate_read(before, fact) == Some(true) }
+  let changed_sig = Sig { ..sig, owner: Some("other") }
+  let changed = Cx { ..before, module_aliases: map.from([("h", "other")]),
+    module_fn_sigs: map.from([(("h", "target"), changed_sig), (("h", "absent"), changed_sig)]) }
+  for fact in [present, missing, alias_fact] { assert revalidate_read(changed, fact) == Some(false) }
+  assert revalidate_read(Cx { ..before, module_fn_sigs: map.empty() }, present) == Some(false)
+  assert revalidate_read(Cx { ..before, module_aliases: map.empty() }, alias_fact) == Some(false)
+  let absent_alias = semantic_reads.ModuleAlias("new", None)
+  assert revalidate_read(before, absent_alias) == Some(true)
+  assert revalidate_read(Cx { ..before, module_aliases: map.insert(before.module_aliases, "new", "helper") }, absent_alias) == Some(false)
+  assert before.function_reads == Some(reads)
 }
 
 test "candidate revalidation dispatches queries without accepting unknown facts" {
