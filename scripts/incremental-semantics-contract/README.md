@@ -1,5 +1,22 @@
 # 增量语义契约夹具
 
+## Prepared source proof boundaries
+
+`prepared-proofs.py` compiles one positive subject and two isolated controls.
+The consumer control reparses only a missing prepared proof, leaving certified
+proofs and the legacy fallback unchanged. Its owning test uses clean, eligible
+source with capture disabled, both without and with a previous body cache.
+It requires absent counts/cache and cold-equivalent semantic products.
+The producer control removes both source path and text guards; its real loader
+collision fixture uses distinct equal-width comments to keep ASTs and source
+coordinates equal while detecting the borrowed index. Both controls must reach
+their exact owning assertion, not merely fail compilation or another test.
+This small harness complements loader lifecycle and execution-count coverage;
+it does not measure parsing cost or activate prepared loading in production.
+The complete local run on 2026-09-22 took 135.52s: positive 41.83s,
+missing-proof control 46.91s, and collision control 46.74s. These are local
+validation costs, not CI runner observations or a production speedup.
+
 ## Running the whole family locally
 
 `sweep.sh` runs every invocation the nine `incremental-*` jobs in

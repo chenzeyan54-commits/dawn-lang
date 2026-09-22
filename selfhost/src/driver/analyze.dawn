@@ -1702,6 +1702,35 @@ test "cached module transitions follow real package import resolution" {
   })
 }
 
+test "prepared module execution refuses a clean missing proof without reparsing" {
+  in_mem(() => {
+    let std = std_or_die()
+    let baseline = initial_carry_with_provenance(std, "prepared-refusal-test")
+    let text = "fn leaf() -> Int = 1\nfn caller() -> Int = leaf()\n"
+    let without_proof = prepare_standalone_with_capture("/prepared/main.dawn", text, false)
+    let input = prepared_modules(without_proof)[0]
+    let raw = prepared_loaded(input)
+    let data: PreparedModuleData = input
+    assert raw.pdiags == [] && data.snapshot == None
+    let certified = prepared_modules(prepare_standalone("/prepared/main.dawn", text))[0]
+    let admitted = analyze_module_step_prepared(certified, baseline, std, ct_default(), jsig_refused(), None, None)
+    assert admitted.counts.expect("eligible clean bodies").checked == 2
+    assert admitted.cache != None
+    let cold = analyze_module_step(raw, baseline, std, ct_default(), jsig_refused(), None)
+    for previous in [None, admitted.cache] {
+      let refused = analyze_module_step_prepared(input, baseline, std, ct_default(), jsig_refused(), None, previous)
+      assert refused.counts == None && refused.cache == None
+      assert refused.step.diags == [] && refused.step.diags == cold.diags
+      assert refused.step.after == cold.after
+      assert refused.step.checked.tm == cold.checked.tm && refused.step.checked.ct == cold.checked.ct
+      assert refused.step.checked.m == cold.checked.m
+      assert refused.step.checked.cx.syms == cold.checked.cx.syms
+      assert refused.step.checked.cx.fns == cold.checked.cx.fns
+      assert refused.step.check_runs == cold.check_runs && refused.step.comptime_runs == cold.comptime_runs
+    }
+  })
+}
+
 test "prepared standalone loading preserves recovery and filename diagnostics" {
   for path in ["<lsp>", "/tmp/main.dawn", "/tmp/Bad-Name.dawn"] {
     for text in ["", "# 🌅 λ\nfn answer() -> Int = 42\n",
