@@ -33,8 +33,11 @@ name: verify-external
 # run step exited 0. It is the maintainer's own evidence, not an independent
 # run; anyone can re-check the signature and the recomputation with
 # verify_note.py, nobody can re-check that the steps really ran. Pull requests
-# from forks do not take this path, and release.yml's guard does not accept it
-# yet (docs/gates-external-design.md).
+# from forks do not take this path. Since 2026-09-24 release.yml's `verified`
+# guard accepts this status in place of a green ci.yml run, but only when the
+# status was written by github-actions[bot] during a successful run of this
+# workflow on the default branch, which its target_url must name
+# (scripts/gates-external/release_evidence.py; docs/gates-external-design.md).
 on:
   workflow_dispatch:
     inputs:

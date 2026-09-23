@@ -15,7 +15,7 @@ handing over, and this file is where both are enforced:
    this machine's host or user name is refused and no file is written.
 
    Commands, step names and `uses:` references legitimately contain `/`
-   (`./scripts/...`, `actions/checkout@v4`). They are exempt only when the
+   (a script path, `actions/checkout@v4`). They are exempt only when the
    exact string occurs in gates.yml at the bundle's own tree, which is public
    text the verifier re-reads; a free-text value never gets the exemption.
 

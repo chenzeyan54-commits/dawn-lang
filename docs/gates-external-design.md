@@ -1,6 +1,6 @@
 # 在 GitHub 之外跑完整门禁集
 
-> 状态：**current**。第 1 刀（本地后端 + 证据包）、第 2 刀（签名、`refs/notes/gates`、`verify-external.yml` 回写 commit status）与第 3 刀（prefix、离线输入包、隔离证明、crun 后端）已落地；release 守卫接受外部证据、自动触发是后续刀，记在「不做的」。`verify-external.yml` 尚未在真实 GitHub 上跑过：`workflow_dispatch` 要求工作流先在默认分支上，首次运行在合并之后。
+> 状态：**current**。第 1 刀（本地后端 + 证据包）、第 2 刀（签名、`refs/notes/gates`、`verify-external.yml` 回写 commit status）、第 3 刀（prefix、离线输入包、隔离证明、crun 后端）与第 4 刀（2026-09-24：release 守卫接受外部证据；`steps.lock.json` 进 tree-policy，关 #167）已落地；自动触发仍记在「不做的」。`verify-external.yml` 至今只在真实 GitHub 上跑过一次（run 35888113634，输入不是 40 位 sha，按设计失败且不写 status），还没有一次写出 `success`。
 
 ## 要解决的问题
 
@@ -303,6 +303,10 @@ job 看到的是 `cache/npm`，由后端在 prepare 时从 `inputs/npm-cache` �
 
 但两者的比较对象不同，需要说清：本刀拿「证据包执行了的」去比「同一提交上 `gates.yml` 写着的」，所以能抓住「跑的时候漏了一条」，抓不住「`gates.yml` 本身删掉了一条」。#167 要抓的正是后者，它要求对照一份入库的期望或拆分时记录的并集。第 2 刀把这条核对接进 CI 时，比较对象换成入库期望（例如上一个提交的多重集，或随拆分一起提交的并集），就能关掉 #167。
 
+第 4 刀（2026-09-24）按这个思路落地：`scripts/gates-external/steps.lock.json` 是入库期望，按 job 家族（job id 去掉一个末尾的 `-<数字>`，`contracts-1`/`contracts-2` 同属 `contracts`）记 `run:` 文本的多重集，解析复用 `gatesplan.parse`，不另写解析器。`steps_lock.py check` 在 tree-policy 里跑（本机 0.1s，self-test 另 0.1s），少一条或多一条都红并点名家族与命令；家族内挪动是重新分片，不红；跨家族挪动两边都红。删步骤、加步骤都必须在同一个提交里 `steps_lock.py record` 重录 lock，并在提交信息里说明理由，lock 的 diff 就是审阅者看到「哪条命令走了」的地方。副作用是 `gatesplan.py` 拒绝的 `gates.yml`（未建模的写法、复合 action 指纹变了）在 push 上就红，那也正是外部 runner 跑不了它的时刻。
+
+负控：从 `contracts-2` 删掉 `./scripts/tea-reconciler-contract/run.sh` 一步，`check` 红并点名 `contracts: missing 1x`；lock 里多写一条不存在的命令，同样红并点名；复原后绿（174 个 run 步骤，27 个家族）。
+
 ## 实测
 
 本节数字只作参考，不做性能声明；机器是共享的 16 核 / 15.6 GiB WSL2，运行期间还有其他进程。
@@ -336,7 +340,7 @@ job 看到的是 `cache/npm`，由后端在 prepare 时从 `inputs/npm-cache` �
 
 ## 不做的（理由）
 
-- **release 守卫接受外部证据。** `release.yml` 的 `verified` job 仍然只认 `ci.yml` 在该 sha 上的成功运行。让它也接受 `gates/maintainer`，要先回答维护者自证能不能替代托管 runner 的独立运行、以及 status 可被有写权限者伪造时守卫该读 status 还是自己验 note。这是第 4 刀。
+- **release 守卫自己验 note。** 第 4 刀让 `verified` 接受 `gates/maintainer`，但读的是 status，不是 note。status 可被有写权限者伪造，所以 `release_evidence.py` 不只看 state：creator 必须是 `github-actions[bot]`，`target_url` 必须恰为本仓库的 `actions/runs/<id>`，从本仓库 API 读回的那次 run 必须是默认分支上 `workflow_dispatch` 触发、结论 success 的 `verify-external.yml`，且 status 的写入时刻落在该 run 的时间窗内（API 不返回 dispatch 的输入，时间窗是把 status 绑到写它的那次 run 上的办法）。不在守卫里重做签名核验：那需要把 note、公钥与核验器带进 release job，而 `verify-external.yml` 已经在托管 runner 上用默认分支的核验器做过；守卫要确认的只是「读到的正是那次核验的结论」。维护者自证能否替代托管 runner 的独立运行，裁决是能，用于托管 runner 排队或宕机时发版；分量见 bootstrap.md 协议段的诚实边界。
 - **自动触发。** `publish.py` 之后派发工作流是手动的一步（脚本替维护者执行 `gh workflow run`）。不做推 `refs/notes/gates` 时自动触发：Actions 的 `push` 触发器按分支与 tag 过滤，推 notes ref 能否可靠地触发工作流没有实测；更要紧的是，自动触发意味着任何能推 notes 的人都能让 runner 替他写 status，而派发是一个需要写权限、留在 Actions 记录里的显式动作。
 - **发布红的证据。** `publish.py` 拒绝 `complete` 不为 true 的包。签名的「门禁没过」不能让任何人做任何事，没有绿 status 已经说明了这一点。
 - **多钥与轮换过渡期。** `allowed_signers` 只有一行。换钥即改这一行，旧 note 从此核不过；要保留旧证据的可核验性，需要按时间段接受多把钥，等真的换钥时再说。

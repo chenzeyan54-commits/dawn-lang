@@ -26,8 +26,8 @@ name: release
 # a tag can point at any commit, and re-running the whole suite was the cheapest
 # way to be certain it does not. It was not cheap: about 23,000 job-seconds and
 # 25 minutes of wall clock per release, spent re-deciding a question already
-# decided. The `verified` job below buys the same certainty with one API query,
-# by requiring what the procedure above already requires. gates.yml is still the
+# decided. The `verified` job below buys the same certainty with a few API
+# queries, by requiring what the procedure above already requires. gates.yml is still the
 # single definition of the gate set, and a tag is still held to it; what stopped
 # is running it twice over one sha.
 on:
@@ -40,73 +40,64 @@ on:
 
 permissions:
   contents: write # create the release and upload the jar
-  actions: read # the guard below reads ci.yml's run list for this sha
+  actions: read # the guard below reads ci.yml's and verify-external.yml's runs
+  statuses: read # and the gates/maintainer commit status
 
 jobs:
   # The release procedure at the top of this file is now enforced by machine
-  # rather than by memory: the tagged commit must already carry a green ci.yml
-  # run, and ci.yml is the workflow that `uses:` gates.yml. So a tag pointing at
-  # a commit main CI never saw is still refused, which was the whole point of
-  # the duplicate suite this replaced; it is refused in seconds instead of after
-  # re-deciding 67 jobs.
+  # rather than by memory: the tagged commit must already carry evidence that
+  # gates.yml passed on it. So a tag pointing at a commit nobody verified is
+  # still refused, which was the whole point of the duplicate suite this
+  # replaced; it is refused in seconds instead of after re-deciding 67 jobs.
   #
-  # Three cases the query has to answer, settled here so nobody has to rederive
-  # them from the jq:
+  # Since 2026-09-24 there are two kinds of evidence and either is enough
+  # (scripts/gates-external/release_evidence.py, whose header has every
+  # check and the reason for it):
   #
-  #   ci is still in progress on this sha  ->  fail, saying so. A guard that
-  #     polled would hold a runner for the length of the suite to learn what a
-  #     re-run learns for free, and a failed guard costs one `gh run rerun`.
+  #   1. a successful ci.yml run at this sha, on any branch. ci.yml calls the
+  #      same gates.yml on every branch and pull request, so where the commit
+  #      was when it went green does not change the verdict, and the branch
+  #      each run saw is printed either way. A run still in progress is not
+  #      waited for: a guard that polled would hold a runner for the length
+  #      of the suite to learn what a re-run learns for free.
   #
-  #   the only successful run is on a branch other than main  ->  accept. ci.yml
-  #     calls the same gates.yml on every branch and every pull request, so the
-  #     verdict does not depend on where the commit was when it was reached.
-  #     Requiring main would reject a release branch over a difference that does
-  #     not exist, and the branch each run saw is printed either way.
+  #   2. a `gates/maintainer` commit status of success, written by
+  #      verify-external.yml on the default branch in a run that succeeded:
+  #      the maintainer's signed external run of the full gate set
+  #      (docs/bootstrap.md). A status alone is not accepted, since anyone
+  #      with write access can post one; the script reads the run its
+  #      target_url names back from this repository's API and holds it to
+  #      the workflow file, the event, the branch, the conclusion and the
+  #      time the status was written.
   #
-  #   pagination  ->  not a case. `head_sha` filters server-side, so the
-  #     response holds this commit's runs and nothing else; a successful run
-  #     cannot be hiding on a page the guard did not read.
+  # Neither holding fails the job and prints what each check found. The
+  # script's --selftest runs first (milliseconds): eleven fabricated API
+  # answers, including a status pointing at another repository and at another
+  # workflow, each of which must get the verdict it is listed with. The
+  # script is checked out at the tag, as this workflow file is: a tag's
+  # commit could already edit this job, so reading the script from it adds
+  # no way around the guard that was not there before.
+  #
+  # Pagination is not a case for either query: `head_sha` filters runs
+  # server-side and a commit's statuses are one short list, and the script
+  # reads every page `gh api --paginate` returns regardless.
   verified:
     runs-on: ubuntu-latest
-    # budget: floor (seconds-scale job; one Actions API query, no toolchain)
+    # budget: floor (seconds-scale job; a checkout and three Actions API queries, no toolchain)
     timeout-minutes: 10
     steps:
-      - name: ci has already run the gates on this commit
+      - uses: actions/checkout@v4
+
+      - name: the gates have passed on this commit (ci.yml, or signed external evidence)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          RUNS=$(
-            gh api --paginate \
-              "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&per_page=100" \
-              --jq '.workflow_runs[]
-                    | [.status, (.conclusion // "pending"), .head_branch, .html_url]
-                    | @tsv'
-          )
-          echo "ci.yml runs at $GITHUB_SHA (status, conclusion, branch, url):"
-          if [ -n "$RUNS" ]; then
-            printf '%s\n' "$RUNS" | sed 's/^/  /'
-          else
-            echo "  (none)"
-          fi
-
-          if printf '%s\n' "$RUNS" | awk -F'\t' \
-              '$1 == "completed" && $2 == "success" { hit = 1 } END { exit !hit }'; then
-            echo "OK: the gates are green on $GITHUB_SHA"
-            exit 0
-          fi
-
-          if printf '%s\n' "$RUNS" | awk -F'\t' \
-              'NF > 1 && $1 != "completed" { hit = 1 } END { exit !hit }'; then
-            echo "::error::ci is still running on $GITHUB_SHA; the gates have not"\
-              "reached a verdict yet. Wait for that run to go green, then re-run"\
-              "this release workflow: gh run rerun $GITHUB_RUN_ID"
-          else
-            echo "::error::no successful ci run on $GITHUB_SHA. Push this commit to"\
-              "main, wait for ci to be green on it, then re-run this release"\
-              "workflow (gh run rerun $GITHUB_RUN_ID) or delete the tag and push it"\
-              "again at the verified commit."
-          fi
-          exit 1
+          python3 scripts/gates-external/release_evidence.py --selftest
+          python3 scripts/gates-external/release_evidence.py \
+            --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" \
+            --default-branch "$DEFAULT_BRANCH" --server "$GITHUB_SERVER_URL" \
+            || { status=$?; echo "re-run once the evidence exists: gh run rerun $GITHUB_RUN_ID"; exit $status; }
 
   release-jar:
     needs: verified
