@@ -66,6 +66,12 @@ it and requiring some case to go red.
              exact or coarse strength (the paths in unseen.txt). A subset
              computed from "nobody watches this" is the empty set, which is
              the failure gatemap exists to prevent, one level up.
+             The one exception is a path of kind `unread`: a file in a harness
+             directory under scripts/ that gatemap has read every script run
+             from that directory for, and found none that imports, sources or
+             names it (a README, a benchmark CI does not run). There the empty
+             set is the measured answer rather than a gap, so it contributes
+             no job and does not force the whole set.
   deleted    A changed path is not in the head tree (a deletion, or the old
              side of a rename). gatemap's map is built from the head tree, so
              it has no record of who read a file that is gone; only the base
@@ -320,11 +326,16 @@ def changed_paths(base, head):
 class MapView:
     """What the plan needs from gatemap, built under a timeout."""
 
-    def __init__(self, gm, base_std_modules, gate_jobs):
+    def __init__(self, gm, base_std_modules, gate_jobs, unread_exempt=True):
         self.gm = gm
         self.base_std_modules = base_std_modules
         self.gate_jobs = gate_jobs
-        self.unseen = set(gm.unseen())
+        # gatemap's `unread` kind, spelled the same way as its check
+        self.unread = {
+            p for p in gm.unseen()
+            if p in gm.unread and not gm.by_path.get(p)
+        }
+        self.unseen = set(gm.unseen()) - (self.unread if unread_exempt else set())
         self.files = gm.tree.fileset
         self.workflow_of = {}
         for gate in gm.gates:
@@ -452,6 +463,12 @@ def selftest():
         print("SELFTEST FAIL: unseen.txt has no path outside the forced "
               "prefixes, so the unseen rule cannot be exercised", file=sys.stderr)
         return 1
+    unread = sorted(p for p in view.unread if not forced_reason(p))
+    if not unread:
+        print("SELFTEST FAIL: gatemap records no `unread` path outside the "
+              "forced prefixes, so the unread exemption cannot be exercised",
+              file=sys.stderr)
+        return 1
     docs = ["docs/incremental-semantics-design.md", "docs/session-body-replay-design.md"]
     for d in docs:
         if d not in view.files:
@@ -487,6 +504,8 @@ def selftest():
         ("gatemap timed out", PR, "b", docs, None, slow, ALL, "gatemap"),
         (f"unseen path {unseen[0]}", PR, "b", docs + [unseen[0]], None,
          real_map, ALL, "unseen"),
+        (f"unread path {unread[0]}", PR, "b", docs + [unread[0]], None,
+         real_map, {"all": False, "jobs": ["docs"]}, "subset"),
         ("deleted path", PR, "b", docs + ["docs/removed-by-the-selftest.md"],
          None, real_map, ALL, "deleted"),
     ]
@@ -516,6 +535,22 @@ def selftest():
                   "case, so nothing tests it", file=sys.stderr)
         else:
             print(f"  refused: the plan without its `{rule}` fallback")
+
+    # The unread exemption is load-bearing too: a view that treats unread
+    # paths as unseen must redden the unread case, and only that case.
+    strict = MapView(view.gm, view.base_std_modules, view.gate_jobs,
+                     unread_exempt=False)
+    saved = [c for c in cases]
+    cases[:] = [c[:5] + ((lambda: strict),) + c[6:] if c[5] is real_map else c
+                for c in cases]
+    reds = run_cases((), False)
+    cases[:] = saved
+    if [r.split(":", 1)[0] for r in reds] != [f"unread path {unread[0]}"]:
+        failures.append("unread-exemption")
+        print("SELFTEST FAIL: without the unread exemption the red cases are "
+              f"{reds!r}, not exactly the unread case", file=sys.stderr)
+    else:
+        print("  refused: the plan without its unread exemption")
 
     # The needs closure, on a graph small enough to read.
     graph = [("plan", {"needs": [], "if": None, "outputs": []}),

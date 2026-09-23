@@ -58,9 +58,61 @@ module docstring gives the reason for each; its self-test removes each one in
 turn and requires a case to go red. `--check-wiring` holds every gates.yml
 job to `needs: [plan]` and an `if:` that tests its own id.
 
+A path of the `unread` kind (below) is the one unseen path that does not
+force the whole set: it selects no job, because the map has read every script
+that could open it and none does.
+
 Like `gatemap.py`, `plan.py` is exempt from rules A and B: it names paths to
 describe them, and scraping it would record the plan job as reading every
 seed pin.
+
+## Harness directories, file by file
+
+Rule A used to hand a step the whole directory of every script it runs. For
+`scripts/incremental-semantics-contract/`, 56 harnesses run by 69 steps in 29
+jobs, that made every file there every job's code, and a harness-only pull
+request such as #164 still ran 30 of 39 jobs (#169). A step under `scripts/`
+now owns the files its scripts reach, and the edges are parsed from the
+scripts, never guessed from names or directories:
+
+| edge | read from | example |
+|------|-----------|---------|
+| runs | the step's `run:` line, and scripts those scripts run | `python3 scripts/x/check.py` |
+| imports | Python `import m` / `from m import f`, beside the importer or on a `sys.path` entry it adds | `from cold import ROOT, edit, run` |
+| sources | shell `source` / `.` | `source "$root/scripts/mutant-coverage/shard.sh"` |
+| names | a path inside the directory, built or spelled in the code | `HERE / "x.dawn.txt"`, `Path(__file__).with_name("x")`, `"$here/x"`, `("A.java", "B.java")` |
+| includes | quoted C `#include` in a file already reached | `#include "stubs.h"` |
+| project | a harness directory handed to `./bin/dawn`: its SourcePlan inputs | `./bin/dawn test scripts/x` reads `dawn.toml` and `src/` |
+
+Every edge closes over what its target reaches, and a shared file goes to
+every step that reaches it: `replay-workloads.dawn.txt` belongs to each step
+whose script names it. An import reaches the module's top level plus the
+functions the importer takes from it, which is what Python executes; that is
+why the 39 harnesses taking `ROOT, edit, run` from `cold.py` do not inherit
+the `copytree` in `cold.main`, while the step that runs `cold.py` itself does.
+A named sibling script is followed as if run, since naming it is how a harness
+runs it.
+
+**Fallback.** When the reader cannot bound what a script reads, that script
+gets its whole directory, which is the old rule. The conditions are the
+directory used as a value (`shutil.copytree(HERE, ...)`, `cwd=HERE`,
+`HERE.glob(...)`, `cd "$here"`, `$here` handed to a program), a name computed
+inside it (`HERE / f"{name}.txt"`, `"$here/$prog.dawn"`, a glob), a file that
+does not parse, and a language with no reader (anything but `.py` and `.sh`).
+The fallback is per script: `prefix.py` copies its directory and gets all of
+it, and the harnesses beside it do not. Each fallback states the line that
+caused it in its reason, so `gatemap.py <path>` shows why a file went to a
+step.
+
+**Unread.** A file in a harness directory that no step reaches either way,
+typically a README or a benchmark CI does not run, is recorded in
+`unseen.txt` under the kind `unread`. The kind is checked in both directions
+(`no-gate` may not claim a path the reader cleared, and `unread` may not claim
+one it did not), and plan.py reads it as "selects no job".
+
+Outside `scripts/`, a script still owns only itself, and rule B still reads
+path tokens from the scripts a step reaches, now excluding the harness's own
+directory, which rule A has already read file by file.
 
 ## Changing it
 
@@ -72,9 +124,9 @@ launder the collision it exists to catch. This copies
 `scripts/pipe-contract/matrix.py`, which solved the same problem first.
 
 Adding a path that nothing watches means adding a line to `unseen.txt` with a
-reason. The kind at the front of the reason (`no-gate`, `blind-only`,
-`tag-only`) is checked against the map, so it cannot go on claiming something
-the tree stopped supporting. `--record-unseen` keeps the reasons already
+reason. The kind at the front of the reason (`no-gate`, `unread`,
+`blind-only`, `tag-only`) is checked against the map, so it cannot go on
+claiming something the tree stopped supporting. `--record-unseen` keeps the reasons already
 written and marks a new line for you to fill in.
 
 ## What it does not promise
