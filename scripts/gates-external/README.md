@@ -184,7 +184,6 @@ private mount namespace in which each is a per-job directory in the prefix
 | `adjust:runner-temp` | `per-job-directory` | `RUNNER_TEMP` and `${{ runner.temp }}` point at a per-job directory outside the worktree |
 | `adjust:tmpdir` | `per-job-directory` | `TMPDIR` is per job |
 | `adjust:literal-tmp-paths` | `machine-wide-lock` | a step naming a literal `/tmp/<name>` path holds a lock on it, so two runs of this script cannot share it |
-| `adjust:playground-port` | `free-port-per-run` | `PLAY_TEST_PORT` is a free port, not 8097 |
 | `adjust:github-env-files` | `per-step-files` | `GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY` are per-step files, and ENV/PATH carry to later steps |
 | `adjust:npm-offline-cache` | `input-pack-npm-cache` | under `--prefix`, `npm_config_cache` is a copy of the input pack's npm cache (filled by `npm ci` from the pinned `site/play-ui/package-lock.json`) and `npm_config_offline=true`, so the docs job's `npm install` never reaches a registry. Listed only for a commit that uses `actions/setup-node` |
 | `adjust:wasi-sdk-tarball` | `input-pack-tarball` | under `--prefix`, `WASI_SDK_TARBALL` names the input pack's wasi-sdk archive, which wasm-target's step copies instead of downloading; the step's pinned sha256 is checked either way. Listed only for a commit whose gates.yml reads the variable; without `--prefix` it is not set and the step downloads |

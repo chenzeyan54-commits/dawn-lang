@@ -36,7 +36,7 @@ backend (crun) is a new backend_<name>.py beside this one, selected with
 
 Why every job gets its own worktree: CI gives every job a fresh checkout, and
 running several jobs in one tree collides on things gates.yml writes to fixed
-places (`/tmp/gate-emit`, the playground's port and its `fuser -k`). The only
+places (`/tmp/gate-emit`). The only
 things shared between jobs here are the toolchain caches: the seed cache is
 copied in, as actions/cache would restore it (seedjar.sh re-verifies it on
 every hit), and coursier's cache is the user's own, as on a runner.
@@ -64,7 +64,6 @@ import os
 import re
 import shutil
 import signal
-import socket
 import subprocess
 import threading
 import time
@@ -100,12 +99,6 @@ def java_major(java):
     return (int(match.group(1)) if match else None), out
 
 
-def free_port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
 def create(ctx):
     return LocalBackend(ctx)
 
@@ -132,7 +125,6 @@ class LocalBackend:
         self.run_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         self.seed_hashes = set()
         self.lock = threading.Lock()
-        self.port = None
         self.base_env = None
 
     # ------------------------------------------------------------- lifecycle
@@ -147,17 +139,15 @@ class LocalBackend:
                  "--git-common-dir"], check=True, capture_output=True, text=True).stdout.strip()
             self.seed_cache = str(Path(common).parent / ".dawn" / "seeds")
         self.jdk = self._find_jdk()
-        self.port = free_port()
         env = {k: v for k, v in os.environ.items()
                if not HOST_ENV_DROP.match(k) and k not in HOST_ENV_DROP_EXACT}
         env["CI"] = "true"
-        # Only the docs job's playground contract reads it. A port chosen per
-        # run keeps two runs (or a developer's server) from meeting on 8097,
-        # and keeps the contract's `fuser -k` pointed at this run's own port.
-        env["PLAY_TEST_PORT"] = str(self.port)
+        # PLAY_TEST_PORT stays in the drop list and is not set: since #173
+        # playground/test/contract.sh asks the kernel for a free port itself,
+        # and a developer's pinned value must not reach it.
         self.base_env = env
         self.log(f"local backend: run {self.run_id}, workdir {self.workdir}, "
-                 f"seed cache {self.seed_cache}, JDK {self.jdk}, playground port {self.port}")
+                 f"seed cache {self.seed_cache}, JDK {self.jdk}")
 
     def _prepare_prefix(self):
         prefix = self.prefix
@@ -172,12 +162,8 @@ class LocalBackend:
         self.seed_cache = None  # the prefix's inputs/seeds and inputs/std-seeds
         prefix_mod.restore_coursier(prefix)
         prefix_mod.restore_npm(prefix)
-        self.port = free_port()
-        env = prefix_mod.job_env(prefix)
-        env["PLAY_TEST_PORT"] = str(self.port)
-        self.base_env = env
-        self.log(f"local backend (prefix {prefix}): run {self.run_id}, JDK {self.jdk}, "
-                 f"playground port {self.port}")
+        self.base_env = prefix_mod.job_env(prefix)
+        self.log(f"local backend (prefix {prefix}): run {self.run_id}, JDK {self.jdk}")
 
     def _find_jdk(self):
         candidates = [self.jdk] if self.jdk else []

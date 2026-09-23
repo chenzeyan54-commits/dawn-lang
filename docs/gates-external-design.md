@@ -65,7 +65,6 @@
 | `adjust:runner-temp` | `per-job-directory` | `RUNNER_TEMP` 与 `${{ runner.temp }}` 指向每 job 一个的目录，放在 worktree 外，免得脏了树。 |
 | `adjust:tmpdir` | `per-job-directory` | `TMPDIR` 每 job 一个，`mktemp` 类的临时文件互不相见。runner 上没有设它；设了只会更隔离。 |
 | `adjust:literal-tmp-paths` | `machine-wide-lock` | 步骤里写死的 `/tmp/<名字>`（今天只有 `contracts-1` 的 `/tmp/gate-emit`）在同一台机器的所有检出之间共享。按字面路径取一把机器级文件锁，两个 `run.sh` 不会同时用它；挡不住别的程序。路径是从命令文本里扫出来的，不是手写的表。 |
-| `adjust:playground-port` | `free-port-per-run` | `playground/test/contract.sh` 默认 8097，结束时 `fuser -k` 这个端口。WSL2 下 8097 可能落在 WinNAT 保留段里 bind 失败；共享机器上 `fuser -k 8097` 还会杀掉别人的进程。每次运行挑一个空闲端口经 `PLAY_TEST_PORT` 传入（该脚本本来就支持这个变量）。 |
 | `adjust:github-env-files` | `per-step-files` | `GITHUB_ENV`、`GITHUB_PATH` 等是每步一个文件，`ENV` 与 `PATH` 按 runner 的规则带到后续步骤。`wasm-target` 靠它把 `DAWN_WASM_CC` 与 `DAWNC_BIN` 传给后面的步骤。 |
 | `adjust:npm-offline-cache` | `input-pack-npm-cache` | 第 3b′ 刀加的。prefix 模式下 `npm_config_cache` 指向 prefix 的 `cache/npm`（输入包 npm 缓存的副本：npm 离线也往缓存里写日志），`npm_config_offline=true`。`docs` job 的 `site/build.sh` 跑 `npm install`，于是只从缓存取包，拿不到就 `ENOTCACHED` 红，不会悄悄去 registry。步骤本身不改。只在该提交用 `actions/setup-node` 时列出。 |
 | `adjust:wasi-sdk-tarball` | `input-pack-tarball` | 第 3b′ 刀加的。prefix 模式下环境里有 `WASI_SDK_TARBALL`，指向输入包里已校验的 wasi-sdk 原件；`wasm-target` 的步骤见到它就拷贝而不下载，sha256 照旧对两条路径都核。只在该提交的 `gates.yml` 读这个变量时才列出（`gatesplan.ADJUSTMENT_WHEN`），否则这一行描述的是不存在的东西。不带 `--prefix` 时不设，步骤照旧下载。 |
@@ -333,7 +332,7 @@ job 看到的是 `cache/npm`，由后端在 prepare 时从 `inputs/npm-cache` �
 这些是本刀在 `run.sh` 里绕开、但没有在仓库源码里改掉的债：
 
 - `contracts-1` 的 `/tmp/gate-emit` 写死在 `gates.yml`。本地用机器级锁串行化，挡不住其他程序；应改成 `$RUNNER_TEMP/gate-emit`。
-- `playground/test/contract.sh` 默认 8097 并在退出时 `fuser -k` 该端口。本地用 `PLAY_TEST_PORT` 绕开；默认值应改成向内核要空闲端口，`fuser -k` 应改成只杀自己起的进程。
+- ~~`playground/test/contract.sh` 默认 8097 并在退出时 `fuser -k` 该端口。~~ #173 已改：端口向内核要，收尾只杀自己起的进程组。原先的 `adjust:playground-port`（每次运行挑空闲端口经 `PLAY_TEST_PORT` 传入）随之在第 3b′ 刀删掉；`PLAY_TEST_PORT` 仍在宿主环境的清除名单里，开发者 shell 里钉的值不会漏进来。
 - `scripts/spike-native/run.sh` 在编不出 ASan 时只打印一行 note 并把 asan 检查记为 blocked，job 仍然绿。在 CI 上无害（runner 有 ASan），在外部后端上会让「跑过了」少一个维度而证据包看不出来。应让缺 ASan 成为失败，或至少成为可机读的结果。
 - 本地后端用宿主 PATH 上的 `python3`、`node`，只把版本写进证据包，不钉版本。上面的 3.14 实例说明这会改变结果；接入前应能钉住与 ubuntu-latest 一致的解释器版本，或者让不一致成为拒绝。
 - `lsp-liveness.py` 的 5s 上限在高并行的共享机器上会误红；外部后端要么降低并行度，要么这个检查要按机器负载给出可解释的余量。
@@ -347,7 +346,7 @@ job 看到的是 `cache/npm`，由后端在 prepare 时从 `inputs/npm-cache` �
 - **crun 后端占卡。** crun 后端只用零卡运行（`-n 0`）。`gates.yml` 今天没有 GPU 门禁（tile 的 GPU 差分在 `tile.yml`，不在本刀范围）。
 - **在集群上建用户。** 非 root 执行（第 3b′ 刀）用的是没有 passwd 条目的 uid；建用户要写 `/etc/passwd`，在 prefix 外。
 - **时长字段。** 证据包不记时长。时长是机器画像的一部分（核数、负载、邻居），不是树的性质；它也无法被验证者复核。本地计时写在 `summary.json`，只给跑的人看。
-- **把 `/tmp/gate-emit`、8097 改掉。** 任务单明确本刀不改仓库源码，且 #168 正在改 `gates.yml`；这些列进上一节。
+- **把 `/tmp/gate-emit` 改掉。** 任务单明确本刀不改仓库源码，且 #168 正在改 `gates.yml`；列进上一节。（8097 与 `fuser -k` 已由 #173 改掉。）
 - **解析复合 action 并逐步替换其内部步骤。** 复合 action 的内部是 GraalVM 下载与缓存，没有门禁；整体替换加指纹更简单，也更早暴露变化。
 - **prefix 里的 cc。** C 编译器仍来自 `/usr/bin`（本机 gcc 13.3，集群 gcc 11.4），证据包的 `toolchain.cc` 会随机器变化。把 gcc 连同 libasan 打进输入包是另一件事；集群上又不允许 apt。
 - **node 版本与 `lts/*`。** `docs` job 在 CI 上用 `setup-node` 的 `lts/*`，按任务单这里钉的是 20 LTS；两者不一定相同，证据包如实记录 `node` 字段。

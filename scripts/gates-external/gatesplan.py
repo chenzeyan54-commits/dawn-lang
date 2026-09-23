@@ -91,7 +91,6 @@ ADJUSTMENTS = {
     "adjust:runner-temp": "per-job-directory",
     "adjust:tmpdir": "per-job-directory",
     "adjust:literal-tmp-paths": "machine-wide-lock",
-    "adjust:playground-port": "free-port-per-run",
     "adjust:github-env-files": "per-step-files",
     # The ones below are made only inside a prefix (run.sh --prefix), and a
     # row appears only when the commit's gates.yml has something for them to
