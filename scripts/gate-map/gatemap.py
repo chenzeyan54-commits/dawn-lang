@@ -287,6 +287,14 @@ SELF_INPUTS = (
     CHECKER_CORPUS_GOLDEN,
 )
 
+# plan.py, next to this file, is exempt for the same reason. It names paths
+# in order to describe them (the prefixes that force the whole gate set) and
+# reads nothing by path except through this file's Map, so scraping it would
+# record the plan job as running scripts/build-release-jar.sh and reading
+# every seed pin, and the ratchet would count those as watched.
+PLAN = "scripts/gate-map/plan.py"
+UNSCRAPED = (SELF, PLAN)
+
 
 PATH_TOKEN = re.compile(r"[A-Za-z0-9_*][A-Za-z0-9_.$@+*-]*(?:/[A-Za-z0-9_.$@+*-]+)+")
 BARE_TOKEN = re.compile(r"(?<![\w./-])([A-Za-z][\w-]*)(?![\w./-])")
@@ -1149,7 +1157,7 @@ def gate_scripts(gate, tree, transitive=True):
         if script in scripts:
             continue
         scripts.add(script)
-        if script == SELF:
+        if script in UNSCRAPED:
             continue
         body = strip_comments(tree.read(script))
         frontier |= {
@@ -1233,7 +1241,7 @@ class Map:
                 # its own directory, so reading them is reading the gate.
                 body = ""
                 for sibling in tree.under(target):
-                    if sibling == SELF:
+                    if sibling in UNSCRAPED:
                         continue
                     if Path(sibling).suffix in SCRIPT_SUFFIXES:
                         body += strip_comments(tree.read(sibling)) + "\n"
