@@ -27,12 +27,22 @@ export PLAY_COMPILE_TIMEOUT=60
 # fail-closed since the audit). There is no systemd-run wrapper on a dev box or
 # in CI, so this harness is exactly the caller that has to say so.
 export PLAY_UNSAFE_LOCAL=1
-# Overridable because WSL2 cannot bind large swathes of the low port range —
-# Windows' WinNAT reserves them, and the bind fails with "Address already in use"
-# against a port that `ss` shows as free. 8097 is inside one such range on some
-# machines: PLAY_TEST_PORT=18097 ./playground/test/contract.sh
-PORT=${PLAY_TEST_PORT:-8097}
+# The port is asked of the kernel, not fixed: two copies of this test on one
+# machine (another checkout, an external gate run) would otherwise race for it,
+# and a fixed low port also collides with WSL2's WinNAT reservations (the bind
+# fails with "Address already in use" against a port `ss` shows as free).
+# Binding 127.0.0.1:0 is the same address the runner listens on, so a port the
+# kernel hands out here is one the runner can take. The window between this
+# probe closing and the runner binding is not closed; the stale-server check
+# below turns a lost race into a red run, never a green one against someone
+# else's server. PLAY_TEST_PORT still pins it explicitly.
+if [ -n "${PLAY_TEST_PORT:-}" ]; then
+  PORT=$PLAY_TEST_PORT
+else
+  PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
+fi
 export PLAY_PORT=$PORT
+echo "port: $PORT"
 
 # A stale server on the port would answer every check while the fresh one
 # dies on bind — fail fast instead of green-lighting an orphan.
@@ -40,13 +50,25 @@ if curl -s --noproxy '*' "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
   echo "FAIL: something already listens on $PORT (stale server?)"; exit 1
 fi
 
-"$DAWN_BIN" run "$ROOT/playground" >/tmp/dawn-play-test.log 2>&1 &
+LOG=$(mktemp "${TMPDIR:-/tmp}/dawn-play-test.XXXXXX")
+# The runner starts in a session (and so a process group) of its own, whose id
+# is its pid: `dawn run` executes the program in a child JVM that outlives its
+# parent, and killing the group reaches that child without looking anyone up
+# by port. The old cleanup ran `fuser -k` on the port, which on a shared
+# machine kills whatever else holds it. python3 does the setsid because it is
+# already required here and, unlike setsid(1), exists on macOS.
+python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+  "$DAWN_BIN" run "$ROOT/playground" >"$LOG" 2>&1 &
 SRV=$!
-# $SRV is the compiler JVM; `dawn run` executes the program in a child JVM,
-# so also kill whoever holds the port (the child outlives its parent
-# otherwise). Guards keep a failed kill from turning into the script's exit
-# status (dash: set -e applies inside an EXIT trap).
-trap 'kill $SRV 2>/dev/null; fuser -k -TERM "$PORT/tcp" 2>/dev/null; true' EXIT
+# Guards keep a failed kill from turning into the script's exit status (dash:
+# set -e applies inside an EXIT trap). The log is kept on failure only. The
+# runner is outside the terminal's process group now, so ^C no longer reaches
+# it; the signal traps route through exit so the EXIT trap still kills it.
+# `kill -TERM -PGID`, not `kill -- -PGID`: dash's builtin rejects the latter.
+trap 'kill -TERM "-$SRV" 2>/dev/null; [ "${fail:-1}" = "0" ] && rm -f "$LOG" || echo "runner log: $LOG"; true' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 # the runner prints "listening" once the socket is open
 for _ in $(seq 1 30); do
   curl -s --noproxy '*' "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && break
