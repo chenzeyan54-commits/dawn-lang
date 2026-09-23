@@ -14,8 +14,12 @@ name: gates
 # this on the tag's sha, minutes after ci.yml had already run it on the same
 # sha. Since 6f0ec90a the tag path reads that verdict instead of re-deciding
 # it, through release.yml's `verified` job, which refuses a tag whose commit
-# carries no successful ci.yml run. A tag is still held to this file; what
-# stopped is running this file twice over one commit. Adding a gate here
+# carries no evidence that this file passed: a successful ci.yml run, or,
+# since 2026-09-24, a `gates/maintainer` success that verify-external.yml
+# wrote after checking the maintainer's signed run of every job here off
+# GitHub (scripts/gates-external/release_evidence.py lists what it holds
+# that status to). A tag is still held to this file; what stopped is
+# running this file twice over one commit. Adding a gate here
 # still adds it everywhere, which is the only arrangement that stays true.
 # (The audit-fixes branch proposed this shape on 2026-07-25; the content
 # below is the gate set as of the merge, not that snapshot.)
@@ -40,8 +44,9 @@ name: gates
 # lists every case that falls back to the whole set), from the same gate map
 # tree-policy holds to the tree. main is not a subset because it is the
 # verdict: release.yml's `verified` guard refuses a tag whose sha carries no
-# successful ci.yml run, and only main is tagged, so the release safety
-# surface is exactly what it was. What the subset buys is the queue: 39 jobs
+# successful ci.yml run or accepted external run, only main is tagged, and
+# an external run is the whole set by construction (gatesplan.py takes the
+# plan as `all`), so the release safety surface is exactly what it was. What the subset buys is the queue: 39 jobs
 # and ~23,600 job-seconds per pull request against 20 runners made one run
 # ~25 minutes and three queued pull requests about an hour, and #163 ran all
 # of it for two paragraphs of documentation. What it costs is that a gate
@@ -215,8 +220,14 @@ jobs:
   # on it at 40s and answers `all`.
   plan:
     runs-on: ubuntu-latest
-    # budget: 3x 60s planning value (checkout, one depth-1 fetch, the gate map; restate after three runs)
-    timeout-minutes: 3
+    # 2026-09-24, restated: 7s worst (run 35895759154) over its five
+    # successful main runs of 09-23 (gate-observations --since
+    # 2026-09-23T00:00:00Z). 3x is 21s and would allow a 1-minute timeout,
+    # but plan.py gives up on the map at 40s and answers `all` by design, a
+    # path no observed run took; a kill there turns that fallback into a red
+    # run. 2 minutes holds 40s plus 3x the observation.
+    # budget: 3x 7s worst observed (run 35895759154)
+    timeout-minutes: 2
     outputs:
       all: ${{ steps.plan.outputs.all }}
       jobs: ${{ steps.plan.outputs.jobs }}
@@ -532,8 +543,15 @@ jobs:
     # 09-19T11:23Z .. 09-22T18:42Z, 125s over the 258s claim.
     # 2026-09-23, later: plan.py --check-wiring --selftest measured 7.5s
     # locally. Double rounded, 383 + 17 = 400s; the 20-minute ceiling fits.
-    # budget: 3x 400s planning value (383s worst observed plus the plan self-test)
-    timeout-minutes: 20
+    # 2026-09-24: 427s (run 35890458801) over the completed main runs of
+    # 09-23T11:35Z .. 09-23T16:41Z, 27s over the 400s claim. The steps lock
+    # step added the same day measured 0.1s locally (check and self-test
+    # together 0.2s), which doubles and rounds up to 1s: 428s, 22 minutes.
+    # The PyYAML step is an import when the module is there and a pinned
+    # wheel install (1.9s locally into a scratch prefix) when it is not;
+    # 3s for it gives 431s, still 22 minutes.
+    # budget: 3x 431s worst observed plus the steps lock and PyYAML (run 35890458801, 427s)
+    timeout-minutes: 22
     steps:
       - uses: actions/checkout@v4
         with:
@@ -577,6 +595,30 @@ jobs:
       # requiring a case to go red. One process, one map: 7.5s locally.
       - name: every gate job is wired to the pull-request plan
         run: python3 scripts/gate-map/plan.py --check-wiring --selftest
+
+      # Issue #167: a reshard moves run steps between the shards of one job
+      # family, and "no gate was dropped" was a claim nothing checked. This
+      # holds every family's multiset of run texts, read through the external
+      # runner's own parser (gatesplan.py), to the checked-in
+      # scripts/gates-external/steps.lock.json and names each missing or
+      # extra command. Removing, adding or moving a step across families
+      # therefore needs the same commit to re-record the lock, which is the
+      # point: the deletion has to be said. Text only, 0.1s locally for the
+      # check and 0.1s for the self-test.
+      # steps_lock.py reads gates.yml through gatesplan.py, which uses PyYAML;
+      # the other steps here use hand-rolled scanners and need nothing. The
+      # runner image does not document python3-yaml (its README lists only
+      # libyaml-dev, and yamllint is a pipx venv), so this makes the
+      # dependency explicit instead of trusting the base image: use the
+      # system module when it is there, install a pinned one when it is not.
+      # Local runs: python3-yaml 6.0.1 (Ubuntu 24.04's, Python 3.12.3, the
+      # runner's) and PyYAML 6.0.3 both pass check and selftest.
+      - name: PyYAML for the steps lock
+        run: python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user pyyaml==6.0.3
+      - name: every gate job family still carries the steps its lock records
+        run: |
+          python3 scripts/gates-external/steps_lock.py check
+          python3 scripts/gates-external/steps_lock.py selftest
 
       # The second and third tile ledgers (ruling 6 of the full-coverage
       # prestudy, docs 2.4): one row per public Tile IR opcode, held to the
@@ -655,8 +697,12 @@ jobs:
     # 09-19T11:23Z .. 09-22T18:42Z, 38s over the 857s planning value.
     # That is 55s under the 950s pole: the next restatement of this line
     # past the pole is a split, not a pole edit.
-    # budget: 3x 895s worst observed
-    timeout-minutes: 45
+    # 2026-09-24: 902s (run 35866197071) over the 8 main runs of
+    # 09-23T11:35Z .. 09-23T17:27Z, 7s over the 895s claim; found by the
+    # observed audit for the #166 shard restatement, not by that split.
+    # 48s under the pole.
+    # budget: 3x 902s worst observed (run 35866197071)
+    timeout-minutes: 46
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -690,8 +736,10 @@ jobs:
     # 2026-09-11: the other half of the same total; see shard 1.
     # 2026-09-23: 874s (run 35768988146) over the 15 completed main runs of
     # 09-19T11:23Z .. 09-22T18:42Z, 17s over the 857s planning value.
-    # budget: 3x 874s worst observed
-    timeout-minutes: 44
+    # 2026-09-24: 882s (run 35890458801) over the 8 main runs of
+    # 09-23T11:35Z .. 09-23T17:27Z, 8s over the 874s claim; same audit.
+    # budget: 3x 882s worst observed (run 35890458801)
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -1558,7 +1606,9 @@ jobs:
     if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'incremental-7-1') }}
     runs-on: ubuntu-latest
     # provenance.py 440s + 50s fixed overhead = 490s.
-    # budget: 3x 490s planning value (provenance.py's worst observation plus setup; restate after three main runs)
+    # 2026-09-24, restated: 481s worst (run 35866197071) over its 5 successful
+    # main runs of 09-23 (gate-observations --since 2026-09-23T00:00:00Z).
+    # budget: 3x 481s worst observed (run 35866197071)
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -1579,7 +1629,9 @@ jobs:
     runs-on: ubuntu-latest
     # allocation.py 133s + diagnostic self-test 3s + diagnostic shard 1 382s
     # + 50s fixed overhead = 568s.
-    # budget: 3x 568s planning value (allocation and diagnostic shard 1 worst observations plus setup; restate after three main runs)
+    # 2026-09-24, restated: 572s worst (run 35860976205) over its 4 successful
+    # main runs of 09-23 (gate-observations --since 2026-09-23T00:00:00Z).
+    # budget: 3x 572s worst observed (run 35860976205)
     timeout-minutes: 29
     steps:
       - uses: actions/checkout@v4
@@ -1717,7 +1769,9 @@ jobs:
     runs-on: ubuntu-latest
     # executor 129 + configured LSP 92 + scheduler 48 + consumers 67 = 336s,
     # plus 50s fixed overhead = 386s.
-    # budget: 3x 386s planning value (moved steps' worst observations plus setup; restate after three main runs)
+    # 2026-09-24, restated: 385s worst (run 35882535196) over its 5 successful
+    # main runs of 09-23 (gate-observations --since 2026-09-23T00:00:00Z).
+    # budget: 3x 385s worst observed (run 35882535196)
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -1739,8 +1793,10 @@ jobs:
     runs-on: ubuntu-latest
     # journal 77 + ownership inventory 1 + scalar oracle 52 + prefix shard 2
     # 232 = 362s, plus 50s fixed overhead = 412s.
-    # budget: 3x 412s planning value (moved steps' worst observations plus setup; restate after three main runs)
-    timeout-minutes: 21
+    # 2026-09-24, restated: 429s worst (run 35890458801) over its 4 successful
+    # main runs of 09-23 (gate-observations --since 2026-09-23T00:00:00Z).
+    # budget: 3x 429s worst observed (run 35890458801)
+    timeout-minutes: 22
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -1808,8 +1864,10 @@ jobs:
     # collections 6 + path 3 + JSON 8 + table freight 7 + dict owner 5 +
     # dict shapes 32 + intrinsic parity 1 + builtin mirror 6 + error model 3
     # = 457s, plus 50s fixed overhead = 507s.
-    # budget: 3x 507s planning value (moved steps' worst observations plus setup; restate after three main runs)
-    timeout-minutes: 26
+    # 2026-09-24, restated: 475s worst (run 35866197071) over its 5 successful
+    # main runs of 09-23 (gate-observations --since 2026-09-23T00:00:00Z).
+    # budget: 3x 475s worst observed (run 35866197071)
+    timeout-minutes: 24
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -1979,8 +2037,10 @@ jobs:
     # map reuse 48 + tea reconciler 105 + atomic write 98 + RC 24 + ctl-live
     # 12 + RC mode 64 + source loop label 46 + range bound order 31 +
     # display layering 37 = 465s, plus 50s fixed overhead = 515s.
-    # budget: 3x 515s planning value (moved steps' worst observations plus setup; restate after three main runs)
-    timeout-minutes: 26
+    # 2026-09-24, restated: 488s worst (run 35860976205) over its 4 successful
+    # main runs of 09-23 (gate-observations --since 2026-09-23T00:00:00Z).
+    # budget: 3x 488s worst observed (run 35860976205)
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain

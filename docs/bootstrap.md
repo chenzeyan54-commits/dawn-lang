@@ -69,7 +69,7 @@ v0.6.0–v0.8.0 的 release jar 永久保存；`kotlin-final` tag 保有 Kotlin 
    artifact 输出——任一红则 release 不出。push CI（ci.yml）的全金样绿是前置，
 自 2026-09-11 起由 `release.yml` 的 `verified` job 机器强制：它查 Actions API 确认
 `ci.yml` 在这个 sha 上成功过，否则拒绝这个 tag（此前的做法是在 tag 上把同一套门禁
-再跑一遍）。
+再跑一遍）。2026-09-24 起也接受维护者签名的外部证据，条件见下文「GitHub 之外执行门禁集的证据协议」。
 3. **单一推进入口**：release 四件资产齐全后只运行
    `./scripts/advance-seed.sh <tag>`。脚本从 `origin` 新鲜解析 tag commit，前后复核 tag
    没有移动，校验 tag 版本、HEAD 祖先关系与版本单调性；再从 GitHub Release 下载
@@ -144,8 +144,14 @@ v0.6.0–v0.8.0 的 release jar 永久保存；`kotlin-final` tag 保有 Kotlin 
   在 note 里，status 只是 GitHub 界面上的一个指针。
 - **fork 的 PR 不走这条路**。外部贡献者没有签名钥，他们的提交照旧由托管 runner 的
   `ci.yml` 判定。
-- **release 守卫尚未接受它**。`release.yml` 的 `verified` job 仍然只认 `ci.yml` 在该 sha 上
-  的成功运行；`gates/maintainer` 能否替代它是后续一刀的事。
+- **release 守卫已接受它（2026-09-24 起）**。`release.yml` 的 `verified` job 调
+  `scripts/gates-external/release_evidence.py`，两条证据任一成立即放行：`ci.yml` 在该 sha 上有成功
+  运行；或该 sha 上最新的 `gates/maintainer` status 为 `success`，且满足下列全部条件：creator 是
+  `github-actions[bot]`；`target_url` 恰为本仓库的 `actions/runs/<id>`；从本仓库 API 读回的这次 run 是
+  默认分支上 `workflow_dispatch` 触发、结论 success 的 `.github/workflows/verify-external.yml`；
+  status 写入时刻落在该 run 的时间窗内。只认 state 不够，因为有写权限的人都能写同名 context，
+  也能把 `target_url` 指向别的仓库或别的工作流。两条都不成立时拒绝，并打印两条各查到了什么。
+  守卫不重做签名核验，它确认的是「读到的正是 `verify-external.yml` 那次核验的结论」。
 - 换钥就是改默认分支上的 `allowed_signers`。旧钥签的 note 从那个提交起核不过，没有多钥过渡期。
 
 ## 链
