@@ -200,6 +200,28 @@ executor 语义；它按函数体类别（字面量标量、原语参数算术�
 保留一个 `source_projection.Indexed` 与保留一个完整 `Snapshot` 各占多少堆字节（强制 GC
 前后取差）；真实所有者里语法树与 header 共用，故索引那一项就是快照的边际内存。
 
+类别生成器与 `equal_bodies` 在 `replay-workloads.dawn.txt`，与下面的编辑矩阵共用；两个
+harness 都把它拷成夹具的 `src/workloads.dawn`。
+
+## 真实编辑矩阵（计数，无计时）
+
+```sh
+python3 scripts/incremental-semantics-contract/edit-matrix.py            # 4 类 × 10 编辑，n=1000
+python3 scripts/incremental-semantics-contract/edit-matrix.py --self-test
+python3 scripts/incremental-semantics-contract/edit-matrix.py --check-anchors
+python3 scripts/incremental-semantics-contract/edit-matrix.py --controls
+```
+
+`edit-matrix.py` 把十种编辑（identical、shift、body_one、body_one_type_error、
+inferred_return、ws_between、ws_inside、insert_decl、delete_decl、reorder）施加到 calls、
+primitive_inferred、generic 与含 lambda 的 inferred 四类工作负载上，每格跑 replay、
+replay_and_record 与续期后的回程三步，逐格对精确计数预言、逐体对冷检查。预言写在脚本的
+`oracle` 里，推导在 [docs/real-edit-matrix-design.md](../../docs/real-edit-matrix-design.md)。
+Dawn 侧 `edit-matrix.dawn.txt` 只观察不判定，所以变异体表现为「哪几格变红」而不是一次
+panic。`--controls` 在私有 compiler 副本上跑三个能编译的变异体，要求各自拥有的格变红，
+再恢复源码要求整张矩阵变绿；`--check-anchors` 只在内存里套变异锚点，不编译。
+它目前不进 CI（放置建议另见任务报告）。
+
 ## 前缀与工作区
 
 后续函数级演进的私有决策门见[第3期函数体原型](body-probe.md)：
