@@ -149,8 +149,9 @@ release）、`selfhost-run-diff.sh`（CLI 转写）、`selfhost-fmt-diff.sh`（�
 这个解析器自己的门禁。
 
 `playground/test/contract.sh` 是端到端合约测试（起 runner、驱 `/run` 与 `/check`，10 项）。
-本机跑要换端口：`PLAY_TEST_PORT=18097 ./playground/test/contract.sh`——WSL2 下
-Windows 的 WinNAT 保留了大片低端口，8097 bind 会报 "Address already in use"，而 `ss` 看着是空的。
+端口默认向内核要一个空闲的（绑 `127.0.0.1:0`），同机并发跑两份互不干扰，退出时只杀自己起的进程组；
+要钉端口用 `PLAY_TEST_PORT=<port>`。别钉在低端口：WSL2 下 Windows 的 WinNAT 保留了大片低端口，
+bind 会报 "Address already in use"，而 `ss` 看着是空的。
 
 ## 怎么加特性
 
