@@ -61,7 +61,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-import yaml
+# PyYAML is imported where a plan is parsed, not here: the prefix executor
+# (prefix.py run-job) imports this module only for expand() and
+# step_condition_holds(), and the prefix's interpreter carries no PyYAML.
 
 GATES_PATH = ".github/workflows/gates.yml"
 TOOLCHAIN_ACTION = "./.github/actions/dawn-toolchain"
@@ -241,6 +243,7 @@ def check_toolchain_action(text):
     `build` is 'false'. It is only that while the composite is exactly the
     two setup-graalvm attempts, a retry note, the two caches and the build.
     """
+    import yaml
     doc = yaml.safe_load(text)
     problems = []
     inputs = doc.get("inputs") or {}
@@ -290,6 +293,7 @@ def parse(gates_text, action_text=None):
       {"kind": "run", "name", "command", "env"}
       {"kind": "use", "uses", "replacement", "with", "env"}
     """
+    import yaml
     doc = yaml.safe_load(gates_text)
     if not isinstance(doc, dict):
         raise PlanError("gates.yml is not a mapping")
@@ -495,6 +499,7 @@ def self_test(repo):
     def doc(jobs, **top):
         d = {"name": "gates", "on": {"workflow_call": None}, "jobs": jobs}
         d.update(top)
+        import yaml
         return yaml.safe_dump(d, sort_keys=False)
 
     good = doc({"a": job([{"uses": "actions/checkout@v4"},

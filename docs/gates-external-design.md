@@ -1,6 +1,6 @@
 # 在 GitHub 之外跑完整门禁集
 
-> 状态：**current**。第 1 刀（本地后端 + 证据包）与第 2 刀（签名、`refs/notes/gates`、`verify-external.yml` 回写 commit status）已落地；release 守卫接受外部证据、crun 后端、自动触发是后续刀，记在「不做的」。`verify-external.yml` 尚未在真实 GitHub 上跑过：`workflow_dispatch` 要求工作流先在默认分支上，首次运行在合并之后。
+> 状态：**current**。第 1 刀（本地后端 + 证据包）、第 2 刀（签名、`refs/notes/gates`、`verify-external.yml` 回写 commit status）与第 3 刀的 prefix、离线输入包、隔离证明已落地；release 守卫接受外部证据、自动触发是后续刀，记在「不做的」。`verify-external.yml` 尚未在真实 GitHub 上跑过：`workflow_dispatch` 要求工作流先在默认分支上，首次运行在合并之后。
 
 ## 要解决的问题
 
@@ -142,6 +142,69 @@ status 步骤 `if: always()`，verify 步骤的 outcome 不是 `success` 就写 
 
 本地 bare 仓库演练（2026-09-23，详细记录在任务报告里）：浅克隆 + 按 sha 取对象与 notes + `verify_note.py`，对一个两步的小 `gates.yml` 合计约 0.6s；对真实 `gates.yml`（173 个 run 步骤）`verify_note.py` 本身不到 1s。托管 runner 上加上排队、起机与 `actions/checkout`，预计整个 job 在 15s 到 30s 之间；这是估计，首次真实运行后以 run 的计时为准。预算按 floor 记，timeout 5 分钟。
 
+## 第 3 刀：prefix、离线输入包与隔离证明
+
+### 为什么
+
+第 1 刀的本地后端拿宿主环境减去一张黑名单交给步骤，工具链就是机器上碰巧有的那套：本机 `python3` 是 3.14，而 3.14 会让 playground 合约变红（#170）；集群容器的 `JAVA_HOME` 是给 Hadoop 的 Java 8。黑名单只能删掉想到的东西。第 3 刀反过来：步骤看到的环境从空开始构造，每个路径都指进同一个 prefix 目录，prefix 里的工具链和输入由 `inputs.py` 下载并逐件校验。prefix 在哪由参数给，代码里不写死任何路径：本机是 `~/dawn-gates`，集群是持久盘上的一个目录，布局相同。
+
+### 布局
+
+`prefix.py` 的文件头写了完整布局：`toolchain/`（GraalVM CE 21.0.2、node 20.20.2、wasi-sdk 34、python 3.12.3）、`inputs/`（下载原件、种子 jar 与 std、coursier 缓存、`MANIFEST.json`）、`jobs/<sha>/`（每 job 的检出与临时目录）、`home/`、`tmp/`、`cache/`、`out/<sha>/`。
+
+### 输入包与锁
+
+`scripts/gates-external/inputs.lock.json` 入库，记每件下载物的名称、版本、URL、sha256；下载物本身不入库。`inputs.py` 只认锁里的摘要，不认与文件同源的校验和（与 `wasm-target` 钉 wasi-sdk 的理由相同）。各件来源：
+
+| 件 | 版本 | 来源与理由 |
+|---|---|---|
+| GraalVM | CE 21.0.2 | `setup-graalvm@v1` 对 `java-version: 21`、`distribution: graalvm-community` 取 graalvm-ce-builds 最新的 `jdk-21.*` tag，即 `jdk-21.0.2`（该仓库只有 21.0.0/21.0.1/21.0.2 三个）。CI 日志（run 35882535196）打印的正是 `GraalVM CE 21.0.2+13.1 (build 21.0.2+13-jvmci-23.1-b30)` |
+| node | 20.20.2 | nodejs.org 官方 tarball，20 LTS 线。`wasm-target` 要 ≥ 20（`node:wasi`） |
+| wasi-sdk | 34 | 版本与 sha256 照抄 `gates.yml` 的 `wasm-target` |
+| python | 3.12.3 | ubuntu-latest（24.04）的 `python3` 是 3.12.3。用 python-build-standalone 20240415 的可重定位构建，同版本 |
+| 种子 jar 与 std | 随 `scripts/seed-release.txt` | 从本机 `.dawn/seeds` 复制，按 `scripts/seed-checksums.txt`、`seed-std-checksums.txt` 校验。不在锁里再抄一份：那会是第二张每次发版都要推进的表，而 `advance-seed.sh` 不知道它 |
+| coursier 缓存 | `selfhost/dawn.lock` | 在 prefix 里用 `COURSIER_CACHE` 指向 `inputs/coursier` 跑一次 `./bin/dawn --version` 收集；三个 jar 按 `dawn.lock` 的 artifact 摘要核对 |
+| pip wheel | 无 | `gates.yml` 的步骤只用标准库。唯一用 PyYAML 的是 `gatesplan.py` 自己，它只在控制端解析计划；远端执行半边不 import 它（`import yaml` 挪进了解析函数） |
+
+`MANIFEST.json` 在 prefix 里，记每件的相对路径、字节数、文件 sha256 或目录树摘要。`verify` 逐件重算，下载物同时对锁核对，所以改了 MANIFEST 也替改过的原件作不了保。目录树摘要只取文件名、内容、属主可执行位与符号链接目标：普通用户解包受 umask 影响、root 解包保留原模式，同一个包要在两边都核得过。`__pycache__` 也不计入：python-build-standalone 不带字节码，解释器首次 import 标准库时写在旁边，并且自己按源文件校验它。第一次实测就是这一条红的。
+
+### 执行壳
+
+prefix 模式下一个 job 的环境等价于 `env -i` 加白名单：`PATH` = prefix 各工具链 bin + `/usr/bin:/bin`（git、cc、bash、curl、coreutils 仍来自系统）；`JAVA_HOME`、`GRAALVM_HOME` 指 prefix 的 GraalVM；`HOME`、`TMPDIR`、`RUNNER_TEMP`、`XDG_CACHE_HOME`、`COURSIER_CACHE` 都在 prefix 下；`LANG=C.UTF-8`（ubuntu-latest 的值；没有 locale 时 JVM 的文件名编码退回 ASCII）；`CI=true`；加上本地后端本来就设的每 job `GITHUB_*`。
+
+偏离任务单的一处：白名单里**没有** `DAWN_SEED`。CI 不设它；设了会让 `seedjar.sh` 跳过校验并打印一行 CI 不会打印的警告。种子照 cache restore 的方式拷进 `.dawn/seeds`，`seedjar.sh` 照常校验。
+
+另一处：prefix 模式的检出是 `git clone --shared`，不是 `git worktree add`。worktree 会往源仓库的 `.git/worktrees` 写东西，那在 prefix 外面。
+
+不给 `--prefix` 时行为不变，#171 的验收走的那条路径原样保留。
+
+### 隔离证明
+
+`prefix.py check-isolation` 在 prefix 里放一个 marker，跑命令，再对 `/` 与 prefix 所在文件系统各做一次 `find -xdev`（剪掉 `/proc` `/sys` `/dev` `/run`、prefix 本身与 `--exclude` 列出的路径），列出 mtime 或 ctime 新于 marker 的一切。
+
+实测中查出并修掉的一处：HotSpot 把 `hsperfdata_<用户>` 写在写死的 `/tmp`，不看 `TMPDIR`。后端探测 JDK 版本的那次 `java -version` 因此在 prefix 外留了痕迹。改为在命令行上加 `-XX:-UsePerfData`；不用 `JAVA_TOOL_OPTIONS`，因为它会让每个 JVM 往 stderr 打一行 `Picked up ...`，改变被测输出。门禁步骤里自己起的 JVM 仍会写 `/tmp/hsperfdata_<用户>`，全套运行时它会出现在清单里，这是已知的一条，见「不做的」。
+
+共享工作站上 `find` 不可能为空：本机同时有别的写者、编辑器、定时任务（零点的 dpkg 备份与 logrotate 就撞进过一次窗口）。所以本机的证明分两层：
+
+- `--readonly-root`：用 bubblewrap 让命令看到的整个文件系统只读、只有 prefix 可写。命令在里面跑绿，说明它不需要往 prefix 外写任何东西；往外写会直接失败，而不是事后被找到。
+- 同一次运行里的 `find` 清单只剩被沙箱挡在外面的进程写的东西（`/tmp`、`/var/tmp` 目录的 mtime），`--exclude` 列出的其余写者随结果打印。
+
+集群容器上没有 bubblewrap（也不允许 apt），只用 `find`。
+
+### 实测（2026-09-23，本机）
+
+| 项 | 结果 |
+|---|---|
+| `inputs.py build`（冷） | 93s；下载 GraalVM 275.3 MiB 23.2s、node 25.0 MiB 4.5s、wasi-sdk 183.5 MiB 12.5s、python 64.2 MiB 7.3s；coursier 预热（`./bin/dawn --version`）33s |
+| 解包后 | GraalVM 536.0 MiB、node 152.7 MiB、wasi-sdk 593.1 MiB、python 239.1 MiB；种子 18.9 MiB、std 0.6 MiB、coursier 10.8 MiB |
+| `inputs.py verify` | 绿，约 1.8s；改 node 原件一个字节后红（对锁与对 MANIFEST 两条都报），复原后绿 |
+| 环境负控 | `prefix.py selftest` 绿；`--break-env-i`（宿主环境垫在下面）红，宿主的 `JAVA_HOME`、PATH 项与只在宿主存在的变量三项全部泄入 |
+| 隔离负控 | 在壳里写 `/tmp/<文件>`，`check-isolation` 红，列出该文件 |
+| `run.sh --sha 0a0b46e8 --backend local --prefix ~/dawn-gates --only tree-policy` | 5 步全绿，job 107s；`--readonly-root` 下同样 5 步全绿 |
+| 工具链字段 | `java` = `21.0.2+13-jvmci-23.1-b30`（与 CI 日志一致），`python` = `3.12.3`，`node` = `v20.20.2`，`cc` = 本机 gcc 13.3 |
+| #170 | 在 prefix 里用 python 3.12.3 单跑 `playground/test/contract.sh`：10 passed，20s。同一检出换宿主 3.14.7：`socket closed inside a frame` 红 |
+| 离线 | 在 `bwrap --unshare-net` 里对新 clone 跑 `./bin/dawn --version`：成功，coursier 全部命中 prefix 缓存 |
+
 ## 与 #167 的关系
 
 #167 要的是「分片之后各分片步骤的并集仍等于原 job 的步骤」的核对。本刀的多重集比较（`bundle.multiset_diff`）就是这个并集检查的核心：它逐条点名少了的和多出的命令。
@@ -189,4 +252,8 @@ status 步骤 `if: always()`，verify 步骤的 outcome 不是 `success` 就写 
 - **时长字段。** 证据包不记时长。时长是机器画像的一部分（核数、负载、邻居），不是树的性质；它也无法被验证者复核。本地计时写在 `summary.json`，只给跑的人看。
 - **把 `/tmp/gate-emit`、8097 改掉。** 任务单明确本刀不改仓库源码，且 #168 正在改 `gates.yml`；这些列进上一节。
 - **解析复合 action 并逐步替换其内部步骤。** 复合 action 的内部是 GraalVM 下载与缓存，没有门禁；整体替换加指纹更简单，也更早暴露变化。
+- **prefix 里的 cc。** C 编译器仍来自 `/usr/bin`（本机 gcc 13.3，集群 gcc 11.4），证据包的 `toolchain.cc` 会随机器变化。把 gcc 连同 libasan 打进输入包是另一件事；集群上又不允许 apt。
+- **node 版本与 `lts/*`。** `docs` job 在 CI 上用 `setup-node` 的 `lts/*`，按任务单这里钉的是 20 LTS；两者不一定相同，证据包如实记录 `node` 字段。
+- **wasi-sdk 步骤离线。** `wasm-target` 的步骤自己 `curl` wasi-sdk。prefix 里已经有同一个钉住的包，但让步骤用它要改 `gates.yml`（例如「预置目录存在且摘要对就不下载」），不在本刀范围；离线机器上这一步会红，照实记录。`docs` 的 `npm install` 同理。
+- **JVM 的 `/tmp/hsperfdata_<用户>`。** HotSpot 的这个路径写死为 `/tmp`。能关掉它的只有 JVM 参数，放进 `JAVA_TOOL_OPTIONS` 会改 stderr；给 prefix 的 `java` 套一层包装又会让工具链不再是 CI 的那个。全套运行的隔离清单会列出这一条。
 - **覆盖 `tile.yml`、`editor-grammar.yml`、`nightly.yml`。** 任务单的范围是 `gates.yml`。前两个是按路径触发的门禁工作流，`tile.yml` 需要 GPU；把它们纳入是 crun 后端那一刀的事。

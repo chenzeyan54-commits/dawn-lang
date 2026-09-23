@@ -21,6 +21,14 @@ scripts/gates-external/publish.py <sha> --bundle <dir>/bundle.json --remote <bar
 scripts/gates-external/verify_note.py --sha <sha>    # what verify-external.yml runs
 scripts/gates-external/verify_note.py --selftest
 scripts/gates-external/publish.py --selftest
+
+# inside a prefix: the pinned toolchain and inputs, an environment built from nothing
+scripts/gates-external/inputs.py build --prefix ~/dawn-gates      # download, check, lay out
+scripts/gates-external/inputs.py verify --prefix ~/dawn-gates     # re-hash everything
+scripts/gates-external/run.sh --sha <sha> --backend local --prefix ~/dawn-gates [--only ...]
+scripts/gates-external/prefix.py check-isolation --prefix ~/dawn-gates \
+    --marker ~/dawn-gates/tmp/marker [--readonly-root] -- <command>
+scripts/gates-external/prefix.py selftest --prefix ~/dawn-gates [--break-env-i]
 ```
 
 Exit status of `run.sh`: 0 complete, 1 ran but not complete, 2 refused to
@@ -35,6 +43,9 @@ plan, 3 the bundle was refused (leak or schema), nothing written.
 | `bundle.py` | what it means: schema whitelist, leak filter, and `complete` |
 | `runner.py` | when: schedules jobs up to `--jobs`, honours `needs:`, writes `summary.json` and `bundle.json` |
 | `run.sh` | the entry point |
+| `prefix.py` | the prefix layout, the whitelist environment every prefix job gets, `check-isolation`, and `run-job` (a crun job's remote half) |
+| `inputs.py` | the offline input pack: download, check against `inputs.lock.json`, lay out, `verify` |
+| `inputs.lock.json` | name, version, URL and sha256 of every download the prefix holds |
 | `allowed_signers` | the one public key (identity and namespace `dawn-gates`) a signed bundle is verified against |
 | `publish.py` | refuses an invalid or incomplete bundle, signs it, writes the note on `refs/notes/gates`, pushes it, dispatches `verify-external.yml` |
 | `verify_note.py` | reads the note, checks the signature and then the bundle against the commit through `bundle.check`, the code `bundle.py verify` runs |
@@ -58,6 +69,41 @@ A backend decides where things run and how each replacement id is realised.
 It does not decide what runs (`gatesplan.py`) or what counts as complete
 (`bundle.py`). Adding a backend adds a file and changes none.
 
+## The prefix
+
+`--prefix DIR` runs every job inside one directory. Its layout is in
+`prefix.py`'s docstring: `toolchain/` (GraalVM CE 21.0.2, node 20, wasi-sdk 34,
+python 3.12.3), `inputs/` (the archives, the seed jar and std, a coursier
+cache, `MANIFEST.json`), `jobs/<sha>/`, `home/`, `tmp/`, `cache/`,
+`out/<sha>/`. No location is written into the code.
+
+A prefix job's environment is not the caller's minus a drop list; it is built
+from nothing (the effect of `env -i`): `PATH` is the toolchain bins then
+`/usr/bin:/bin`, `JAVA_HOME` and `GRAALVM_HOME` the prefix's GraalVM, `HOME`,
+`TMPDIR`, `RUNNER_TEMP`, `XDG_CACHE_HOME` and `COURSIER_CACHE` under the prefix,
+`LANG=C.UTF-8`, `CI=true`, plus the per-job `GITHUB_*` values the local
+backend already sets. `DAWN_SEED` is not set: CI does not set it, and it makes
+`seedjar.sh` skip its checksum. The seed reaches a job the way the cache
+restore does, copied into `.dawn/seeds`. A job's checkout is a
+`git clone --shared` under the prefix, not a worktree, because a worktree
+writes into the source repository's `.git`.
+
+`inputs.py` trusts only the digests in `inputs.lock.json`. The seed jar and std
+are checked against `scripts/seed-checksums.txt` and `seed-std-checksums.txt`,
+the tables `seedjar.sh` reads, and the coursier jars against
+`selfhost/dawn.lock`. Downloads are not in the repository; their digests are.
+
+`check-isolation` touches a marker in the prefix, runs the command, then lists
+every path outside the prefix (on `/` and on the prefix's filesystem, `-xdev`,
+pseudo filesystems pruned) whose mtime or ctime is newer. `--exclude` names
+paths other processes write (a shared workstation has several); they are
+printed with the result. `--readonly-root` runs the command under bubblewrap
+with everything but the prefix read-only, so a write outside fails the
+command instead of waiting to be found.
+
+Without `--prefix` nothing changes: the host-environment path of the first
+knife is kept as it was.
+
 ## The substitution table
 
 | `uses:` / adjustment | replacement id | local meaning |
@@ -68,8 +114,8 @@ It does not decide what runs (`gatesplan.py`) or what counts as complete
 | `actions/cache@v4` | `noop` | nothing saved; the restore half is the seed-cache copy above, and coursier's cache is the user's own |
 | `actions/upload-artifact@v4` | `artifact-store-local` | copied to `<out>/artifacts/<name>`; `if-no-files-found: error` is honoured |
 | `actions/download-artifact@v4` | `artifact-fetch-local` | every artifact matching `pattern` copied to `<path>/<name>` |
-| `actions/setup-node@v4` | `node-host` | the host's `node`, whose version is recorded in the bundle |
-| `actions/setup-java@v4` | `jdk21-host` | the same local JDK 21 (GraalVM CE, not Temurin); only `java-version: '21'` is accepted |
+| `actions/setup-node@v4` | `node-host` | the host's `node` (the prefix's node 20 under `--prefix`), whose version is recorded in the bundle |
+| `actions/setup-java@v4` | `jdk21-host` | the same local JDK 21 (GraalVM CE, not Temurin; the prefix's under `--prefix`); only `java-version: '21'` is accepted |
 | `adjust:runner-temp` | `per-job-directory` | `RUNNER_TEMP` and `${{ runner.temp }}` point at a per-job directory outside the worktree |
 | `adjust:tmpdir` | `per-job-directory` | `TMPDIR` is per job |
 | `adjust:literal-tmp-paths` | `machine-wide-lock` | a step naming a literal `/tmp/<name>` path holds a lock on it, so two runs of this script cannot share it |
