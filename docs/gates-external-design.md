@@ -94,7 +94,22 @@
 
 本节数字只作参考，不做性能声明；机器是共享的 16 核 / 15.6 GiB WSL2，运行期间还有其他进程。
 
-（待全套运行结束后回填。）
+2026-09-23，`run.sh --sha d9b10e62 --backend local --jobs 8 --keep-going`，GraalVM CE 21.0.2，Python 3.14.7，node v26.8.2，cc 13.3.0：
+
+| 项 | 结果 |
+|---|---|
+| 墙钟 | 4969s（1:22:49） |
+| 内存占用（MemTotal − MemAvailable） | 起始 2.19 GiB，峰值 10.6 GiB |
+| job | 39 个里 37 个全绿，169 个 run 步骤全部执行，167 个退出码 0 |
+| 非零 | `lsp-workspace` 的 `./scripts/lsp-liveness.py`（exit 1）；`docs` 的 `./playground/test/contract.sh`（exit 1） |
+| 证据包 | `complete = false`，`run.sh` 退出 1；`bundle.py verify` 复算一致 |
+
+两个红步骤都不是替换表的问题，逐个复跑确认了原因：
+
+- `lsp-liveness.py` 的 hangup 检查要求客户端关闭 stdin 后 5s 内退出。全套运行时 load average 在 30 上下，它在 5.00s 时仍存活。机器空闲时单独复跑 `lsp-workspace`，8 步全绿。这是负载下的计时，不是环境缺失。
+- `playground/test/contract.sh` 里的 `lsp_contract.py` 在「SIGTERM 优雅回收子进程」一项失败（socket 在帧中途关闭），空闲时复跑仍然失败，所以是确定性的。把 PATH 上的 `python3` 换成系统的 3.12.3（ubuntu-latest 的版本）后单独复跑 `docs`，6 步全绿。网关用 `sys.executable` 启动，在 Python 3.14 下 SIGTERM 路径的行为不同。这是网关对 3.14 的兼容问题，CI 看不到。
+
+本机没有「因为缺工具或断网而根本跑不了」的步骤：wasi-sdk 下载、N−1 种子下载、ASan、clang 都可用。
 
 ## 接入前必改
 
@@ -103,6 +118,8 @@
 - `contracts-1` 的 `/tmp/gate-emit` 写死在 `gates.yml`。本地用机器级锁串行化，挡不住其他程序；应改成 `$RUNNER_TEMP/gate-emit`。
 - `playground/test/contract.sh` 默认 8097 并在退出时 `fuser -k` 该端口。本地用 `PLAY_TEST_PORT` 绕开；默认值应改成向内核要空闲端口，`fuser -k` 应改成只杀自己起的进程。
 - `scripts/spike-native/run.sh` 在编不出 ASan 时只打印一行 note 并把 asan 检查记为 blocked，job 仍然绿。在 CI 上无害（runner 有 ASan），在外部后端上会让「跑过了」少一个维度而证据包看不出来。应让缺 ASan 成为失败，或至少成为可机读的结果。
+- 本地后端用宿主 PATH 上的 `python3`、`node`，只把版本写进证据包，不钉版本。上面的 3.14 实例说明这会改变结果；接入前应能钉住与 ubuntu-latest 一致的解释器版本，或者让不一致成为拒绝。
+- `lsp-liveness.py` 的 5s 上限在高并行的共享机器上会误红；外部后端要么降低并行度，要么这个检查要按机器负载给出可解释的余量。
 - #168 给每个 gate job 加 `needs: [plan]` 与基于 `fromJSON` 的 `if:`。`gatesplan.py` 今天会拒绝这种 job 条件（这是故意的）；#168 合并后要显式建模「外部运行等价于 `all`」再放行。
 
 ## 不做的（理由）
