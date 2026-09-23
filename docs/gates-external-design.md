@@ -1,6 +1,6 @@
 # 在 GitHub 之外跑完整门禁集
 
-> 状态：**current**。第 1 刀（本地后端 + 证据包）、第 2 刀（签名、`refs/notes/gates`、`verify-external.yml` 回写 commit status）与第 3 刀的 prefix、离线输入包、隔离证明已落地；release 守卫接受外部证据、自动触发是后续刀，记在「不做的」。`verify-external.yml` 尚未在真实 GitHub 上跑过：`workflow_dispatch` 要求工作流先在默认分支上，首次运行在合并之后。
+> 状态：**current**。第 1 刀（本地后端 + 证据包）、第 2 刀（签名、`refs/notes/gates`、`verify-external.yml` 回写 commit status）与第 3 刀（prefix、离线输入包、隔离证明、crun 后端）已落地；release 守卫接受外部证据、自动触发是后续刀，记在「不做的」。`verify-external.yml` 尚未在真实 GitHub 上跑过：`workflow_dispatch` 要求工作流先在默认分支上，首次运行在合并之后。
 
 ## 要解决的问题
 
@@ -10,7 +10,7 @@
 
 - `run.sh --sha <sha> --backend local [--jobs N] --out <dir>`：在给定提交的树上执行 `gates.yml` 每个 job 的每一条 `run:` 步骤；
 - `bundle.json`：证据包，字段白名单，`complete` 可以由任何人从 git 重新算出来；
-- 后端契约：「给一棵树与输入，按命令清单跑，还退出码与输出摘要」。local 是唯一实现，crun 后端只需新增一个文件。
+- 后端契约：「给一棵树与输入，按命令清单跑，还退出码与输出摘要」。第 1 刀只有 local 一个实现；第 3 刀加了 crun 后端（`backend_crun.py`）。
 
 ## 为什么从 gates.yml 派生
 
@@ -205,6 +205,50 @@ prefix 模式下一个 job 的环境等价于 `env -i` 加白名单：`PATH` = p
 | #170 | 在 prefix 里用 python 3.12.3 单跑 `playground/test/contract.sh`：10 passed，20s。同一检出换宿主 3.14.7：`socket closed inside a frame` 红 |
 | 离线 | 在 `bwrap --unshare-net` 里对新 clone 跑 `./bin/dawn --version`：成功，coursier 全部命中 prefix 缓存 |
 
+### crun 后端（`backend_crun.py`）
+
+集群容器没有外网，`JAVA_HOME` 是 Hadoop 的 Java 8，python 与 gcc 是镜像自带的。所以 crun 后端自己不在集群上执行任何门禁逻辑：它把输入包与本目录的工具送过去，每个 job 在集群上跑 `prefix.py run-job`，而 `run-job` 就是 prefix 模式的本地后端。两边执行 job 的是同一份代码，证据包的工具链字段因此必须与本机 prefix 运行一致；这个相等就是「后端只换了在哪跑、没换跑什么」的判据。
+
+流程：
+
+1. 本机 staging 目录（在本机 prefix 的 `stage/` 下，不在 worktree 里）放本目录的工具、一个 git bundle（该提交加全部 tag）、每个 job 一份 JSON、一个 `.crun.yaml`。`remote_root` 是 `<集群 prefix>/jobs/<sha>/tree`，按提交唯一，不会与别的项目互相 `rsync --delete`。`.crun.yaml` 不进仓库。
+2. 在集群上跑 `inputs.py verify`。缺或红时，用第二个 staging 目录（硬链接到本机 prefix 的 `inputs/`）推到 `<集群 prefix>/inputs`，先用 `tar` 解出 python（此时 prefix 里还没有解释器），再由 `inputs.py install` 解包其余工具链并整体复核。
+3. 每个 job 一次 `crun run -n 0 --no-build -- env -i ... prefix.py run-job`，并行度由 `--jobs` 给。crun 从控制端每次都会推一次 staging 目录，未变时 3s 左右，推送由 crun 自己串行化。
+4. `run-job` 把结果片段打印成一行、同时存进 `<集群 prefix>/out/<sha>/<run>/fragments`；日志与制品留在集群的 `out/<sha>/<run>/`，不拉回。本机只解析片段，照常由 runner 合成 `bundle.json`。
+
+偏离任务单的三处：
+
+- staging 不是「该 sha 的 detached worktree」。job 要历史（tree-policy 回读到上一个 tag 的 Emit-Change 声明、重放钉住的提交），而且每个 job 本来就要自己的新检出。worktree 的 `.git` 只是指回本机仓库的指针，到了集群上没有意义。所以送的是 git bundle（0a0b46e8 上 12.9 MiB），集群上 `git clone --bare` 一次，各 job 再 `git clone --shared`。
+- 集群上的输出按控制端的运行 id 再分一层（`out/<sha>/<run>/`）。同一提交跑第二次时，上一次的制品还在，`upload-artifact` 的重名检查会让它失败。
+- 集群上的隔离检查把 marker 放在 prefix 里，而不是 `/`：往 `/` 写 marker 本身就违反「不写 prefix 之外」。`find` 的根仍然是 `/`，另加 prefix 所在文件系统的挂载根（集群上是 `/data0` 下的个人目录，与 `/` 不是同一个文件系统）。
+
+集群侧的 prefix 路径由 `--backend-opt remote-prefix=` 给，代码里没有默认值：共享集群盘上的路径含个人用户名，不该进公开仓库。
+
+另一处范围外改动：`scripts/gate-map/unseen.txt` 加了 `inputs.py`、`inputs.lock.json`、`prefix.py`、`backend_crun.py` 四行。gate map 的棘轮要求每个新文件要么有门禁看着、要么在这里写明为什么没有，不加 tree-policy 就红（本机 prefix 实测过一次红）。
+
+### 实测（2026-09-24，集群 B200 编译机容器，`crun run -n 0`）
+
+| 项 | 结果 |
+|---|---|
+| 首次推送 staging（工具 + bundle，13.6 MB） | 23s |
+| 首次送输入包（578 MiB）并在集群上解包、复核 | 604s；之后每次 `inputs.py verify` 绿，推送加复核约 10s |
+| `--only tree-policy`（带 `isolation=1`） | 5 步全绿，job 176s（含隔离检查的两次 `find`）；`check-isolation` 在 `/` 与 prefix 所在文件系统上 0 条 |
+| 工具链字段对比本机 prefix | `java`、`node`、`python` 逐字相同（`21.0.2+13-jvmci-23.1-b30`、`v20.20.2`、`3.12.3`）；`cc` 不同（本机 gcc 13.3，集群 gcc 11.4），见「不做的」 |
+| 全套 `--jobs 16` | 墙钟 1348s（本机 `--jobs 8` 是 4969s）；35 个 job 里 31 个全绿；131 个 run 步骤执行 114 个，110 个退出码 0；`complete = false`；`bundle.py verify` 复算一致；种子摘要与 `seed-checksums.txt` 一致 |
+
+四个红 job 全部是集群环境造成的，不是替换表或 prefix 的问题，照实记录、没有改仓库源码：
+
+| job | 红的步骤 | 原因 |
+|---|---|---|
+| `contracts` | `atomic-write-contract/run.sh`（exit 1） | 容器里是 root。脚本自己拒绝：`this contract must not run as root: the unwritable-directory cases cannot fail for root` |
+| `java-target-classpath` | `java-target-classpath-contract/run.sh`（exit 1） | 同为 root：`unreadable-lock did not fail closed`，root 读得了 `chmod 000` 的文件 |
+| `wasm-target` | 钉住的 wasi-sdk（exit 28，curl 超时） | 容器没有外网。prefix 里有同一个包，但步骤自己下载，见「不做的」 |
+| `docs` | `playground/test/contract.sh`（exit 127） | 合约本身 10 passed、0 failed（python 3.12.3 下 #170 同样不复现），收尾的 `fuser -k` 找不到命令：容器没有 psmisc，而本任务不许 apt。其后的 site 构建（`npm install` 要外网）因此没有执行 |
+
+全套运行没有套隔离检查（任务单只要求一次，放在不起 JVM 的 tree-policy 上）。事后只读查看，容器里 `/tmp/hsperfdata_root` 的 mtime 落在全套运行窗口内，目录为空：门禁步骤起的 JVM 在 prefix 外留了痕迹，就是「不做的」里 hsperfdata 那一条。在集群上它违反「不写 prefix 之外」，修法（每 job 一个指进 prefix 的私有 `/tmp`，要容器允许 `unshare -m`）尚未验证。
+
+要在集群上拿到 `complete = true`，还差：以非 root 身份执行 job（例如 `setpriv` 降到一个无特权 uid，prefix 相应 chown，不需要写 prefix 外）；`wasm-target` 能用预置的 wasi-sdk；`fuser` 进输入包或合约不再依赖它；npm 依赖进输入包。前一条是后端的事，后三条要改 `gates.yml` 或被测脚本，都不在本刀。
+
 ## 与 #167 的关系
 
 #167 要的是「分片之后各分片步骤的并集仍等于原 job 的步骤」的核对。本刀的多重集比较（`bundle.multiset_diff`）就是这个并集检查的核心：它逐条点名少了的和多出的命令。
@@ -248,7 +292,8 @@ prefix 模式下一个 job 的环境等价于 `env -i` 加白名单：`PATH` = p
 - **自动触发。** `publish.py` 之后派发工作流是手动的一步（脚本替维护者执行 `gh workflow run`）。不做推 `refs/notes/gates` 时自动触发：Actions 的 `push` 触发器按分支与 tag 过滤，推 notes ref 能否可靠地触发工作流没有实测；更要紧的是，自动触发意味着任何能推 notes 的人都能让 runner 替他写 status，而派发是一个需要写权限、留在 Actions 记录里的显式动作。
 - **发布红的证据。** `publish.py` 拒绝 `complete` 不为 true 的包。签名的「门禁没过」不能让任何人做任何事，没有绿 status 已经说明了这一点。
 - **多钥与轮换过渡期。** `allowed_signers` 只有一行。换钥即改这一行，旧 note 从此核不过；要保留旧证据的可核验性，需要按时间段接受多把钥，等真的换钥时再说。
-- **crun 后端。** 仍不做。契约为它留好了位置，但 GPU 集群的派发、同步和锁卡是另一套问题，而且 `gates.yml` 今天没有 GPU 门禁（tile 的 GPU 差分在 `tile.yml`，不在本刀范围）。
+- **crun 后端占卡。** crun 后端只用零卡运行（`-n 0`）。`gates.yml` 今天没有 GPU 门禁（tile 的 GPU 差分在 `tile.yml`，不在本刀范围）。
+- **集群上以非 root 执行。** 见上面 crun 实测一节；两个合约因 root 而红。本刀只记录，不在集群上建用户（那要写 `/etc/passwd`，在 prefix 外）。
 - **时长字段。** 证据包不记时长。时长是机器画像的一部分（核数、负载、邻居），不是树的性质；它也无法被验证者复核。本地计时写在 `summary.json`，只给跑的人看。
 - **把 `/tmp/gate-emit`、8097 改掉。** 任务单明确本刀不改仓库源码，且 #168 正在改 `gates.yml`；这些列进上一节。
 - **解析复合 action 并逐步替换其内部步骤。** 复合 action 的内部是 GraalVM 下载与缓存，没有门禁；整体替换加指纹更简单，也更早暴露变化。

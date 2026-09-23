@@ -29,6 +29,10 @@ scripts/gates-external/run.sh --sha <sha> --backend local --prefix ~/dawn-gates 
 scripts/gates-external/prefix.py check-isolation --prefix ~/dawn-gates \
     --marker ~/dawn-gates/tmp/marker [--readonly-root] -- <command>
 scripts/gates-external/prefix.py selftest --prefix ~/dawn-gates [--break-env-i]
+
+# on the cluster, from a local prefix that holds the input pack
+scripts/gates-external/run.sh --sha <sha> --backend crun --prefix ~/dawn-gates --jobs 16 \
+    --backend-opt remote-prefix=<cluster dir> [--backend-opt isolation=1] [--only ...]
 ```
 
 Exit status of `run.sh`: 0 complete, 1 ran but not complete, 2 refused to
@@ -39,7 +43,8 @@ plan, 3 the bundle was refused (leak or schema), nothing written.
 | file | role |
 |---|---|
 | `gatesplan.py` | what runs: every job and `run:` step of gates.yml at the commit, read from git; each `uses:` resolved through the substitution table, anything unmodelled refused |
-| `backend_local.py` | where and how: one job at a time on this machine, in a fresh worktree |
+| `backend_local.py` | where and how: one job at a time on this machine, in a fresh worktree (a fresh clone inside a prefix) |
+| `backend_crun.py` | where and how, on the cluster: ships the input pack and the tools once, then one zero-card `crun run` per job, each running `prefix.py run-job` (the local backend in prefix mode) inside the cluster's prefix |
 | `bundle.py` | what it means: schema whitelist, leak filter, and `complete` |
 | `runner.py` | when: schedules jobs up to `--jobs`, honours `needs:`, writes `summary.json` and `bundle.json` |
 | `run.sh` | the entry point |

@@ -283,7 +283,9 @@ def cmd_run_job(args):
             tmp.rename(repo)
     job = json.loads(Path(args.job_file).read_text())
     job["needs_results"] = dict(kv.split("=", 1) for kv in args.needs.split(",") if kv)
-    out = prefix / "out" / sha
+    # One directory per controller run: a second run of the same commit must
+    # not find the first one's artifacts (upload refuses a duplicate name).
+    out = prefix / "out" / sha / args.run_id if args.run_id else prefix / "out" / sha
 
     def log(message):
         print(f"[{job['id']}] {message}", file=sys.stderr, flush=True)
@@ -339,6 +341,7 @@ def main():
     p.add_argument("--git-bundle", required=True)
     p.add_argument("--job-file", required=True)
     p.add_argument("--needs", default="")
+    p.add_argument("--run-id", default="")
     p.add_argument("--opt", action="append", default=[])
     args = parser.parse_args()
     if args.cmd == "layout":
