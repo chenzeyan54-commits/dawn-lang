@@ -34,12 +34,35 @@ name: gates
 # checker-corpus, builtin-type out of docs — and moved the classfile Never
 # block out of contracts.
 #
-# No job that gates the tree may `needs:` another: they all start at once, and
-# the run is as long as the longest one. The one `needs:` in this file is
+# Two tiers since 2026-09-23. A pull request runs the subset of these jobs
+# that can see its diff; a push to main runs every one of them. The subset is
+# computed by the `plan` job below (scripts/gate-map/plan.py, whose header
+# lists every case that falls back to the whole set), from the same gate map
+# tree-policy holds to the tree. main is not a subset because it is the
+# verdict: release.yml's `verified` guard refuses a tag whose sha carries no
+# successful ci.yml run, and only main is tagged, so the release safety
+# surface is exactly what it was. What the subset buys is the queue: 39 jobs
+# and ~23,600 job-seconds per pull request against 20 runners made one run
+# ~25 minutes and three queued pull requests about an hour, and #163 ran all
+# of it for two paragraphs of documentation. What it costs is that a gate
+# gatemap cannot see reading a path can miss on the pull request and red on
+# main, one push later.
+#
+# So the one `needs:` a gate may have is `plan`, and every job here has it
+# along with an `if:` that runs it when the plan says `all` or names its own
+# id; `plan.py --check-wiring` (tree-policy) refuses a job that lacks either
+# half. `plan` is not a gate about the tree; it takes ~30s and starts first,
+# so it delays every gate by that much and is the only thing on every job's
+# critical path. A job the plan skips reports as skipped, which GitHub counts
+# as success, so it does not block a merge.
+#
+# Otherwise no job that gates the tree may `needs:` another: they all start
+# at once, and the run is as long as the longest one. The one exception is
 # mutant-shards-complete, which is not a gate about the tree but about this
-# run's own completeness — it reassembles what the mutant shards recorded and
-# holds the union to the matrices, so it cannot start before them and sits off
-# the critical path (the shards it waits on are shorter than native-diff).
+# run's own completeness -- it reassembles what the mutant shards recorded
+# and holds the union to the matrices, so it cannot start before them and
+# sits off the critical path (the shards it waits on are shorter than the
+# longest job).
 #
 # Job definition order is descending expected duration, because runs here
 # regularly hold more jobs than the account's concurrent-runner ceiling (20;
@@ -169,8 +192,53 @@ name: gates
 # run-pole: 950s (the worst figure any job's budget line may claim)
 on:
   workflow_call:
+    # Passed by ci.yml. Inside a called workflow the github context is the
+    # caller's anyway; the inputs are here so the plan's inputs are named in
+    # one place and a caller that forgets them gets `all`, never a subset.
+    inputs:
+      event:
+        type: string
+        required: false
+        default: ''
+      base:
+        type: string
+        required: false
+        default: ''
 
 jobs:
+  # The pull-request tier's planner (see the header). It checks out the
+  # merge ref at depth 1, fetches the base sha at depth 1, and asks
+  # scripts/gate-map/plan.py which jobs hold a gate that can see the diff.
+  # Any event but pull_request, and any failure of the planner itself, is the
+  # whole set: `all=true`, so a broken plan runs everything rather than
+  # nothing. The map itself was 7.5s locally on 2026-09-23; plan.py gives up
+  # on it at 40s and answers `all`.
+  plan:
+    runs-on: ubuntu-latest
+    # budget: 3x 60s planning value (checkout, one depth-1 fetch, the gate map; restate after three runs)
+    timeout-minutes: 3
+    outputs:
+      all: ${{ steps.plan.outputs.all }}
+      jobs: ${{ steps.plan.outputs.jobs }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: plan which gate jobs this run needs
+        id: plan
+        env:
+          EVENT: ${{ inputs.event }}
+          BASE: ${{ inputs.base }}
+        run: |
+          if [ "$EVENT" = pull_request ] && [ -n "$BASE" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE" \
+              || echo "note: could not fetch base $BASE; the plan will say all"
+          fi
+          if ! python3 scripts/gate-map/plan.py --event "$EVENT" --base "$BASE" \
+              --github-output "$GITHUB_OUTPUT"; then
+            echo "note: the planner failed; running every gate"
+            echo "all=true" >> "$GITHUB_OUTPUT"
+            echo "jobs=[]" >> "$GITHUB_OUTPUT"
+          fi
+
   # Acceptance gate 1 of docs/native-backend-plan.md 5, in two shards since
   # 2026-09-11 and in four before that. Its own job since 2026-08-07, when it
   # was 390s of the 860s test job and shared nothing with the rest of that
@@ -237,6 +305,8 @@ jobs:
   # as well.
 
   native-diff-1:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'native-diff-1') }}
     runs-on: ubuntu-latest
     # This shard also runs scripts/delete-contract/run.sh, which run.sh gives
     # to shard 1 alone: it is one selfhost rebuild and it does not divide.
@@ -376,6 +446,8 @@ jobs:
           retention-days: 1
 
   native-diff-2:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'native-diff-2') }}
     runs-on: ubuntu-latest
     # 2026-09-04: the first sharded runs replace the planning value, as the
     # note above says they would -- the worst over the four completed main
@@ -431,6 +503,8 @@ jobs:
   # a cleanup. This guard inspects only the checked-out tree, so it belongs in
   # the reusable gate set that both branch CI and release tags execute.
   tree-policy:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'tree-policy') }}
     runs-on: ubuntu-latest
     # 6s until the gate map step was added 2026-08-11, then 53s: run
     # 31459477646, of which the map itself is 45s (25.8s locally). The floor
@@ -456,7 +530,9 @@ jobs:
     # Add 17s to the previous 241s observation; the 13-minute ceiling still fits.
     # 2026-09-23: 383s (run 35768988146) over the 15 completed main runs of
     # 09-19T11:23Z .. 09-22T18:42Z, 125s over the 258s claim.
-    # budget: 3x 383s worst observed
+    # 2026-09-23, later: plan.py --check-wiring --selftest measured 7.5s
+    # locally. Double rounded, 383 + 17 = 400s; the 20-minute ceiling fits.
+    # budget: 3x 400s planning value (383s worst observed plus the plan self-test)
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -492,6 +568,15 @@ jobs:
       # workflow files the step above does.
       - name: the gate map still describes this tree
         run: python3 scripts/gate-map/gatemap.py --check
+
+      # The pull-request tier reads the same map (see this file's header).
+      # --check-wiring refuses a job here that does not `needs: plan` or whose
+      # `if:` does not test its own id, which would otherwise run it on every
+      # pull request or on none, silently. --selftest runs the planner's
+      # fallback cases on this tree's map and removes each fallback in turn,
+      # requiring a case to go red. One process, one map: 7.5s locally.
+      - name: every gate job is wired to the pull-request plan
+        run: python3 scripts/gate-map/plan.py --check-wiring --selftest
 
       # The second and third tile ledgers (ruling 6 of the full-coverage
       # prestudy, docs 2.4): one row per public Tile IR opcode, held to the
@@ -539,6 +624,8 @@ jobs:
   # because a shard that skips a slice prints the same PASS lines as one that
   # ran it.
   syntax-mutants-1:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'syntax-mutants-1') }}
     runs-on: ubuntu-latest
     # 47 mutants over three shards at the unsplit step's worst observation
     # (1111s) is ~370s of mutants per shard, plus the fixture contracts
@@ -588,6 +675,8 @@ jobs:
           retention-days: 1
 
   syntax-mutants-2:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'syntax-mutants-2') }}
     runs-on: ubuntu-latest
     # 2026-09-03: restated from the Actions API -- the worst of 57
     # completed main runs since 09-02 is 506s (run 33683419900), which the
@@ -678,6 +767,8 @@ jobs:
   # the total, so it buys no wall clock; what it buys is the room to keep
   # every mutant on the push path, which is the only thing worth a setup.
   builtin-type-1:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'builtin-type-1') }}
     runs-on: ubuntu-latest
     # The observation this replaces is 585s (run 33853792854, the post-prune
     # window of 09-03T17:42Z .. 09-04T12:10Z), which is what forced the
@@ -722,6 +813,8 @@ jobs:
           retention-days: 1
 
   builtin-type-2:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'builtin-type-2') }}
     runs-on: ubuntu-latest
     # The second shard, on the same matrix and the same arithmetic; the note
     # above builtin-type-1 carries the measurements and why four rather than
@@ -760,6 +853,8 @@ jobs:
   # job red, not a silence. If the matrix outgrows ~25, give it the
   # syntax-mutants treatment and put it under mutant-shards-complete.
   classfile-never-mutants:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'classfile-never-mutants') }}
     runs-on: ubuntu-latest
     # ~180s for the mutant block inside the contracts job's 246~258s
     # classfile step, plus the real-compiler probe, javac and the toolchain:
@@ -790,6 +885,8 @@ jobs:
   # The core suite: the compiler's own tests, the self-hosting proof and the
   # gates that read the compiler's source or grammar rather than its products.
   test:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'test') }}
     runs-on: ubuntu-latest
     # Every timeout in this file is roughly 3x the job's own measured wall
     # clock, re-measured after the 2026-08-10 redistribution (run 31353623211
@@ -1133,6 +1230,8 @@ jobs:
   # for another job shape is void -- but it is where each contract's cost was
   # argued, and that is worth keeping beside the step it argues about.
   incremental-1:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'incremental-1') }}
     runs-on: ubuntu-latest
     # prefix shard 0 192s + its 2s shard-CLI self-test + java-reads 341s
     # = 535s of work, plus one 36s setup = 571s.
@@ -1211,6 +1310,8 @@ jobs:
           python3 scripts/incremental-semantics-contract/function-reads.py --suite revalidation
 
   incremental-2:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'incremental-2') }}
     runs-on: ubuntu-latest
     # diagnostic-0 361s + effect-reads 312s + context 161s
     # = 834s of work, plus one 36s setup = 870s.
@@ -1247,6 +1348,8 @@ jobs:
         run: python3 scripts/incremental-semantics-contract/context-revalidation.py
 
   incremental-3:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'incremental-3') }}
     runs-on: ubuntu-latest
     # local-values 367s + state 342s + state-products 125s
     # = 834s of work, plus one 36s setup = 870s.
@@ -1304,6 +1407,8 @@ jobs:
         run: python3 scripts/incremental-semantics-contract/state-product.py
 
   incremental-4:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'incremental-4') }}
     runs-on: ubuntu-latest
     # type-reads 430s + export-reads 205s + java-namespaces 192s
     # = 827s of work, plus one 36s setup = 863s.
@@ -1345,6 +1450,8 @@ jobs:
         run: python3 scripts/incremental-semantics-contract/java-namespace-reads.py
 
   incremental-5:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'incremental-5') }}
     runs-on: ubuntu-latest
     # reads 414s + projection 390s
     # = 804s of work, plus one 36s setup = 840s.
@@ -1397,6 +1504,8 @@ jobs:
           python3 scripts/incremental-semantics-contract/body-probe.py --typed --typed-all --java-home "$JAVA_HOME" --output "$RUNNER_TEMP/incremental-typed-tree"
 
   incremental-6:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'incremental-6') }}
     runs-on: ubuntu-latest
     # diagnostic-2 349s + java-oracles 240s + java-members 215s
     # = 804s of work, plus one 36s setup = 840s.
@@ -1445,6 +1554,8 @@ jobs:
   # estimate from observations, not an observation of these jobs; restate
   # both lines at their own worst once three main runs of them exist.
   incremental-7-1:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'incremental-7-1') }}
     runs-on: ubuntu-latest
     # provenance.py 440s + 50s fixed overhead = 490s.
     # budget: 3x 490s planning value (provenance.py's worst observation plus setup; restate after three main runs)
@@ -1463,6 +1574,8 @@ jobs:
         run: python3 scripts/incremental-semantics-contract/provenance.py
 
   incremental-7-2:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'incremental-7-2') }}
     runs-on: ubuntu-latest
     # allocation.py 133s + diagnostic self-test 3s + diagnostic shard 1 382s
     # + 50s fixed overhead = 568s.
@@ -1494,6 +1607,8 @@ jobs:
         run: python3 scripts/incremental-semantics-contract/diagnostic-reads.py --shards 3 --shard 1
 
   incremental-8:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'incremental-8') }}
     runs-on: ubuntu-latest
     # semantics 517s + witness 205s
     # = 722s of work, plus one 36s setup = 758s.
@@ -1597,6 +1712,8 @@ jobs:
   # complete matrices/control summed to 119.11s in the local all-suite run.
   # Double rounded headroom: 661 + 2 * 120 = 901s; no job is added.
   incremental-body-execution-1:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'incremental-body-execution-1') }}
     runs-on: ubuntu-latest
     # executor 129 + configured LSP 92 + scheduler 48 + consumers 67 = 336s,
     # plus 50s fixed overhead = 386s.
@@ -1617,6 +1734,8 @@ jobs:
         run: python3 scripts/incremental-semantics-contract/journal-consumers.py
 
   incremental-body-execution-2:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'incremental-body-execution-2') }}
     runs-on: ubuntu-latest
     # journal 77 + ownership inventory 1 + scalar oracle 52 + prefix shard 2
     # 232 = 362s, plus 50s fixed overhead = 412s.
@@ -1681,6 +1800,8 @@ jobs:
   # 2026-09-19: constructor-shape controls measured 17.12s locally with a
   # warm compiler. Reserve 35s on the runner in addition to the prior 836s.
   contracts-1:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'contracts-1') }}
     runs-on: ubuntu-latest
     # classfile 203 + ASM adapter 40 + call sites 13 + Core golden 23 +
     # opaque twin 47 + dtoa 15 + inflate 33 + unicode 4 + array 8 +
@@ -1850,6 +1971,8 @@ jobs:
         run: ./scripts/error-contract/run.sh
 
   contracts-2:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'contracts-2') }}
     runs-on: ubuntu-latest
     # map reuse 48 + tea reconciler 105 + atomic write 98 + RC 24 + ctl-live
     # 12 + RC mode 64 + source loop label 46 + range bound order 31 +
@@ -1965,6 +2088,8 @@ jobs:
   # fetch, and they cost 68s in a job that had room for them.
 
   java-target-classpath:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'java-target-classpath') }}
     runs-on: ubuntu-latest
     # 262s predicted (194s + 68s moved in); 270s then 281s measured on two
     # consecutive runs of the same tree, so the budget follows the worse one.
@@ -2058,6 +2183,8 @@ jobs:
   # project-plan contract is here because analysis and completion are its two
   # consumers.
   lsp-workspace:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'lsp-workspace') }}
     runs-on: ubuntu-latest
     # Cold runners compile one observed server plus every mutant from scratch.
     # 403s predicted (196s + 168s moved in); 370s then 421s measured on two
@@ -2156,6 +2283,8 @@ jobs:
   # path: nothing `needs:` this, and its budget is well under the run pole
   # (native-diff, above).
   wasm-target:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'wasm-target') }}
     runs-on: ubuntu-latest
     # Not observed on a runner yet; this is the planning value, in the shape
     # list-elems-contract's is. Re-measured locally on the pin below
@@ -2303,6 +2432,8 @@ jobs:
   # half: it fails when a `cerr` no case reaches appears, so coverage cannot
   # quietly regress either.
   checker-corpus:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'checker-corpus') }}
     runs-on: ubuntu-latest
     # The syntax mutant family (926~1111s of this job on five consecutive
     # main runs, the whole run's wall clock) moved to the syntax-mutants
@@ -2366,6 +2497,8 @@ jobs:
   # run.sh does that once. `--shard` is gone from the invocation rather than
   # spelled `1/1`, because run.sh defaults to the whole matrix.
   pipe-contract:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'pipe-contract') }}
     runs-on: ubuntu-latest
     # 152s and 140s locally for the two shards (7 and 6 builds each, plus the
     # fixture contract); 300s for the whole suite. Running all 22 assertions
@@ -2412,6 +2545,8 @@ jobs:
   # selfhost JARs, which is more than any existing job has room for -- adding
   # it to checker-corpus (354s) would have made that job the critical path.
   java-member-dispatch:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'java-member-dispatch') }}
     runs-on: ubuntu-latest
     # 300s predicted from java-target-classpath's nine builds (270s there;
     # locally the ten cost 158s, which is not the runner's figure), 292s
@@ -2443,6 +2578,8 @@ jobs:
   # documentation's other output, and this is now the only job that sets up
   # node.
   docs:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'docs') }}
     runs-on: ubuntu-latest
     # The builtin type inventory contract (721~848s of this job on five
     # consecutive main runs) moved to the builtin-type shard jobs on
@@ -2539,6 +2676,8 @@ jobs:
   # the binary the release step built. Since the 2026-08-10 redistribution it
   # is the critical path: 484s, and nothing in it can be moved elsewhere.
   prev-diff-native:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'prev-diff-native') }}
     runs-on: ubuntu-latest
     # 484s before the move, 475s after; see the note in `test`. The tea-core
     # leg of native-cli-diff.sh (the #9 regression oracle) adds ~6s locally,
@@ -2633,6 +2772,8 @@ jobs:
   # the tail, and this job's projected 380s was well under the tallest claims
   # of the day (test 540s, prev-diff-native 526s).
   native-selfhost-tests:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'native-selfhost-tests') }}
     runs-on: ubuntu-latest
     # No CI observation yet. Local, one machine, 2026-09-04: the script is
     # 109.1s end to end with the toolchain already built (`__emitc` 7.4s, `cc`
@@ -2682,6 +2823,8 @@ jobs:
   # The hardware baseline itself stays local. CI exercises only the strict
   # JSON reader, the synthetic Linux process tree and the two source mutants.
   compiler-weight-contract:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'compiler-weight-contract') }}
     runs-on: ubuntu-latest
     # 2026-09-03: this claimed the floor, and the floor is for jobs whose own
     # 3x no runner could meet. It has not been one of those for a while: the
@@ -2725,6 +2868,8 @@ jobs:
   # put its next budget claim on the pole itself. A job costs a queue slot;
   # the pole costs the whole run.
   list-elems-contract:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'list-elems-contract') }}
     runs-on: ubuntu-latest
     # Ten `dawn build`s of the compiler at ~6s each plus twelve assertion runs
     # per mutant: 145s locally, and no CI observation yet. 290s is that
@@ -2768,13 +2913,18 @@ jobs:
         run: python3 scripts/incremental-semantics-contract/body-renewal.py
 
   incremental-bounded-generic-contract:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'incremental-bounded-generic-contract') }}
     runs-on: ubuntu-latest
     # Initial planning allowance: local entry proof controls 66.57s, bounded
     # replay controls 81.81s, entry oracle 14.79s, source controls 13.85s.
     # Reserve 30s for the original generic trace and 29s for toolchain setup;
     # double the rounded contract sum: 2 * (67 + 82 + 15 + 14 + 30) + 29 = 445s.
-    # budget: 3x 445s planning value (bounded admission and exact source proof)
-    timeout-minutes: 23
+    # 2026-09-23: the real-edit matrix, measured locally: self-test 0.07s,
+    # controls 57.5s (the controls run ends with the full restored matrix, so
+    # there is no separate default run): 445 + 58 + 1 = 504s.
+    # budget: 3x 504s planning value (bounded admission, exact source proof and the real-edit matrix)
+    timeout-minutes: 26
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -2790,11 +2940,17 @@ jobs:
         run: python3 scripts/incremental-semantics-contract/bounded-replay.py
       - name: Exact raw source equality controls
         run: python3 scripts/incremental-semantics-contract/source-equality.py
+      - name: Real-edit matrix self-test
+        run: python3 scripts/incremental-semantics-contract/edit-matrix.py --self-test
+      - name: Real-edit matrix controls and restored matrix
+        run: python3 scripts/incremental-semantics-contract/edit-matrix.py --controls
 
   # Phase 2 measures process semantics, not runner hardware. The complete
   # contract measured 60s locally, and the reused toolchain setup has a 29s
   # observed upper bound. Keep it parallel to the 163s Phase 1 contract.
   dependency-heap-contract:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'dependency-heap-contract') }}
     runs-on: ubuntu-latest
     # 2026-09-04, post-prune window: 94s (run 33871426552) over the 20
     # completed main runs of 09-03T17:42Z .. 09-04T12:10Z, all after the std
@@ -2826,6 +2982,8 @@ jobs:
   # driver that sentence blamed the installation for a std the user's working
   # directory had shadowed in.
   std-version:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'std-version') }}
     runs-on: ubuntu-latest
     # Seven private compiler builds: one per mutant, plus the probe that
     # corrupts the compiled-in std. 63s locally. java-member-dispatch's ten
@@ -2860,6 +3018,8 @@ jobs:
   # selfhost/src. The same job replays the run/fmt/lsp transcripts against
   # the N-1 toolchain, the successors of the old Kotlin golden diffs.
   prev-diff:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'prev-diff') }}
     runs-on: ubuntu-latest
     # 210s before the move and 210s after it; see the note in `test`.
     # 2026-09-03: restated from the Actions API -- the worst of 57
@@ -2936,6 +3096,8 @@ jobs:
   # a root's first leak still rejects the fixture, and one that runs after the
   # bodies still emits the same text. None of that is visible to a golden.
   export-surface:
+    needs: [plan]
+    if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'export-surface') }}
     runs-on: ubuntu-latest
     # 122s locally for one shard (8 builds + the fixture contract); 201s, 192s
     # and 206s measured across the three shards in the first run to carry them
@@ -2996,13 +3158,14 @@ jobs:
   # records can be cross-read into this one.
   mutant-shards-complete:
     needs:
+      - plan
       - native-diff-1
       - native-diff-2
       - syntax-mutants-1
       - syntax-mutants-2
       - builtin-type-1
       - builtin-type-2
-    if: ${{ always() }}
+    if: ${{ always() && needs.plan.result == 'success' && (needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'mutant-shards-complete')) }}
     runs-on: ubuntu-latest
     # budget: floor (seconds-scale job: checkout, artifact download, two python runs)
     timeout-minutes: 5
@@ -3010,12 +3173,50 @@ jobs:
       - uses: actions/checkout@v4
       - name: the coverage checker can refuse
         run: python3 scripts/mutant-coverage/check.py --self-test
+      # On a pull request the plan may skip a shard family. A family with a
+      # skipped shard is excluded by name, the way tile-golden is: its record
+      # is not in this run, and inferring the harness set from the records
+      # that did turn up is the bug check.py's header refuses. A family whose
+      # shards all ran is held to its whole matrix as before. On main every
+      # shard runs, so the flags are what they were before the plan existed.
+      # The table maps job families to harness directories; a stale entry
+      # names a harness check.py does not know, or leaves one unreported, and
+      # both of those are refusals, so it fails closed.
+      - name: which shard families this run dispatched
+        id: families
+        env:
+          NATIVE_DIFF: ${{ needs.native-diff-1.result }} ${{ needs.native-diff-2.result }}
+          SYNTAX: ${{ needs.syntax-mutants-1.result }} ${{ needs.syntax-mutants-2.result }}
+          BUILTIN_TYPE: ${{ needs.builtin-type-1.result }} ${{ needs.builtin-type-2.result }}
+        run: |
+          flags="--exclude-harness tile-golden"
+          ran=false
+          skipped() { case " $1 " in *" skipped "*) return 0 ;; esac; return 1; }
+          if skipped "$NATIVE_DIFF"; then
+            flags="$flags --exclude-harness spike-native"
+          else ran=true; fi
+          if skipped "$SYNTAX"; then
+            flags="$flags --exclude-harness syntax-small-contract"
+            flags="$flags --exclude-harness pattern-or-contract"
+            flags="$flags --exclude-harness for-pattern-contract"
+          else ran=true; fi
+          if skipped "$BUILTIN_TYPE"; then
+            flags="$flags --exclude-harness builtin-type-contract"
+          else ran=true; fi
+          echo "coverage flags: $flags (any family ran: $ran)"
+          echo "flags=$flags" >> "$GITHUB_OUTPUT"
+          echo "ran=$ran" >> "$GITHUB_OUTPUT"
       - name: collect every shard's coverage record
+        if: ${{ steps.families.outputs.ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           pattern: mutant-coverage-*
           path: coverage
       - name: the union of the shards is the whole matrix
+        if: ${{ steps.families.outputs.ran == 'true' }}
+        env:
+          FLAGS: ${{ steps.families.outputs.flags }}
         run: |
+          # $FLAGS is word-split on purpose: it is a list of flag pairs.
           python3 scripts/mutant-coverage/check.py \
-            --coverage-dir coverage --exclude-harness tile-golden
+            --coverage-dir coverage $FLAGS
