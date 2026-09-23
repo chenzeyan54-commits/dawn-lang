@@ -1,0 +1,233 @@
+{
+ "note": "Written by steps_lock.py record. Re-record in the commit that removes, adds or moves a gates.yml run step across families, and say why in that commit.",
+ "families": {
+  "builtin-type": [
+   "./scripts/builtin-type-contract/run.sh --shard 1/2",
+   "./scripts/builtin-type-contract/run.sh --shard 2/2"
+  ],
+  "checker-corpus": [
+   "./scripts/checker-corpus/run.sh",
+   "./scripts/java-narrowing-contract/run.sh",
+   "python3 scripts/incremental-semantics-contract/cached-module.py --self-test",
+   "python3 scripts/incremental-semantics-contract/cached-module.py --suite driver --shards 3 --shard 0"
+  ],
+  "classfile-never-mutants": [
+   "./scripts/classfile-verify/run.sh --never-mutants-only",
+   "python3 scripts/incremental-semantics-contract/scalar-replay.py --suite core --shards 3 --shard 0"
+  ],
+  "compiler-weight-contract": [
+   "PYTHONDONTWRITEBYTECODE=1 python3 scripts/selfhost-bench-contract/run.py",
+   "python3 scripts/incremental-semantics-contract/session-bodies.py --self-test",
+   "python3 scripts/incremental-semantics-contract/session-bodies.py --shards 3 --shard 0"
+  ],
+  "contracts": [
+   "./scripts/array-contract/run.sh",
+   "./scripts/asm-adapter-contract/run.sh",
+   "./scripts/atomic-write-contract/run.sh",
+   "./scripts/builtin-decl-contract/run.sh",
+   "./scripts/classfile-verify/run.sh --without-never-mutants",
+   "./scripts/ctl-live-contract/run.sh",
+   "./scripts/dict-owner-contract/run.sh",
+   "./scripts/display-layering-contract/run.sh",
+   "./scripts/dtoa-contract/run.sh",
+   "./scripts/error-contract/run.sh",
+   "./scripts/hamt-contract/run.sh\n./scripts/pvec-contract/run.sh\n",
+   "./scripts/inflate-contract/run.sh",
+   "./scripts/intrinsic-parity.py",
+   "./scripts/json-suite.sh",
+   "./scripts/map-reuse-contract/run.sh",
+   "./scripts/opaque-twin/run.sh --self-check\n./scripts/opaque-twin/run.sh\n",
+   "./scripts/path-contract/run.sh",
+   "./scripts/range-bound-order-contract/run.sh",
+   "./scripts/rc-contract/run.sh",
+   "./scripts/rc-mode-contract/run.sh",
+   "./scripts/selfhost-core-diff.sh",
+   "./scripts/source-loop-label-contract/run.sh",
+   "./scripts/table-freight/run.sh",
+   "./scripts/tea-reconciler-contract/run.sh",
+   "./scripts/unicode-contract/run.sh",
+   "python3 scripts/dict-owner-contract/shapes.py",
+   "rm -rf \"${RUNNER_TEMP:?}/gate-emit\" && mkdir -p \"$RUNNER_TEMP/gate-emit\"\n./bin/dawn __emit selfhost -o \"$RUNNER_TEMP/gate-emit\" > /dev/null\n./scripts/adapter-callsites.py \"$RUNNER_TEMP/gate-emit\"\n"
+  ],
+  "dependency-heap-contract": [
+   "PYTHONDONTWRITEBYTECODE=1 python3 scripts/dependency-heap-contract/run.py",
+   "python3 scripts/incremental-semantics-contract/session-bodies.py --shards 3 --shard 2",
+   "python3 scripts/lsp-workspace-contract/prepared-lifecycle.py --shards 5 --shard 1"
+  ],
+  "docs": [
+   "./bin/dawn test site",
+   "./playground/test/contract.sh",
+   "./scripts/doc-check.py",
+   "./scripts/site-dist-diff.sh",
+   "./site/build.sh",
+   "python3 scripts/incremental-semantics-contract/cached-module.py --suite driver --shards 3 --shard 1"
+  ],
+  "export-surface": [
+   "./scripts/export-surface-contract/run.sh",
+   "./scripts/export-surface-contract/run.sh --self-test",
+   "python3 scripts/lsp-workspace-contract/prepared-lifecycle.py --shards 5 --shard 4"
+  ],
+  "incremental": [
+   "python3 scripts/incremental-semantics-contract/associated-reads.py",
+   "python3 scripts/incremental-semantics-contract/body-probe.py --typed --typed-all --java-home \"$JAVA_HOME\" --output \"$RUNNER_TEMP/incremental-typed-tree\"\n",
+   "python3 scripts/incremental-semantics-contract/context-revalidation.py",
+   "python3 scripts/incremental-semantics-contract/diagnostic-reads.py --self-test",
+   "python3 scripts/incremental-semantics-contract/diagnostic-reads.py --self-test",
+   "python3 scripts/incremental-semantics-contract/diagnostic-reads.py --shards 3 --shard 0",
+   "python3 scripts/incremental-semantics-contract/diagnostic-reads.py --shards 3 --shard 2",
+   "python3 scripts/incremental-semantics-contract/effect-reads.py",
+   "python3 scripts/incremental-semantics-contract/environment-reads.py",
+   "python3 scripts/incremental-semantics-contract/export-reads.py",
+   "python3 scripts/incremental-semantics-contract/function-products.py",
+   "python3 scripts/incremental-semantics-contract/function-reads.py --self-test\npython3 scripts/incremental-semantics-contract/function-reads.py --suite revalidation\n",
+   "python3 scripts/incremental-semantics-contract/function-reads.py --suite observation\npython3 scripts/incremental-semantics-contract/projection.py\n",
+   "python3 scripts/incremental-semantics-contract/identity.py\npython3 scripts/incremental-semantics-contract/header-state.py\n",
+   "python3 scripts/incremental-semantics-contract/java-member-reads.py",
+   "python3 scripts/incremental-semantics-contract/java-namespace-reads.py",
+   "python3 scripts/incremental-semantics-contract/java-oracle-reads.py",
+   "python3 scripts/incremental-semantics-contract/java-reads.py",
+   "python3 scripts/incremental-semantics-contract/local-value-reads.py",
+   "python3 scripts/incremental-semantics-contract/lsp-bench.py --self-test\npython3 scripts/incremental-semantics-contract/lsp-configured.py --self-test\npython3 scripts/incremental-semantics-contract/lsp-edit-matrix.py --self-test\npython3 scripts/incremental-semantics-contract/lsp-project-matrix.py --self-test\npython3 scripts/incremental-semantics-contract/configured-lsp-contract.py --self-test\npython3 scripts/incremental-semantics-contract/probe.py\npython3 scripts/incremental-semantics-contract/cold.py\npython3 scripts/incremental-semantics-contract/lsp-prefix.py\npython3 scripts/incremental-semantics-contract/body-probe.py --all --java-home \"$JAVA_HOME\" --output \"$RUNNER_TEMP/incremental-body-probe\"\npython3 scripts/incremental-semantics-contract/relocate.py\n",
+   "python3 scripts/incremental-semantics-contract/prefix.py --self-test\npython3 scripts/incremental-semantics-contract/prefix.py --shards 3 --shard 0\n",
+   "python3 scripts/incremental-semantics-contract/prefix.py --shards 3 --shard 1",
+   "python3 scripts/incremental-semantics-contract/query-runtime.py",
+   "python3 scripts/incremental-semantics-contract/state-product.py",
+   "python3 scripts/incremental-semantics-contract/type-reads.py",
+   "python3 scripts/incremental-semantics-contract/witness-revalidation.py"
+  ],
+  "incremental-7": [
+   "python3 scripts/incremental-semantics-contract/allocation.py",
+   "python3 scripts/incremental-semantics-contract/diagnostic-reads.py --self-test",
+   "python3 scripts/incremental-semantics-contract/diagnostic-reads.py --shards 3 --shard 1",
+   "python3 scripts/incremental-semantics-contract/provenance.py"
+  ],
+  "incremental-body-execution": [
+   "python3 scripts/incremental-semantics-contract/body-executor.py",
+   "python3 scripts/incremental-semantics-contract/body-scheduler.py",
+   "python3 scripts/incremental-semantics-contract/configured-lsp-contract.py --suite project --output \"$RUNNER_TEMP/configured-lsp-project\"",
+   "python3 scripts/incremental-semantics-contract/journal-consumers.py",
+   "python3 scripts/incremental-semantics-contract/journal-coverage.py",
+   "python3 scripts/incremental-semantics-contract/prefix.py --shards 3 --shard 2",
+   "python3 scripts/incremental-semantics-contract/scalar-oracle.py",
+   "python3 scripts/incremental-semantics-contract/write-journal.py"
+  ],
+  "incremental-bounded-generic-contract": [
+   "python3 scripts/incremental-semantics-contract/bounded-entry-proof.py",
+   "python3 scripts/incremental-semantics-contract/bounded-replay.py",
+   "python3 scripts/incremental-semantics-contract/edit-matrix.py --controls",
+   "python3 scripts/incremental-semantics-contract/edit-matrix.py --self-test",
+   "python3 scripts/incremental-semantics-contract/function-entry.py",
+   "python3 scripts/incremental-semantics-contract/generic-trace.py",
+   "python3 scripts/incremental-semantics-contract/source-equality.py"
+  ],
+  "java-member-dispatch": [
+   "./scripts/java-member-dispatch-contract/run.sh",
+   "python3 scripts/incremental-semantics-contract/session-bodies.py --shards 3 --shard 1"
+  ],
+  "java-target-classpath": [
+   "./bin/dawn lock --check selfhost",
+   "./scripts/bootstrap-guards/run.sh",
+   "./scripts/java-target-classpath-contract/run.sh",
+   "./scripts/jsig-lease-contract/run.sh",
+   "./scripts/pkg-origin-contract/run.sh",
+   "./scripts/source-plan-contract/run.sh",
+   "bash ./scripts/bootstrap-input-manifest-contract/run.sh",
+   "python3 scripts/incremental-semantics-contract/scalar-replay.py --suite core --shards 3 --shard 1"
+  ],
+  "list-elems-contract": [
+   "./scripts/list-elems-contract/run.sh",
+   "python3 scripts/incremental-semantics-contract/body-renewal.py",
+   "python3 scripts/incremental-semantics-contract/scalar-replay.py --self-test",
+   "python3 scripts/incremental-semantics-contract/scalar-replay.py --suite calls"
+  ],
+  "lsp-workspace": [
+   "./scripts/lsp-framing.py",
+   "./scripts/lsp-lifecycle-contract/run.sh",
+   "./scripts/lsp-liveness.py",
+   "./scripts/lsp-std-resolution.py",
+   "./scripts/lsp-use-completion.py",
+   "./scripts/lsp-workspace-contract/run.sh",
+   "./scripts/project-plan-contract/run.sh",
+   "python3 scripts/incremental-semantics-contract/source-resolution.py"
+  ],
+  "mutant-shards-complete": [
+   "# $FLAGS is word-split on purpose: it is a list of flag pairs.\npython3 scripts/mutant-coverage/check.py \\\n  --coverage-dir coverage $FLAGS\n",
+   "flags=\"--exclude-harness tile-golden\"\nran=false\nskipped() { case \" $1 \" in *\" skipped \"*) return 0 ;; esac; return 1; }\nif skipped \"$NATIVE_DIFF\"; then\n  flags=\"$flags --exclude-harness spike-native\"\nelse ran=true; fi\nif skipped \"$SYNTAX\"; then\n  flags=\"$flags --exclude-harness syntax-small-contract\"\n  flags=\"$flags --exclude-harness pattern-or-contract\"\n  flags=\"$flags --exclude-harness for-pattern-contract\"\nelse ran=true; fi\nif skipped \"$BUILTIN_TYPE\"; then\n  flags=\"$flags --exclude-harness builtin-type-contract\"\nelse ran=true; fi\necho \"coverage flags: $flags (any family ran: $ran)\"\necho \"flags=$flags\" >> \"$GITHUB_OUTPUT\"\necho \"ran=$ran\" >> \"$GITHUB_OUTPUT\"\n",
+   "python3 scripts/mutant-coverage/check.py --self-test"
+  ],
+  "native-diff": [
+   "./bin/dawn test scripts/incremental-semantics-contract",
+   "./scripts/spike-native/run.sh --shard 1/2",
+   "./scripts/spike-native/run.sh --shard 2/2",
+   "python3 scripts/incremental-semantics-contract/prepared-parse-counts.py",
+   "python3 scripts/incremental-semantics-contract/prepared-proofs.py",
+   "python3 scripts/incremental-semantics-contract/source-parse-counts.py"
+  ],
+  "native-selfhost-tests": [
+   "./scripts/native-selfhost-tests.sh",
+   "python3 scripts/lsp-workspace-contract/prepared-lifecycle.py --shards 5 --shard 2"
+  ],
+  "pipe-contract": [
+   "./scripts/pipe-contract/run.sh",
+   "python3 scripts/lsp-workspace-contract/prepared-lifecycle.py --shards 5 --shard 3"
+  ],
+  "prev-diff": [
+   "./scripts/selfhost-fmt-diff.sh",
+   "./scripts/selfhost-lsp-diff.sh",
+   "./scripts/selfhost-prev-diff.sh",
+   "./scripts/selfhost-run-diff.sh",
+   "python3 scripts/incremental-semantics-contract/cached-module.py --suite driver --shards 3 --shard 2",
+   "python3 scripts/lsp-workspace-contract/prepared-lifecycle.py --self-test",
+   "python3 scripts/lsp-workspace-contract/prepared-lifecycle.py --shards 5 --shard 0"
+  ],
+  "prev-diff-native": [
+   "./scripts/release-native.sh -o dawnc-linux-x86_64",
+   "DAWNC_BIN=dawnc-linux-x86_64 ./scripts/native-cli-diff.sh",
+   "python3 scripts/incremental-semantics-contract/cached-module.py --suite observer"
+  ],
+  "std-version": [
+   "./scripts/std-version-contract/run.sh",
+   "python3 scripts/incremental-semantics-contract/body-recording.py",
+   "python3 scripts/incremental-semantics-contract/inferred-replay.py"
+  ],
+  "syntax-mutants": [
+   "./scripts/syntax-small-contract/run.sh --shard 1/2",
+   "./scripts/syntax-small-contract/run.sh --shard 2/2"
+  ],
+  "test": [
+   "./bin/dawn fmt compiler-plan std site selfhost packages examples scripts/tile-gpu-diff --check",
+   "./bin/dawn test --stdlib",
+   "./bin/dawn test compiler-plan",
+   "./bin/dawn test selfhost",
+   "./scripts/comptime-trace-contract/run.sh",
+   "./scripts/effect-evidence-contract/run.sh --self-test\n./scripts/effect-evidence-contract/run.sh\n",
+   "./scripts/emitchange-selftest.sh",
+   "./scripts/example-tests.sh",
+   "./scripts/grammar-corpus/run.sh",
+   "./scripts/int-min-contract/run.sh",
+   "./scripts/narrow-contract/run.sh",
+   "./scripts/package-tests.sh",
+   "./scripts/selfhost-fixpoint.sh",
+   "python3 scripts/example-main-contract/selftest.py\npython3 scripts/example-main-contract/run.py\n",
+   "python3 scripts/incremental-semantics-contract/configured-lsp-contract.py --suite standalone --output \"$RUNNER_TEMP/configured-lsp-standalone\""
+  ],
+  "tree-policy": [
+   "python3 scripts/check-gate-budgets.py",
+   "python3 scripts/check-no-server-identity.py",
+   "python3 scripts/gate-map/gatemap.py --check",
+   "python3 scripts/gate-map/plan.py --check-wiring --selftest",
+   "python3 scripts/gates-external/steps_lock.py check\npython3 scripts/gates-external/steps_lock.py selftest\n",
+   "python3 scripts/journal-reads/check.py\npython3 scripts/journal-reads/check.py --self-test\n",
+   "python3 scripts/mutation-anchor-preflight.py\npython3 scripts/mutation-anchor-preflight-test.py\n",
+   "python3 scripts/tileir-features/check.py\npython3 scripts/tileir-features/check.py --self-test\n"
+  ],
+  "wasm-target": [
+   "./bin/dawn __emitc selfhost/src/nmain.dawn -o \"$RUNNER_TEMP/nmain.c\"\ncc -std=c11 -O2 -fwrapv -fexceptions -fno-strict-aliasing -pthread \\\n  -I runtime/c -o \"$RUNNER_TEMP/dawnc\" \"$RUNNER_TEMP/nmain.c\" \\\n  runtime/c/dawn_rt.c -lm\necho \"DAWNC_BIN=$RUNNER_TEMP/dawnc\" >>\"$GITHUB_ENV\"\n",
+   "./scripts/wasm-contract/run.sh",
+   "./scripts/wasm-dom-contract/run.sh",
+   "python3 scripts/incremental-semantics-contract/callee-publication.py",
+   "python3 scripts/incremental-semantics-contract/scalar-replay.py --suite core --shards 3 --shard 2",
+   "v=34\nsha=b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4\ncurl -fsSL -o wasi-sdk.tar.gz \\\n  \"https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${v}/wasi-sdk-${v}.0-x86_64-linux.tar.gz\"\necho \"${sha}  wasi-sdk.tar.gz\" | sha256sum -c -\nmkdir -p \"$RUNNER_TEMP/wasi-sdk\"\ntar xzf wasi-sdk.tar.gz -C \"$RUNNER_TEMP/wasi-sdk\" --strip-components=1\nrm -f wasi-sdk.tar.gz\necho \"DAWN_WASM_CC=$RUNNER_TEMP/wasi-sdk/bin/clang\" >>\"$GITHUB_ENV\"\n"
+  ]
+ }
+}

@@ -38,6 +38,35 @@ plan, 3 the bundle was refused (leak or schema), nothing written.
 | `allowed_signers` | the one public key (identity and namespace `dawn-gates`) a signed bundle is verified against |
 | `publish.py` | refuses an invalid or incomplete bundle, signs it, writes the note on `refs/notes/gates`, pushes it, dispatches `verify-external.yml` |
 | `verify_note.py` | reads the note, checks the signature and then the bundle against the commit through `bundle.check`, the code `bundle.py verify` runs |
+| `steps_lock.py`, `steps.lock.json` | the checked-in expectation of every job family's `run:` steps (issue #167); tree-policy runs `check` on every push |
+
+## The steps lock: removing a step has to be said
+
+`bundle.py` compares what an external run executed with gates.yml at the
+same commit, so it cannot see gates.yml itself losing a step, and neither
+can any check that compares gates.yml with itself. `steps.lock.json` is the
+other side of that comparison: for each job family (a job id with one
+trailing `-<digits>` removed, so `contracts-1` and `contracts-2` are
+`contracts`), the multiset of its `run:` texts, read with `gatesplan.parse`.
+
+```bash
+python3 scripts/gates-external/steps_lock.py check     # tree-policy runs this
+python3 scripts/gates-external/steps_lock.py selftest  # and this
+python3 scripts/gates-external/steps_lock.py record    # by hand, see below
+```
+
+`check` is red when a family has a command the lock does not, or lacks one
+the lock has, and names the family and the command. Moving a command between
+shards of one family is a reshard and stays green; moving it to another
+family is red on both sides.
+
+This is a gate you are expected to open on purpose. When a commit removes,
+adds or moves a run step across families, that same commit runs `record` and
+commits the rewritten lock, and its message says why. The lock's diff is then
+where a reviewer reads which command went; a commit that changes gates.yml's
+steps without touching the lock is red. A gates.yml that `gatesplan.py`
+refuses is red here too, which is also the moment the external runner could
+no longer run it.
 
 ## The backend contract
 

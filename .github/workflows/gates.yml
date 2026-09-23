@@ -532,8 +532,12 @@ jobs:
     # 09-19T11:23Z .. 09-22T18:42Z, 125s over the 258s claim.
     # 2026-09-23, later: plan.py --check-wiring --selftest measured 7.5s
     # locally. Double rounded, 383 + 17 = 400s; the 20-minute ceiling fits.
-    # budget: 3x 400s planning value (383s worst observed plus the plan self-test)
-    timeout-minutes: 20
+    # 2026-09-24: 427s (run 35890458801) over the completed main runs of
+    # 09-23T11:35Z .. 09-23T16:41Z, 27s over the 400s claim. The steps lock
+    # step added the same day measured 0.1s locally (check and self-test
+    # together 0.2s), which doubles and rounds up to 1s: 428s, 22 minutes.
+    # budget: 3x 428s worst observed plus the steps lock (run 35890458801, 427s)
+    timeout-minutes: 22
     steps:
       - uses: actions/checkout@v4
         with:
@@ -577,6 +581,20 @@ jobs:
       # requiring a case to go red. One process, one map: 7.5s locally.
       - name: every gate job is wired to the pull-request plan
         run: python3 scripts/gate-map/plan.py --check-wiring --selftest
+
+      # Issue #167: a reshard moves run steps between the shards of one job
+      # family, and "no gate was dropped" was a claim nothing checked. This
+      # holds every family's multiset of run texts, read through the external
+      # runner's own parser (gatesplan.py), to the checked-in
+      # scripts/gates-external/steps.lock.json and names each missing or
+      # extra command. Removing, adding or moving a step across families
+      # therefore needs the same commit to re-record the lock, which is the
+      # point: the deletion has to be said. Text only, 0.1s locally for the
+      # check and 0.1s for the self-test.
+      - name: every gate job family still carries the steps its lock records
+        run: |
+          python3 scripts/gates-external/steps_lock.py check
+          python3 scripts/gates-external/steps_lock.py selftest
 
       # The second and third tile ledgers (ruling 6 of the full-coverage
       # prestudy, docs 2.4): one row per public Tile IR opcode, held to the
