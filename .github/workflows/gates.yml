@@ -14,8 +14,12 @@ name: gates
 # this on the tag's sha, minutes after ci.yml had already run it on the same
 # sha. Since 6f0ec90a the tag path reads that verdict instead of re-deciding
 # it, through release.yml's `verified` job, which refuses a tag whose commit
-# carries no successful ci.yml run. A tag is still held to this file; what
-# stopped is running this file twice over one commit. Adding a gate here
+# carries no evidence that this file passed: a successful ci.yml run, or,
+# since 2026-09-24, a `gates/maintainer` success that verify-external.yml
+# wrote after checking the maintainer's signed run of every job here off
+# GitHub (scripts/gates-external/release_evidence.py lists what it holds
+# that status to). A tag is still held to this file; what stopped is
+# running this file twice over one commit. Adding a gate here
 # still adds it everywhere, which is the only arrangement that stays true.
 # (The audit-fixes branch proposed this shape on 2026-07-25; the content
 # below is the gate set as of the merge, not that snapshot.)
@@ -40,8 +44,9 @@ name: gates
 # lists every case that falls back to the whole set), from the same gate map
 # tree-policy holds to the tree. main is not a subset because it is the
 # verdict: release.yml's `verified` guard refuses a tag whose sha carries no
-# successful ci.yml run, and only main is tagged, so the release safety
-# surface is exactly what it was. What the subset buys is the queue: 39 jobs
+# successful ci.yml run or accepted external run, only main is tagged, and
+# an external run is the whole set by construction (gatesplan.py takes the
+# plan as `all`), so the release safety surface is exactly what it was. What the subset buys is the queue: 39 jobs
 # and ~23,600 job-seconds per pull request against 20 runners made one run
 # ~25 minutes and three queued pull requests about an hour, and #163 ran all
 # of it for two paragraphs of documentation. What it costs is that a gate
