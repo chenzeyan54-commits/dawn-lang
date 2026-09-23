@@ -1337,7 +1337,15 @@ class Gateway:
                 # asyncio.run still cancels tasks during ordinary teardown.
                 pass
 
-        serve_task = asyncio.create_task(server.serve_forever(), name="gateway-listener")
+        # start_server() is already accepting; there is deliberately no
+        # serve_forever() task. From Python 3.14 (CPython gh-123720), a
+        # cancelled serve_forever() calls Server.close_clients(), and
+        # Server.close() cancels serve_forever() itself. Either way every
+        # accepted transport is closed under the Sessions before their
+        # finally blocks can send the WebSocket close frame and reap the
+        # child, so a SIGTERM would drop clients with no 1000 close.
+        # Listener ownership stays here: close() stops accepting, the
+        # connection tasks below are drained, then wait_closed().
         stop_task = asyncio.create_task(stop.wait(), name="gateway-stop")
 
         async def signal_tick() -> None:
@@ -1350,15 +1358,10 @@ class Gateway:
 
         signal_task = asyncio.create_task(signal_tick(), name="gateway-signal-tick")
         try:
-            done, _ = await asyncio.wait(
-                [serve_task, stop_task], return_when=asyncio.FIRST_COMPLETED
-            )
-            if serve_task in done:
-                await serve_task
+            await stop_task
         finally:
             LOG.info("gateway stop requested")
             server.close()
-            serve_task.cancel()
             stop_task.cancel()
             signal_task.cancel()
 
@@ -1380,7 +1383,7 @@ class Gateway:
                 LOG.info("gateway stopped-connection-batch count=%d", len(connections))
             await server.wait_closed()
             await asyncio.gather(
-                serve_task, stop_task, signal_task, return_exceptions=True
+                stop_task, signal_task, return_exceptions=True
             )
             for signum, previous in previous_signals.items():
                 signal.signal(signum, previous)
