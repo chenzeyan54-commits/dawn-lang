@@ -30,6 +30,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 SUBJECT = HERE / "bench-replay.dawn.txt"
+# The class generator and cold-equality check, shared with edit-matrix.py.
+WORKLOADS = HERE / "replay-workloads.dawn.txt"
 JVM_FLAGS = ["-Xss64m", "-Xmx2g", "-XX:+UseSerialGC"]
 # Retained-heap rounds. Each one keeps another snapshot alive, so a handful is
 # enough and a long run would only measure the list holding them.
@@ -226,7 +228,7 @@ def main():
             "schema 2 uses explicit ns/bytes units and removes the private split",
         ],
     }
-    for path in [SUBJECT, Path(__file__)]:
+    for path in [SUBJECT, WORKLOADS, Path(__file__)]:
         metadata["sources"][str(path.relative_to(ROOT))] = hashlib.sha256(path.read_bytes()).hexdigest()
     for directory in ("selfhost/src", "std"):
         digest = hashlib.sha256()
@@ -238,6 +240,7 @@ def main():
         fixture = Path(temp) / "bench"
         (fixture / "src").mkdir(parents=True)
         shutil.copyfile(SUBJECT, fixture / "src/reference.dawn")
+        shutil.copyfile(WORKLOADS, fixture / "src/workloads.dawn")
         (fixture / "dawn.toml").write_text(
             'schema = 1\nname = "bench_replay"\n\n[deps]\n'
             f'compiler = "{ROOT / "selfhost"}"\ncompiler_plan = "{ROOT / "compiler-plan"}"\n')
