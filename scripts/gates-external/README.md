@@ -32,7 +32,8 @@ scripts/gates-external/prefix.py selftest --prefix ~/dawn-gates [--break-env-i]
 
 # on the cluster, from a local prefix that holds the input pack
 scripts/gates-external/run.sh --sha <sha> --backend crun --prefix ~/dawn-gates --jobs 16 \
-    --backend-opt remote-prefix=<cluster dir> [--backend-opt isolation=1] [--only ...]
+    --backend-opt remote-prefix=<cluster dir> [--backend-opt isolation=1] [--only ...] \
+    [--backend-opt run-as=UID:GID|root] [--backend-opt private-tmp=0]
 ```
 
 Exit status of `run.sh`: 0 complete, 1 ran but not complete, 2 refused to
@@ -115,6 +116,19 @@ command instead of waiting to be found.
 
 Without `--prefix` nothing changes: the host-environment path of the first
 knife is kept as it was.
+
+On the cluster a container gives root and nothing else, while CI runs every
+job as an ordinary user, and two contracts refuse root (root reads a
+`chmod 000` file and writes an unwritable directory). So `prefix.py run-job`
+starts as root, hands the writable part of the prefix (`home/`, `tmp/`,
+`cache/`, `repos/<sha>.git`, `jobs/<sha>`, `out/<sha>`) to uid 20000, and
+re-executes itself through `setpriv --reuid --regid --clear-groups
+--no-new-privs`. `toolchain/` and `inputs/` stay root's, so a job cannot
+change what it is measured with. A uid change does not close `/tmp`,
+`/var/tmp` and `/dev/shm`, which anyone may write, so the job also gets a
+private mount namespace in which each is a per-job directory in the prefix
+(what a fresh CI VM gives a job; a JVM's `java.io.tmpdir` ignores `TMPDIR`).
+`run-as=root` is the negative control; `private-tmp=0` keeps the shared ones.
 
 ## The substitution table
 

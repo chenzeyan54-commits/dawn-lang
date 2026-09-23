@@ -253,6 +253,28 @@ prefix 模式下一个 job 的环境等价于 `env -i` 加白名单：`PATH` = p
 
 要在集群上拿到 `complete = true`，还差：以非 root 身份执行 job（例如 `setpriv` 降到一个无特权 uid，prefix 相应 chown，不需要写 prefix 外）；`wasm-target` 能用预置的 wasi-sdk；`fuser` 进输入包或合约不再依赖它；npm 依赖进输入包。前一条是后端的事，后三条要改 `gates.yml` 或被测脚本，都不在本刀。
 
+## 第 3b′ 刀：集群跑到 complete
+
+第 3 刀的集群全套 31/35 绿，四个红 job 全是容器事实，另有 hsperfdata 一条隔离破规。本刀逐条收掉，每条一个提交。
+
+### 非 root 执行
+
+容器里只有 root；CI 的每个 job 是普通用户，`atomic-write-contract` 与 `java-target-classpath-contract` 的 unreadable-lock 都在 root 下必红（root 读得了 `chmod 000`、写得进不可写目录）。做法：`prefix.py run-job --run-as 20000:20000` 以 root 启动，先把 prefix 里 job 该写的部分（`home/`、`tmp/`、`cache/`、`repos/<sha>.git`、`jobs/<sha>`、`out/<sha>`）交给该身份，只改属主不对的条目；再经 `setpriv --reuid --regid --clear-groups --no-new-privs` 以该身份重新执行自己。`toolchain/` 与 `inputs/` 仍归 root，job 改不了量它的工具链。
+
+选 `setpriv` 不选 `unshare -U`：用户命名空间若把 job 的 uid 映射到真 root，prefix 外所有 root 的文件在 job 眼里都成了自己的，照样可写；真实的 uid 切换让它们仍归 root。uid 20000 在容器的 `/etc/passwd` 里没有条目，这是有意的：借镜像里现成的 `nobody`，就与容器里别的以 `nobody` 跑的东西共享 prefix 的写权限。没有条目的代价实测过：JVM 的 `user.name` 是 `?`，`user.home` 回落到 `$HOME`（prefix 的 `home/`），python 的 `~` 同样取 `$HOME`。反倒是以 root 跑时 JVM 的 `user.home` 取自 passwd，是 prefix 外的 `/root`。
+
+uid 切换挡不住 `/tmp`、`/var/tmp`、`/dev/shm`：它们人人可写。第一次非 root 试跑时两个 job 的隔离检查都报了 `/tmp` 的 mtime（目录里没留下东西，是建了又删）。容器是多人共用的，这一条分不清是谁写的；门禁里的 JVM 本来就会写：`java.io.tmpdir` 不看 `TMPDIR`，默认就是 `/tmp`。所以 job 另得一个私有 mount 命名空间（容器允许 `unshare -m`，实测过），里面这三处各是 prefix 里一个每 job 的目录（`jobs/<sha>/<run>-<job>-shared-tmp/`）的 bind mount。这与 CI 一致：每个 job 是一台新 VM，`/tmp` 本来就是它自己的。`run-job` 在 job 结束时记录私有 `/tmp` 有没有被动过，于是「job 自己用了 `/tmp`」与「别的租户写了真 `/tmp`」分得开；后者仍由外面的 `check-isolation` 看见。`run-as=root` 是负控，`private-tmp=0` 保留共享的三处。
+
+实测（2026-09-24，集群，08a5232e，`--only contracts-2,java-target-classpath --jobs 2`，`isolation=1`）：
+
+| 运行 | 结果 |
+|---|---|
+| uid 20000，共享 `/tmp` | 两个 job 全绿（415s、454s）；隔离检查各报 `OUTSIDE /tmp` 一条 |
+| uid 20000，私有 `/tmp`（默认） | 两个 job 全绿（415s、452s，墙钟 501s）；隔离检查各 0 条；两个 job 的私有 `/tmp` 都被动过、结束时 0 个条目，所以上一行的 `/tmp` 是 job 自己写的 |
+| `run-as=root`（负控） | `contracts-2` 的 atomic write 退出 1：`this contract must not run as root`；`java-target-classpath` 第一步退出 1：`unreadable-lock did not fail closed on stderr with exit 1` |
+
+负控第一次跑时两个 job 都在检出一步失败：上一次以 uid 20000 建的 `repos/<sha>.git` 归 20000，git 以 root 打开时报 dubious ownership。所以 root 模式下 `run-job` 同样把可写部分交回 root。
+
 ## 与 #167 的关系
 
 #167 要的是「分片之后各分片步骤的并集仍等于原 job 的步骤」的核对。本刀的多重集比较（`bundle.multiset_diff`）就是这个并集检查的核心：它逐条点名少了的和多出的命令。
@@ -297,7 +319,7 @@ prefix 模式下一个 job 的环境等价于 `env -i` 加白名单：`PATH` = p
 - **发布红的证据。** `publish.py` 拒绝 `complete` 不为 true 的包。签名的「门禁没过」不能让任何人做任何事，没有绿 status 已经说明了这一点。
 - **多钥与轮换过渡期。** `allowed_signers` 只有一行。换钥即改这一行，旧 note 从此核不过；要保留旧证据的可核验性，需要按时间段接受多把钥，等真的换钥时再说。
 - **crun 后端占卡。** crun 后端只用零卡运行（`-n 0`）。`gates.yml` 今天没有 GPU 门禁（tile 的 GPU 差分在 `tile.yml`，不在本刀范围）。
-- **集群上以非 root 执行。** 见上面 crun 实测一节；两个合约因 root 而红。本刀只记录，不在集群上建用户（那要写 `/etc/passwd`，在 prefix 外）。
+- **在集群上建用户。** 非 root 执行（第 3b′ 刀）用的是没有 passwd 条目的 uid；建用户要写 `/etc/passwd`，在 prefix 外。
 - **时长字段。** 证据包不记时长。时长是机器画像的一部分（核数、负载、邻居），不是树的性质；它也无法被验证者复核。本地计时写在 `summary.json`，只给跑的人看。
 - **把 `/tmp/gate-emit`、8097 改掉。** 任务单明确本刀不改仓库源码，且 #168 正在改 `gates.yml`；这些列进上一节。
 - **解析复合 action 并逐步替换其内部步骤。** 复合 action 的内部是 GraalVM 下载与缓存，没有门禁；整体替换加指纹更简单，也更早暴露变化。

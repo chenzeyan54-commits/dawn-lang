@@ -44,6 +44,16 @@ Options (--backend-opt):
   stage=DIR           local staging root (default <--prefix>/stage)
   crun=CMD            the crun executable (default crun)
   isolation=1         wrap every remote job in prefix.py check-isolation
+  run-as=UID:GID      the identity a job runs as (default 20000:20000);
+                      run-as=root keeps the container's root, which is
+                      the negative control for the two contracts that
+                      refuse it. The uid has no passwd entry on purpose:
+                      a name borrowed from the image (nobody) is shared
+                      with whatever else runs under it
+  private-tmp=0       with run-as: keep the container's /tmp, /var/tmp and
+                      /dev/shm instead of per-job directories in the prefix
+                      (default 1; world-writable, so a uid change alone
+                      does not keep a job out of them)
   keep-going=1, timeout-scale=F   passed through to the local backend
   start-gap=SECONDS   minimum spacing between crun starts (default 2)
 """
@@ -63,6 +73,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import gatesplan  # noqa: E402
 import prefix as prefix_mod  # noqa: E402
+
+# A container gives root and nothing else; CI runs jobs as an ordinary user,
+# and two contracts refuse root. prefix.py run-job drops to this identity.
+DEFAULT_RUN_AS = "20000:20000"
 
 TOOL_FILES = ("prefix.py", "inputs.py", "backend_local.py", "gatesplan.py", "inputs.lock.json")
 
@@ -88,6 +102,9 @@ class CrunBackend:
         self.stage_root = Path(opts.get("stage") or self.local_prefix / "stage")
         self.crun = shlex.split(opts.get("crun", "crun"))
         self.isolation = opts.get("isolation", "0") == "1"
+        run_as = opts.get("run-as", DEFAULT_RUN_AS)
+        self.run_as = None if run_as == "root" else run_as
+        self.private_tmp = opts.get("private-tmp", "1") == "1"
         self.start_gap = float(opts.get("start-gap", "2"))
         self.pass_opts = [f"{k}={opts[k]}" for k in ("keep-going", "timeout-scale") if k in opts]
         self.run_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
@@ -155,7 +172,8 @@ class CrunBackend:
             self._make_bundle(bundle)
         self._write_crun_yaml(stage, self.tree_remote)
         self.log(f"crun backend: staged {stage} ({bundle.stat().st_size / 2**20:.1f} MiB bundle) "
-                 f"in {time.monotonic() - t0:.0f}s; remote prefix {self.remote}, run {self.run_id}")
+                 f"in {time.monotonic() - t0:.0f}s; remote prefix {self.remote}, run {self.run_id}, "
+                 f"jobs run as {self.run_as or 'root'}")
 
         t0 = time.monotonic()
         code, out, err = self._verify_remote(stage, sync=True)
@@ -232,6 +250,10 @@ class CrunBackend:
             inner += ["--needs", needs]
         for item in self.pass_opts:
             inner += ["--opt", item]
+        if self.run_as:
+            inner += ["--run-as", self.run_as]
+            if self.private_tmp:
+                inner += ["--private-tmp"]
         if self.isolation:
             inner = [self._python(), "-B", f"{self.tree_remote}/tools/prefix.py",
                      "check-isolation", "--prefix", self.remote,
@@ -258,7 +280,7 @@ class CrunBackend:
                                f"(see {self.out / 'crun' / f'job-{jid}.txt'})")
         self.fragments[jid] = fragment
         for line in err.splitlines():
-            if line.startswith(f"[{jid}] {jid}#"):
+            if line.startswith((f"[{jid}] {jid}#", f"[{jid}] private /tmp", f"[{jid}] run-job")):
                 self.log(line[len(f"[{jid}] "):])
         return fragment["result"]
 
