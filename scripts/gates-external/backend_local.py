@@ -171,6 +171,7 @@ class LocalBackend:
         self.jdk = str(prefix_mod.java_home(prefix))
         self.seed_cache = None  # the prefix's inputs/seeds and inputs/std-seeds
         prefix_mod.restore_coursier(prefix)
+        prefix_mod.restore_npm(prefix)
         self.port = free_port()
         env = prefix_mod.job_env(prefix)
         env["PLAY_TEST_PORT"] = str(self.port)

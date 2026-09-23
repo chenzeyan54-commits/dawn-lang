@@ -98,6 +98,7 @@ ADJUSTMENTS = {
     # act on (ADJUSTMENT_WHEN): a commit whose wasi-sdk step does not read
     # WASI_SDK_TARBALL would carry a row describing nothing.
     "adjust:wasi-sdk-tarball": "input-pack-tarball",
+    "adjust:npm-offline-cache": "input-pack-npm-cache",
 }
 
 # subject -> predicate over the planned jobs; subjects not named here are
@@ -106,6 +107,9 @@ ADJUSTMENT_WHEN = {
     "adjust:wasi-sdk-tarball": lambda jobs: any(
         "WASI_SDK_TARBALL" in action["command"]
         for job in jobs for action in job["actions"] if action["kind"] == "run"),
+    "adjust:npm-offline-cache": lambda jobs: any(
+        action["kind"] == "use" and action["uses"] == "actions/setup-node@v4"
+        for job in jobs for action in job["actions"]),
 }
 
 PLAN_JOB = "plan"

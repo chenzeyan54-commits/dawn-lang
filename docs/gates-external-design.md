@@ -67,6 +67,7 @@
 | `adjust:literal-tmp-paths` | `machine-wide-lock` | 步骤里写死的 `/tmp/<名字>`（今天只有 `contracts-1` 的 `/tmp/gate-emit`）在同一台机器的所有检出之间共享。按字面路径取一把机器级文件锁，两个 `run.sh` 不会同时用它；挡不住别的程序。路径是从命令文本里扫出来的，不是手写的表。 |
 | `adjust:playground-port` | `free-port-per-run` | `playground/test/contract.sh` 默认 8097，结束时 `fuser -k` 这个端口。WSL2 下 8097 可能落在 WinNAT 保留段里 bind 失败；共享机器上 `fuser -k 8097` 还会杀掉别人的进程。每次运行挑一个空闲端口经 `PLAY_TEST_PORT` 传入（该脚本本来就支持这个变量）。 |
 | `adjust:github-env-files` | `per-step-files` | `GITHUB_ENV`、`GITHUB_PATH` 等是每步一个文件，`ENV` 与 `PATH` 按 runner 的规则带到后续步骤。`wasm-target` 靠它把 `DAWN_WASM_CC` 与 `DAWNC_BIN` 传给后面的步骤。 |
+| `adjust:npm-offline-cache` | `input-pack-npm-cache` | 第 3b′ 刀加的。prefix 模式下 `npm_config_cache` 指向 prefix 的 `cache/npm`（输入包 npm 缓存的副本：npm 离线也往缓存里写日志），`npm_config_offline=true`。`docs` job 的 `site/build.sh` 跑 `npm install`，于是只从缓存取包，拿不到就 `ENOTCACHED` 红，不会悄悄去 registry。步骤本身不改。只在该提交用 `actions/setup-node` 时列出。 |
 | `adjust:wasi-sdk-tarball` | `input-pack-tarball` | 第 3b′ 刀加的。prefix 模式下环境里有 `WASI_SDK_TARBALL`，指向输入包里已校验的 wasi-sdk 原件；`wasm-target` 的步骤见到它就拷贝而不下载，sha256 照旧对两条路径都核。只在该提交的 `gates.yml` 读这个变量时才列出（`gatesplan.ADJUSTMENT_WHEN`），否则这一行描述的是不存在的东西。不带 `--prefix` 时不设，步骤照旧下载。 |
 
 另外，宿主环境里的 `GITHUB_*`、`RUNNER_*`、`DAWN_*`、`JAVA_HOME` 等变量在交给步骤前被清掉，再设 `CI=true`。`DAWN_SEED` 之类的变量会悄悄改变工具链的来源，不能从开发者的 shell 漏进来。
@@ -281,6 +282,16 @@ uid 切换挡不住 `/tmp`、`/var/tmp`、`/dev/shm`：它们人人可写。第�
 `gates.yml` 的 `wasm-target` 里「the pinned wasi-sdk」一步改成：`${WASI_SDK_TARBALL:-}` 指向一个文件就 `cp` 它，否则照旧 `curl`；之后的 `sha256sum -c` 不动，两条路径都执行。钉住的是摘要，字节从哪来不改变它核的是什么。CI 不设这个变量，走 `curl` 分支，行为与墙钟都不变：改动只是一个分支条件，没有新的下载或计算（`check-gate-budgets.py` 照旧绿，不动预算行）。prefix 的白名单环境设它，指向 `inputs/downloads/` 里 `inputs.py` 按锁核过的原件；替换表因此多一行 `adjust:wasi-sdk-tarball`。
 
 负控（本机，直接执行该步骤的 `run:` 原文）：变量指向改了一个字节的原件，`sha256sum` 报 `FAILED`，退出 1；指向输入包原件、在 `bwrap --unshare-net` 里跑，`OK`，退出 0；不设变量、同样无网，`curl` 报 `Could not resolve host`，退出 6；不设变量、有网（CI 的路径），`OK`，13s。
+
+### npm 依赖离线
+
+`inputs.lock.json` 加 `npm_caches` 一项：`site/play-ui/package-lock.json` 的 sha256。`inputs.py build` 在 prefix 里拷出 `package.json` 与这份 lockfile，用 prefix 的 node 跑 `npm ci --ignore-scripts`，缓存落在 `inputs/npm-cache`（26 个包，7.1 MiB，3s），再删掉 npm 自己的 `_logs`。锁钉的是 lockfile 而不是缓存的字节：npm 的索引里带时间，两次填出来的缓存不同；每个 tarball 从缓存取出时 npm 按 lockfile 的 `integrity`（sha512）核，所以钉 lockfile 就钉住了内容。`MANIFEST.json` 记这次填出的缓存的目录树摘要，`verify` 按它核，并核 lockfile 摘要与锁一致（给 `--repo` 时还核仓库里的 lockfile）。某个提交改了 lockfile，锁就得一起改，否则 `build` 拒绝；而旧缓存下那个提交的 `npm install` 会 `ENOTCACHED` 红，不会静默联网。
+
+job 看到的是 `cache/npm`，由后端在 prepare 时从 `inputs/npm-cache` 拷一份（按摘要判断是否需要重拷），因为 npm 离线也会往缓存里写。环境里 `npm_config_cache` 指向它、`npm_config_offline=true`，`gates.yml` 与 `site/build.sh` 都不改。`site/build.sh` 之后没有别的步骤联网（`vite build`、`gen-builtins` 都只读本地）。
+
+负控（本机，`bwrap --unshare-net`，prefix 环境）：完整缓存下 `npm ci --offline` 装上 26 个包，退出 0；删掉缓存里 `@codemirror/state` 的内容文件后 `ENOTCACHED`，退出 1；`site/build.sh` 用的 `npm install --silent`（只靠环境注入的离线）退出 0。端到端：整个 `run.sh --only docs`（08a5232e，本机 prefix）套在 `bwrap --unshare-net` 里跑，6 步全绿，job 268s，`site/build.sh` 的日志里 `vite build` 建出了 `playground.js`（765.56 kB），不是跳过。
+
+一处与 CI 不同，照实记下：prefix 的 node 20.20.2 带 npm 10.8.2，`npm install` 会改写检出里的 `package-lock.json`（去掉 npm 11 写进去的 `libc` 字段）。CI 的 `lts/*` 自带的 npm 版本不同。之后没有步骤检查工作树是否干净；`site-dist-diff.sh` 的快照里带着改写后的文件，但 JVM 与 native 两条腿读的是同一份快照，比较不受影响。这属于「不做的」里「node 版本与 `lts/*`」那一条。
 
 ## 与 #167 的关系
 

@@ -117,6 +117,10 @@ def job_env(prefix, *, tmpdir=None, runner_temp=None, inherit_host=False):
         # wasm-target's wasi-sdk step copies this instead of downloading it
         # and checks the same pinned sha256 (the adjust:wasi-sdk-tarball row).
         "WASI_SDK_TARBALL": str(prefix / "inputs" / "downloads" / archive_name(download("wasi-sdk"))),
+        # site/build.sh's `npm install` resolves from the input pack's cache
+        # and never from the registry (the adjust:npm-offline-cache row).
+        "npm_config_cache": str(prefix / "cache" / "npm"),
+        "npm_config_offline": "true",
     }
     if inherit_host:
         # The broken variant keeps whatever the host had for these, which is
@@ -156,6 +160,33 @@ def restore_coursier(prefix):
     with locked(prefix, "coursier-restore"):
         if not cache.exists() and source.is_dir():
             shutil.copytree(source, cache, symlinks=True)
+
+
+def restore_npm(prefix):
+    """cache/npm from inputs/npm-cache: what setup-node's `cache: npm` restores.
+
+    npm writes into its cache even offline (_logs, index touches), so jobs
+    get a copy and the input pack stays as inputs.py hashed it. The copy is
+    replaced when the pack's cache is not the one it was made from.
+    """
+    import shutil
+    prefix = Path(prefix)
+    cache = prefix / "cache" / "npm"
+    stamp = prefix / "cache" / "npm.source"
+    manifest = prefix / "inputs" / "MANIFEST.json"
+    if not manifest.exists():
+        return
+    rows = [row for row in json.loads(manifest.read_text())["items"] if row["kind"] == "npm-cache"]
+    if not rows:
+        return
+    source = prefix / rows[0]["path"]
+    want = rows[0]["tree_sha256"]
+    with locked(prefix, "npm-restore"):
+        if cache.exists() and stamp.exists() and stamp.read_text().strip() == want:
+            return
+        shutil.rmtree(cache, ignore_errors=True)
+        shutil.copytree(source, cache, symlinks=True)
+        stamp.write_text(want + "\n")
 
 
 # ------------------------------------------------------------ isolation

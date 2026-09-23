@@ -18,7 +18,12 @@ What the lock pins and what it does not:
     release, and advance-seed.sh does not know about it;
   - the coursier cache: produced by running `./bin/dawn --version` once with
     the cache pointed into the prefix; its jars are checked against
-    selfhost/dawn.lock, and the whole tree's digest goes into MANIFEST.json.
+    selfhost/dawn.lock, and the whole tree's digest goes into MANIFEST.json;
+  - the npm cache (lock key npm_caches): filled by `npm ci` from a lockfile
+    whose sha256 the lock pins. The cache's own bytes are not reproducible
+    (npm's index carries times), so the lock pins the lockfile, whose
+    integrity fields npm checks on every tarball it takes from the cache,
+    and MANIFEST records the tree digest of the cache that was built.
 
 One change is made to an unpacked toolchain, and it is part of the layout,
 not of the download: GraalVM's bin/java becomes a shim that execs the real
@@ -292,6 +297,9 @@ def build(args):
                   "path": "inputs/coursier", "bytes": size, "files": files, "tree_sha256": tree,
                   "source": "./bin/dawn --version with COURSIER_CACHE in the prefix"})
 
+    for entry in prefix_mod.load_lock().get("npm_caches", []):
+        items.append(build_npm_cache(prefix, repo, entry, log))
+
     manifest = {"schema": 1, "items": items}
     (prefix / "inputs" / "MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n")
     shutil.copy2(prefix_mod.LOCK_FILE, prefix / "inputs" / "inputs.lock.json")
@@ -327,6 +335,45 @@ def prime_coursier(prefix, repo, tag, coursier, log):
     log(f"coursier: primed by ./bin/dawn --version ({done.stdout.strip()}) in "
         f"{time.monotonic() - t0:.0f}s")
     shutil.rmtree(work, ignore_errors=True)
+
+
+def build_npm_cache(prefix, repo, entry, log):
+    """`npm ci` against the pinned lockfile, with the cache in the prefix."""
+    lockfile = repo / entry["lockfile"]
+    if sha256_file(lockfile) != entry["lockfile_sha256"]:
+        raise SystemExit(f"inputs: {entry['lockfile']} is not the lockfile inputs.lock.json pins "
+                         f"({entry['lockfile_sha256']}); update the lock entry with the cache")
+    cache = prefix / entry["dir"]
+    work = prefix / "tmp" / f"inputs-{entry['name']}"
+    shutil.rmtree(work, ignore_errors=True)
+    (work / "tmp").mkdir(parents=True)
+    for name in ("package.json", "package-lock.json"):
+        shutil.copy2(lockfile.parent / name, work / name)
+    env = prefix_mod.job_env(prefix, tmpdir=work / "tmp", runner_temp=work / "tmp")
+    env["npm_config_cache"] = str(cache)
+    env.pop("npm_config_offline", None)
+    # This is a download, like fetch(): it reaches the registry the way this
+    # machine reaches the network. A job never gets these variables.
+    env.update({k: v for k, v in os.environ.items() if k.lower().endswith("_proxy")})
+    shutil.rmtree(cache, ignore_errors=True)
+    t0 = time.monotonic()
+    # --ignore-scripts: filling a cache needs nothing executed
+    done = subprocess.run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+                          cwd=work, env=env, capture_output=True, text=True)
+    if done.returncode != 0:
+        raise SystemExit(f"inputs: npm ci failed while filling {entry['dir']}:\n"
+                         f"{done.stdout}{done.stderr}")
+    # npm's own logs and notifier state are not inputs
+    shutil.rmtree(cache / "_logs", ignore_errors=True)
+    (cache / "_update-notifier-last-checked").unlink(missing_ok=True)
+    shutil.rmtree(work, ignore_errors=True)
+    tree, size, files = tree_digest(cache)
+    log(f"{entry['name']}: npm ci filled {entry['dir']} ({files} files, {mib(size)}) in "
+        f"{time.monotonic() - t0:.0f}s")
+    return {"name": entry["name"], "version": entry["lockfile_sha256"][:12], "kind": "npm-cache",
+            "path": entry["dir"], "bytes": size, "files": files, "tree_sha256": tree,
+            "lockfile": entry["lockfile"], "lockfile_sha256": entry["lockfile_sha256"],
+            "source": f"npm ci of {entry['lockfile']}"}
 
 
 def check_coursier_against_lock(repo, coursier):
@@ -371,6 +418,7 @@ def verify(args):
         return 1
     manifest = json.loads(manifest_path.read_text())
     lock = {item["name"]: item for item in prefix_mod.load_lock()["downloads"]}
+    npm_lock = {item["name"]: item for item in prefix_mod.load_lock().get("npm_caches", [])}
     bad = 0
     t0 = time.monotonic()
     for row in manifest["items"]:
@@ -405,6 +453,12 @@ def verify(args):
                 if args.repo and seed_sha != table_value(
                         Path(args.repo) / "scripts/seed-std-checksums.txt", row["version"]):
                     problems.append("not the digest scripts/seed-std-checksums.txt records")
+        if row["kind"] == "npm-cache":
+            want = npm_lock.get(row["name"], {}).get("lockfile_sha256")
+            if row.get("lockfile_sha256") != want:
+                problems.append(f"built from lockfile {row.get('lockfile_sha256')}, the lock pins {want}")
+            if args.repo and want and sha256_file(Path(args.repo) / row["lockfile"]) != want:
+                problems.append(f"{row['lockfile']} in the repository is not the pinned lockfile")
         if row["kind"] == "download" and row["name"] not in lock:
             problems.append("not in inputs.lock.json")
         status = "ok  " if not problems else "FAIL"
@@ -414,6 +468,10 @@ def verify(args):
     missing = set(lock) - {r["name"] for r in manifest["items"] if r["kind"] == "download"}
     for name in sorted(missing):
         print(f"FAIL download   {name:9} in inputs.lock.json but not in MANIFEST")
+        bad += 1
+    for name in sorted(set(npm_lock) - {r["name"] for r in manifest["items"]
+                                         if r["kind"] == "npm-cache"}):
+        print(f"FAIL npm-cache  {name} in inputs.lock.json but not in MANIFEST")
         bad += 1
     print(f"inputs verify: {'green' if not bad else f'RED, {bad} item(s)'} "
           f"({time.monotonic() - t0:.1f}s)")

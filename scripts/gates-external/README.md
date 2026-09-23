@@ -101,6 +101,12 @@ environment variables that could carry the flag print `Picked up ...` on
 stderr. The lock entry is the archive and does not change; `verify` checks the
 shim's bytes and that `java.real` is the archive's `bin/java`.
 
+The npm cache is the one input whose bytes are not pinned: npm's index
+carries times, so two fills differ. The lock pins the lockfile it is filled
+from (`npm_caches`), npm checks every tarball it takes from the cache against
+that lockfile's integrity fields, and MANIFEST records the tree digest of the
+cache that was built, which `verify` holds it to.
+
 `inputs.py` trusts only the digests in `inputs.lock.json`. The seed jar and std
 are checked against `scripts/seed-checksums.txt` and `seed-std-checksums.txt`,
 the tables `seedjar.sh` reads, and the coursier jars against
@@ -147,6 +153,7 @@ private mount namespace in which each is a per-job directory in the prefix
 | `adjust:literal-tmp-paths` | `machine-wide-lock` | a step naming a literal `/tmp/<name>` path holds a lock on it, so two runs of this script cannot share it |
 | `adjust:playground-port` | `free-port-per-run` | `PLAY_TEST_PORT` is a free port, not 8097 |
 | `adjust:github-env-files` | `per-step-files` | `GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY` are per-step files, and ENV/PATH carry to later steps |
+| `adjust:npm-offline-cache` | `input-pack-npm-cache` | under `--prefix`, `npm_config_cache` is a copy of the input pack's npm cache (filled by `npm ci` from the pinned `site/play-ui/package-lock.json`) and `npm_config_offline=true`, so the docs job's `npm install` never reaches a registry. Listed only for a commit that uses `actions/setup-node` |
 | `adjust:wasi-sdk-tarball` | `input-pack-tarball` | under `--prefix`, `WASI_SDK_TARBALL` names the input pack's wasi-sdk archive, which wasm-target's step copies instead of downloading; the step's pinned sha256 is checked either way. Listed only for a commit whose gates.yml reads the variable; without `--prefix` it is not set and the step downloads |
 
 A `uses:` reference not in this table (including a version bump of one that
