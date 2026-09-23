@@ -1844,12 +1844,14 @@ jobs:
       # are interchangeable, which is exactly why nothing else can tell whether
       # the 114 call sites moved. This reads the emitted constant pools and
       # answers it -- no `dawn/tool` reference left, and `dawn/rt/Asm` actually
-      # reached (either assertion alone passes on an empty directory).
+      # reached (either assertion alone passes on an empty directory). The emit
+      # goes under $RUNNER_TEMP, not a fixed /tmp path: two runs of this job on
+      # one machine would otherwise rm -rf each other's classes mid-read.
       - name: adapter call sites (emitted compiler names dawn/rt/Asm only)
         run: |
-          rm -rf /tmp/gate-emit && mkdir -p /tmp/gate-emit
-          ./bin/dawn __emit selfhost -o /tmp/gate-emit > /dev/null
-          ./scripts/adapter-callsites.py /tmp/gate-emit
+          rm -rf "${RUNNER_TEMP:?}/gate-emit" && mkdir -p "$RUNNER_TEMP/gate-emit"
+          ./bin/dawn __emit selfhost -o "$RUNNER_TEMP/gate-emit" > /dev/null
+          ./scripts/adapter-callsites.py "$RUNNER_TEMP/gate-emit"
 
       # `__emit` compares bytes, which covers Core only where a shipping
       # backend reads it. CModule.dicts has no shipping reader at all, and
