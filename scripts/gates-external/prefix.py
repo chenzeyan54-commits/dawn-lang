@@ -21,7 +21,8 @@ Layout (created by `layout`):
     inputs/MANIFEST.json what inputs.py put there, with a sha256 per item
     jobs/<sha>/          per-job checkouts and temp directories
     repos/<sha>.git      a bare repository made from a shipped git bundle (crun)
-    home/ tmp/ cache/    HOME, lock files, XDG_CACHE_HOME and the coursier cache
+    home/ tmp/ cache/    HOME (with the coursier cache where CI has it,
+                         home/.cache/coursier/v1), lock files, npm's cache
     out/<sha>/           bundle.json, summary.json, logs/, artifacts/
 
 The claim that a run stays inside the prefix is checked, not asserted:
@@ -110,8 +111,13 @@ def job_env(prefix, *, tmpdir=None, runner_temp=None, inherit_host=False):
         "HOME": str(prefix / "home"),
         "TMPDIR": str(tmpdir or prefix / "tmp"),
         "RUNNER_TEMP": str(runner_temp or prefix / "tmp"),
-        "XDG_CACHE_HOME": str(prefix / "cache"),
-        "COURSIER_CACHE": str(prefix / "cache" / "coursier"),
+        # Where they are on a runner, which sets neither: HOME/.cache and
+        # coursier's default under it. Not a separate cache/ directory,
+        # because gate scripts read ~/.cache/coursier/v1 directly
+        # (configured-lsp-contract.py and source-parse-counts.py find the
+        # ASM jar there, as the toolchain action's cache restores it).
+        "XDG_CACHE_HOME": str(coursier_home(prefix).parents[1]),
+        "COURSIER_CACHE": str(coursier_home(prefix)),
         "LANG": "C.UTF-8",
         "CI": "true",
         # wasm-target's wasi-sdk step copies this instead of downloading it
@@ -147,15 +153,20 @@ def locked(prefix, name):
     return _Lock()
 
 
+def coursier_home(prefix):
+    return Path(prefix) / "home" / ".cache" / "coursier" / "v1"
+
+
 def restore_coursier(prefix):
-    """cache/coursier from inputs/coursier, once: the actions/cache restore.
+    """home/.cache/coursier/v1 from inputs/coursier, once: the actions/cache
+    restore of ~/.cache/coursier.
 
     Jobs write to the cache (coursier keeps lock and last-check files); the
     inputs copy stays as inputs.py hashed it.
     """
     import shutil
     prefix = Path(prefix)
-    cache = prefix / "cache" / "coursier"
+    cache = coursier_home(prefix)
     source = prefix / "inputs" / "coursier"
     with locked(prefix, "coursier-restore"):
         if not cache.exists() and source.is_dir():

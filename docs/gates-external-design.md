@@ -174,6 +174,8 @@ status 步骤 `if: always()`，verify 步骤的 outcome 不是 `success` 就写 
 
 prefix 模式下一个 job 的环境等价于 `env -i` 加白名单：`PATH` = prefix 各工具链 bin + `/usr/bin:/bin`（git、cc、bash、curl、coreutils 仍来自系统）；`JAVA_HOME`、`GRAALVM_HOME` 指 prefix 的 GraalVM；`HOME`、`TMPDIR`、`RUNNER_TEMP`、`XDG_CACHE_HOME`、`COURSIER_CACHE` 都在 prefix 下；`LANG=C.UTF-8`（ubuntu-latest 的值；没有 locale 时 JVM 的文件名编码退回 ASCII）；`CI=true`；加上本地后端本来就设的每 job `GITHUB_*`。
 
+`XDG_CACHE_HOME` 与 `COURSIER_CACHE` 取的是 runner 上的默认位置（`$HOME/.cache`、`$HOME/.cache/coursier/v1`，`HOME` 在 prefix 里），coursier 缓存从输入包恢复到那里。第 3 刀曾把它们放在 prefix 单独的 `cache/` 下；第 3b′ 刀在当前 main 上跑全套时，`configured-lsp-contract.py` 与 `source-parse-counts.py` 以退出 2 红：它们不看 `COURSIER_CACHE`，直接在 `~/.cache/coursier/v1/https` 下找 ASM 9.7.1，而 CI 的工具链 action 恰好把缓存恢复在 `~/.cache/coursier`。环境与 CI 不同的地方就是会被某个脚本读到的地方，所以改成与 CI 相同，而不是改脚本。
+
 偏离任务单的一处：白名单里**没有** `DAWN_SEED`。CI 不设它；设了会让 `seedjar.sh` 跳过校验并打印一行 CI 不会打印的警告。种子照 cache restore 的方式拷进 `.dawn/seeds`，`seedjar.sh` 照常校验。
 
 另一处：prefix 模式的检出是 `git clone --shared`，不是 `git worktree add`。worktree 会往源仓库的 `.git/worktrees` 写东西，那在 prefix 外面。

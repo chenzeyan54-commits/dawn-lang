@@ -86,7 +86,9 @@ cache, `MANIFEST.json`), `jobs/<sha>/`, `home/`, `tmp/`, `cache/`,
 A prefix job's environment is not the caller's minus a drop list; it is built
 from nothing (the effect of `env -i`): `PATH` is the toolchain bins then
 `/usr/bin:/bin`, `JAVA_HOME` and `GRAALVM_HOME` the prefix's GraalVM, `HOME`,
-`TMPDIR`, `RUNNER_TEMP`, `XDG_CACHE_HOME` and `COURSIER_CACHE` under the prefix,
+`TMPDIR`, `RUNNER_TEMP`, `XDG_CACHE_HOME` and `COURSIER_CACHE` under the prefix
+(the last two at a runner's defaults below `HOME`, `.cache` and
+`.cache/coursier/v1`, because gate scripts read `~/.cache/coursier/v1` directly),
 `LANG=C.UTF-8`, `CI=true`, plus the per-job `GITHUB_*` values the local
 backend already sets. `DAWN_SEED` is not set: CI does not set it, and it makes
 `seedjar.sh` skip its checksum. The seed reaches a job the way the cache
