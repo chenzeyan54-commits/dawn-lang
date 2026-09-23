@@ -1,7 +1,9 @@
 # Private benchmark of production cold, record, admit, replay and renewal APIs.
 # Checks run outside each operation timer; no private replay implementation.
 # Snapshot construction and retained-heap probes have separate units and modes.
-# Driven by bench-replay.py; stdout is strict meta/round TSV.
+# Driven by bench-replay.py; stdout is strict meta/round TSV. The class
+# generator and the cold-equality check live in replay-workloads.dawn.txt,
+# shared with edit-matrix, so both harnesses mean the same Scale1000 module.
 use std/map
 use std/str
 use compiler/front/parser
@@ -17,77 +19,18 @@ use compiler/check/source_projection
 use compiler/check/source_snapshot
 use compiler/check/source_snapshot.{Snapshot}
 use compiler/jvm/jreflect.{jsig_real}
+use workloads
+use workloads.{equal_bodies, body_count}
 use java "java.lang.System"
 use java "java.lang.Integer"
 use java "java.lang.Runtime"
 
 # ---------------------------------------------------------------- subjects
 
-fn join(parts: List[String]) -> String = {
-  var out = ""
-  for p in parts { out = out ++ p ++ "\n" }
-  out
-}
-
 fn show_diags(ds: List[Diag]) -> String = {
   var out = ""
   for d in ds { out = out ++ d.msg ++ " | " }
   out
-}
-
-## One module per class. Support declarations are a fixed O(1) prefix; the
-## per-body cost divides by the number of bodies the scheduler actually ran.
-pub fn subject(kind: String, n: Int) -> String = {
-  var parts: List[String] = []
-  if kind == "scalar" {
-    for i in 0..n { parts = parts ++ ["fn s${i}() -> Int = ${i}"] }
-  }
-  if kind == "arith" {
-    for i in 0..n {
-      parts = parts ++ ["fn p${i}(a: Int, b: Int) -> Int = {\n  let c = a + b * 2\n  let d = c - a + ${i}\n  let e = if d > 0 { d } else { 0 - d }\n  e + c * 3 - d\n}"]
-    }
-  }
-  if kind == "calls" {
-    parts = parts ++ ["fn helper(x: Int) -> Int = x + 1", "fn helper2(x: Int, y: Int) -> Int = x * y - 1"]
-    for i in 0..n {
-      parts = parts ++ ["fn c${i}(a: Int) -> Int = helper(a) + helper2(a, ${i}) + helper(a + ${i})"]
-    }
-  }
-  if kind == "primitive_inferred" {
-    parts = parts ++ ["fn seed() = 1"]
-    for i in 0..n { parts = parts ++ ["fn ip${i}() = seed() + ${i}"] }
-  }
-  if kind == "generic" {
-    parts = parts ++ ["trait Scale[T] { fn scale(x: T, k: Int) -> Int }",
-      "type Coin = { value: Int }",
-      "impl Scale[Coin] { fn scale(x: Coin, k: Int) -> Int = x.value * k }"]
-    for i in 0..n {
-      parts = parts ++ ["fn g${i}[T: Scale](x: T, y: T) -> Int = scale(x, ${i}) + scale(y, 2) + scale(x, 3)"]
-    }
-  }
-  if kind == "inferred" {
-    for i in 0..n {
-      parts = parts ++ ["fn q${i}(a: Int, b: Int) = {\n  let add = (x: Int, y: Int) => x + y\n  let twice = (f: fn(Int, Int) -> Int, x: Int) => f(x, x)\n  let t = twice(add, a + ${i})\n  let u = twice((x, y) => x * y, b)\n  t + u\n}"]
-    }
-  }
-  if kind == "method" {
-    parts = parts ++ ["trait Shine[T] { fn shine(x: T) -> Int }"]
-    for i in 0..n {
-      parts = parts ++ ["type W${i} = { v: Int }", "impl Shine[W${i}] { fn shine(x: W${i}) -> Int = x.v * 2 + ${i} }"]
-    }
-  }
-  if kind == "default" {
-    for i in 0..n {
-      parts = parts ++ ["trait Buff${i}[T] { fn raw${i}(x: T) -> Int\n  fn buff${i}(x: T) -> Int = raw${i}(x) + ${i} }"]
-    }
-  }
-  if kind == "java" {
-    parts = parts ++ ["use java \"java.lang.Math\""]
-    for i in 0..n {
-      parts = parts ++ ["fn j${i}(x: Int) -> Int !io = Math.abs(x - ${i}) + Math.max(x, ${i})"]
-    }
-  }
-  join(parts)
 }
 
 fn empty_env() -> Map[String, ModExports] = map.empty()
@@ -110,9 +53,6 @@ fn headers_of_snapshot(s: Snapshot) -> ModuleHeaders !io = {
 
 fn headers_of(text: String) -> ModuleHeaders !io = headers_of_snapshot(snapshot_of(text))
 
-fn body_count(b: ModuleBodies) -> Int =
-  len(b.functions) + len(b.constants) + len(b.impl_methods) + len(b.trait_defaults) + len(b.tests)
-
 # ---------------------------------------------------------------- reporting
 
 fn meta(key: String, value: String) -> Unit !io = println("meta\t${key}\t${value}")
@@ -126,23 +66,6 @@ fn edited(text: String) -> String = "# edited elsewhere in the file\n" ++ text
 
 fn require(condition: Bool, label: String) -> Unit =
   if not condition { panic("benchmark invariant: " ++ label) }
-
-# Compare actual scheduler outputs, not another implementation of checking.
-fn equal_bodies(actual: ModuleBodies, expected: ModuleBodies) -> Bool =
-  actual.functions == expected.functions && actual.constants == expected.constants &&
-    actual.impl_methods == expected.impl_methods && actual.trait_defaults == expected.trait_defaults &&
-    actual.tests == expected.tests && actual.cx.diags == expected.cx.diags &&
-    actual.cx.syms == expected.cx.syms && actual.cx.decl_slots == expected.cx.decl_slots &&
-    actual.cx.frame == expected.cx.frame && actual.cx.fns == expected.cx.fns &&
-    actual.cx.alias_resolved == expected.cx.alias_resolved &&
-    actual.cx.current_tparams == expected.cx.current_tparams &&
-    actual.cx.current_eff_vars == expected.cx.current_eff_vars &&
-    actual.cx.current_tparam_bounds == expected.cx.current_tparam_bounds &&
-    actual.cx.function_reads == expected.cx.function_reads && actual.cx.body_writes == expected.cx.body_writes &&
-    actual.cx.owner == expected.cx.owner && actual.cx.owner_lo == expected.cx.owner_lo &&
-    actual.cx.owner_decl == expected.cx.owner_decl && actual.cx.in_test == expected.cx.in_test &&
-    actual.cx.const_cutoff == expected.cx.const_cutoff && actual.cx.loop_jumps == expected.cx.loop_jumps &&
-    actual.cx.take_cell == expected.cx.take_cell
 
 # Fixture expectations, not admission rules. The original inference-heavy
 # lambda class remains unsupported; primitive inference has its own workload.
@@ -166,7 +89,7 @@ fn verify_replay(result: scalar_replay.Replayed, cold: ModuleBodies, hits: Int) 
 }
 
 fn run_cold(kind: String, n: Int, rounds: Int) -> Unit !io = {
-  let text = subject(kind, n)
+  let text = workloads.subject(kind, n)
   let headers = headers_of(text)
   let expected = checked_cold(headers)
   for r in 0..rounds {
@@ -181,7 +104,7 @@ fn run_cold(kind: String, n: Int, rounds: Int) -> Unit !io = {
 }
 
 fn run_record(kind: String, n: Int, rounds: Int, only_admit: Bool) -> Unit !io = {
-  let snapshot = snapshot_of(subject(kind, n))
+  let snapshot = snapshot_of(workloads.subject(kind, n))
   let headers = headers_of_snapshot(snapshot)
   let scope = scope_key()
   let expected = checked_cold(headers)
@@ -216,8 +139,8 @@ fn run_record(kind: String, n: Int, rounds: Int, only_admit: Bool) -> Unit !io =
 # Prebuild both revision inputs once. Neither parsing nor header checking is
 # part of the body-operation timer; renewal alternates actual cache generations.
 fn run_replay(kind: String, n: Int, rounds: Int, renew: Bool) -> Unit !io = {
-  let before = snapshot_of(subject(kind, n))
-  let after = snapshot_of(edited(subject(kind, n)))
+  let before = snapshot_of(workloads.subject(kind, n))
+  let after = snapshot_of(edited(workloads.subject(kind, n)))
   let old = headers_of_snapshot(before)
   let next = headers_of_snapshot(after)
   let old_cold = checked_cold(old)
@@ -265,7 +188,7 @@ fn run_replay(kind: String, n: Int, rounds: Int, renew: Bool) -> Unit !io = {
 ## actual single-parse snapshot constructor are timed independently. None is
 ## included in replay's body timer; no synthetic multiple is a production phase.
 fn run_parse(kind: String, n: Int, rounds: Int) -> Unit !io = {
-  let text = subject(kind, n)
+  let text = workloads.subject(kind, n)
   let headers = headers_of(text)
   for r in 0..rounds {
     let t0 = System.nanoTime()
@@ -311,7 +234,7 @@ fn used_heap() -> Int !io = {
 }
 
 fn run_memory(kind: String, n: Int, rounds: Int) -> Unit !io = {
-  let text = subject(kind, n)
+  let text = workloads.subject(kind, n)
   var indexes: List[source_projection.Indexed] = []
   for r in 0..rounds {
     let before = used_heap()
