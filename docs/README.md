@@ -51,7 +51,7 @@ SAM 值边界修复方案：[sam-value-design.md](sam-value-design.md)。
 | 文档 | 生命周期 | 说明 |
 |---|---|---|
 | [gate-map-dependencies-design.md](gate-map-dependencies-design.md) | current | 从示例 manifest 的本地依赖闭包推导包到示例门禁的归属，并以增删依赖和传递依赖负控固定。 |
-| [gates-external-design.md](gates-external-design.md) | current | 在 GitHub 之外按该提交的 `gates.yml` 跑全部门禁：命令清单运行时派生、`uses:` 替换表、字段白名单的证据包与按多重集重算的 `complete`；维护者签名、`refs/notes/gates` 与 `verify-external.yml` 写 `gates/maintainer` status。 |
+| [gates-external-design.md](gates-external-design.md) | current | 在 GitHub 之外按该提交的 `gates.yml` 跑全部门禁：命令清单运行时派生、`uses:` 替换表、字段白名单的证据包与按多重集重算的 `complete`；维护者签名、`refs/notes/gates` 与 `verify-external.yml` 写 `gates/maintainer` status；prefix 隔离执行、锁定摘要的离线输入包与 `check-isolation` 隔离证明。 |
 | [mutation-anchor-preflight-design.md](mutation-anchor-preflight-design.md) | current | Build-free source mutation applicability checks, explicit helper exclusions and anchor-drift controls. |
 | [jvm-operand-jump-design.md](jvm-operand-jump-design.md) | current | #80 的 JVM 操作数循环跳转栈纪律：局部暂存保留求值顺序，不改变 native RC。 |
 | [bootstrap.md](bootstrap.md) | current | 自举链：种子 → A → B → C、固定点、种子推进协议。 |
