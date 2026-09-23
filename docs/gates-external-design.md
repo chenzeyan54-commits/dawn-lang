@@ -1,6 +1,6 @@
 # 在 GitHub 之外跑完整门禁集
 
-> 状态：**current**。第 1 刀（本地后端 + 证据包）、第 2 刀（签名、`refs/notes/gates`、`verify-external.yml` 回写 commit status）、第 3 刀（prefix、离线输入包、隔离证明、crun 后端）、第 3b′ 刀（集群上 `complete = true`：启动器 shim、非 root 与私有 `/tmp`、wasi-sdk 与 npm 离线）与第 4 刀（2026-09-24：release 守卫接受外部证据；`steps.lock.json` 进 tree-policy，关 #167）已落地；自动触发仍记在「不做的」。`verify-external.yml` 至今只在真实 GitHub 上跑过一次（run 35888113634，输入不是 40 位 sha，按设计失败且不写 status），还没有一次写出 `success`。
+> 状态：**current**。第 1 刀（本地后端 + 证据包）、第 2 刀（签名、`refs/notes/gates`、`verify-external.yml` 回写 commit status）、第 3 刀（prefix、离线输入包、隔离证明、crun 后端）、第 3b′ 刀（集群上 `complete = true`：启动器 shim、非 root 与私有 `/tmp`、wasi-sdk 与 npm 离线）与第 4 刀（2026-09-24：release 守卫接受外部证据；`steps.lock.json` 进 tree-policy，关 #167）已落地；自动触发仍记在「不做的」。首次正向发布已做（14535104）：集群全套 `complete = true`，签名 note 推上 `refs/notes/gates`，`verify-external.yml`（run 35932235187）给该提交写出 `gates/maintainer` = `success`，见「签名、落盘与 GitHub 侧核验」一节的实测。
 
 ## 要解决的问题
 
@@ -141,7 +141,19 @@ status 步骤 `if: always()`，verify 步骤的 outcome 不是 `success` 就写 
 
 ### 实测
 
-本地 bare 仓库演练（2026-09-23，详细记录在任务报告里）：浅克隆 + 按 sha 取对象与 notes + `verify_note.py`，对一个两步的小 `gates.yml` 合计约 0.6s；对真实 `gates.yml`（173 个 run 步骤）`verify_note.py` 本身不到 1s。托管 runner 上加上排队、起机与 `actions/checkout`，预计整个 job 在 15s 到 30s 之间；这是估计，首次真实运行后以 run 的计时为准。预算按 floor 记，timeout 5 分钟。
+本地 bare 仓库演练（2026-09-23，详细记录在任务报告里）：浅克隆 + 按 sha 取对象与 notes + `verify_note.py`，对一个两步的小 `gates.yml` 合计约 0.6s；对真实 `gates.yml`（173 个 run 步骤）`verify_note.py` 本身不到 1s。托管 runner 上加上排队、起机与 `actions/checkout`，预计整个 job 在 15s 到 30s 之间；这是当时的估计。预算按 floor 记，timeout 5 分钟。
+
+首次正向发布（2026-09-23 UTC，提交 14535104，main）的实测：
+
+| 项 | 结果 |
+|---|---|
+| 证据包 | 集群全套 `--jobs 16`，墙钟 1722s（准备 26s），39/39 job 绿，175/175 run 步骤执行且退出 0，39 次隔离检查全部 0 条 |
+| `publish.py` | 23:10:16Z 起，签名、推 `refs/notes/gates`、派发共约 10s |
+| `verify-external.yml` run 35932235187 | 23:10:26Z 创建；verify job 23:10:30Z 起、23:10:37Z 完成，**job 7s**；run 23:10:38Z 结束，**派发到 status 落地 12s**。估计的 15s 到 30s 偏高 |
+| `gates/maintainer` status | `success`，23:10:35Z，creator `github-actions[bot]`，描述 "Signed external run of the full gate set verified"，`target_url` 指向该 run |
+| `release_evidence.py`（真实 API） | 第 1 条（`ci.yml` run 35929558799 绿）成立，第 2 条（外部 status）accepted，退出 0 |
+
+此前 `verify-external.yml` 在真实 GitHub 上只跑过一次（run 35888113634，输入不是 40 位 sha，按设计失败且不写 status）。
 
 ## 第 3 刀：prefix、离线输入包与隔离证明
 
