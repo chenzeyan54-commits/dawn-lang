@@ -94,12 +94,13 @@ restore does, copied into `.dawn/seeds`. A job's checkout is a
 `git clone --shared` under the prefix, not a worktree, because a worktree
 writes into the source repository's `.git`.
 
-One change is made to an unpacked toolchain: GraalVM's `bin/java` is a shim
-that execs `bin/java.real` with `-XX:-UsePerfData` first, because HotSpot
-writes `/tmp/hsperfdata_<user>` for every JVM whatever `TMPDIR` says, and the
-environment variables that could carry the flag print `Picked up ...` on
-stderr. The lock entry is the archive and does not change; `verify` checks the
-shim's bytes and that `java.real` is the archive's `bin/java`.
+One change is made to an unpacked toolchain: each GraalVM launcher in `bin/`
+(`java`, `javac`, `jar`, ...) is a shim that execs `bin/<name>.real` with
+`-XX:-UsePerfData` first (`-J-XX:-UsePerfData` for all but `java`), because
+HotSpot writes `/tmp/hsperfdata_<user>` for every JVM whatever `TMPDIR` says,
+and the environment variables that could carry the flag print `Picked up ...`
+on stderr. The lock entry is the archive and does not change; `verify` checks
+each shim's bytes and that each `.real` is the archive's launcher.
 
 The npm cache is the one input whose bytes are not pinned: npm's index
 carries times, so two fills differ. The lock pins the lockfile it is filled

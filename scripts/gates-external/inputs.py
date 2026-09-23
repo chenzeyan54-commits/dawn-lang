@@ -26,8 +26,9 @@ What the lock pins and what it does not:
     and MANIFEST records the tree digest of the cache that was built.
 
 One change is made to an unpacked toolchain, and it is part of the layout,
-not of the download: GraalVM's bin/java becomes a shim that execs the real
-launcher, renamed bin/java.real, with -XX:-UsePerfData in front of the
+not of the download: each GraalVM launcher in bin/ (java, javac, jar, ...)
+becomes a shim that execs the real one, renamed bin/<name>.real, with
+-XX:-UsePerfData (-J-XX:-UsePerfData for all but java) in front of the
 caller's arguments. HotSpot writes /tmp/hsperfdata_<user>/<pid> for every
 JVM, in a /tmp it hardcodes whatever TMPDIR says, so every gate step that
 starts a JVM wrote outside the prefix. The only switch that turns it off is
@@ -35,8 +36,8 @@ that flag, and the environment variables that could carry it
 (JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS) make each JVM print "Picked up ..." on
 stderr, which changes the output under test. The lock entry is untouched:
 the archive is the same bytes, the shim is written after unpacking (build,
-install), and MANIFEST records the digest of bin/java as the archive has it,
-which verify holds bin/java.real to, with the shim's exact bytes.
+install), and MANIFEST records each launcher's digest as the archive has it,
+which verify holds bin/<name>.real to, with the shim's exact bytes.
 
 MANIFEST.json (in the prefix, not the repository) records what build put
 there: per item the prefix-relative path, bytes, and a file sha256 or a tree
@@ -138,58 +139,86 @@ def git_common_dir(repo):
                                text=True).stdout.strip())
 
 
-# The shim is the same bytes in every prefix: it finds java.real beside
-# itself, so no path is written into it and the toolchain's tree digest does
-# not depend on where the prefix lives.
-JAVA_SHIM = """#!/bin/sh
+# The shims are the same bytes in every prefix: each finds its .real beside
+# itself, so no path is written into them and the toolchain's tree digest
+# does not depend on where the prefix lives. `java` takes the flag as it is;
+# every other launcher (javac, jar, ...) starts its JVM from options it is
+# given as -J<option>.
+SHIM = """#!/bin/sh
 # Written by scripts/gates-external/inputs.py, not part of GraalVM: every JVM
 # of a gate run starts without hsperfdata, which HotSpot would write to /tmp.
-exec "$(dirname -- "$(readlink -f -- "$0")")/java.real" -XX:-UsePerfData "$@"
+exec "$(dirname -- "$(readlink -f -- "$0")")/{name}.real" {flag} "$@"
 """
 
 
-def java_member(archive):
-    """bin/java's path inside the GraalVM archive (one top-level directory)."""
-    listing = subprocess.run(["tar", "tzf", str(archive)], check=True, capture_output=True,
-                             text=True).stdout.splitlines()
-    top = listing[0].split("/", 1)[0]
-    return f"{top}/bin/java"
+def shim_text(name):
+    return SHIM.format(name=name, flag="-XX:-UsePerfData" if name == "java"
+                       else "-J-XX:-UsePerfData")
 
 
-def archive_java_sha256(archive):
-    """sha256 of bin/java as the archive holds it, read without unpacking."""
-    done = subprocess.run(["tar", "xzf", str(archive), "-O", java_member(archive)],
-                          check=True, capture_output=True)
-    return hashlib.sha256(done.stdout).hexdigest()
+def archive_launchers(archive):
+    """{name: sha256} of every regular file in the archive's bin/.
+
+    Read from the archive, not the unpacked tree, so verify holds each
+    .real to the bytes GraalVM shipped.
+    """
+    work = Path(archive).parent / f".{Path(archive).name}.bin"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir()
+    try:
+        subprocess.run(["tar", "xzf", str(archive), "-C", str(work), "--strip-components=1",
+                        "--wildcards", "*/bin/*"], check=True)
+        return {p.name: sha256_file(p) for p in sorted((work / "bin").iterdir())
+                if p.is_file() and not p.is_symlink()}
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
-def install_java_shim(target):
-    """bin/java -> bin/java.real, and the shim at bin/java; idempotent."""
-    java = Path(target) / "bin" / "java"
-    real = java.with_name("java.real")
-    if not real.exists():
-        java.rename(real)
-    if not java.exists() or java.read_text(errors="replace") != JAVA_SHIM:
-        tmp = java.with_name("java.shim.tmp")
-        tmp.write_text(JAVA_SHIM)
-        tmp.chmod(0o755)
-        tmp.rename(java)
+def launchers(target):
+    """The launchers a shim wraps: regular files in bin/ (symlinks such as
+    native-image point into lib/ and are left alone)."""
+    names = set()
+    for p in (Path(target) / "bin").iterdir():
+        if p.is_symlink() or not p.is_file():
+            continue
+        names.add(p.name[:-len(".real")] if p.name.endswith(".real") else p.name)
+    return sorted(names)
 
 
-def check_java_shim(target, want_sha):
+def install_shims(target):
+    """bin/<x> -> bin/<x>.real and the shim at bin/<x>, for every launcher;
+    idempotent."""
+    for name in launchers(target):
+        exe = Path(target) / "bin" / name
+        real = exe.with_name(name + ".real")
+        if not real.exists():
+            exe.rename(real)
+        text = shim_text(name)
+        if not exe.exists() or exe.read_text(errors="replace") != text:
+            tmp = exe.with_name(name + ".shim.tmp")
+            tmp.write_text(text)
+            tmp.chmod(0o755)
+            tmp.rename(exe)
+
+
+def check_shims(target, want):
     """What verify holds a GraalVM toolchain to; a list of problems."""
-    java = Path(target) / "bin" / "java"
-    real = java.with_name("java.real")
+    if not want:
+        return ["MANIFEST records no launcher digests (a prefix from before the shims; "
+                "run inputs.py build or install)"]
     problems = []
-    if not want_sha:
-        problems.append("MANIFEST records no bin/java digest (a prefix from before the shim; "
-                        "run inputs.py build or install)")
-    if not java.is_file() or java.read_text(errors="replace") != JAVA_SHIM:
-        problems.append("bin/java is not the -XX:-UsePerfData shim")
-    if not real.is_file():
-        problems.append("bin/java.real is missing")
-    elif want_sha and sha256_file(real) != want_sha:
-        problems.append("bin/java.real is not the archive's bin/java")
+    for name, digest in sorted(want.items()):
+        exe = Path(target) / "bin" / name
+        real = exe.with_name(name + ".real")
+        if not exe.is_file() or exe.read_text(errors="replace") != shim_text(name):
+            problems.append(f"bin/{name} is not the -XX:-UsePerfData shim")
+        if not real.is_file():
+            problems.append(f"bin/{name}.real is missing")
+        elif sha256_file(real) != digest:
+            problems.append(f"bin/{name}.real is not the archive's bin/{name}")
+    extra = set(launchers(target)) - set(want)
+    if extra:
+        problems.append(f"launchers the archive does not have: {sorted(extra)}")
     return problems
 
 
@@ -227,7 +256,7 @@ def extract(item, prefix, archive, log):
     subprocess.run(["tar", "xf", str(archive), "-C", str(tmp), "--strip-components=1"],
                    check=True)
     if item["name"] == "graalvm":
-        install_java_shim(tmp)
+        install_shims(tmp)
     shutil.rmtree(target, ignore_errors=True)
     tmp.rename(target)
     log(f"{item['name']}: extracted into toolchain/{item['dir']} in {time.monotonic() - t0:.1f}s")
@@ -249,8 +278,8 @@ def build(args):
             extract(item, prefix, archive, log)
         extra = {}
         if item["name"] == "graalvm":
-            install_java_shim(target)
-            extra["java_sha256"] = archive_java_sha256(archive)
+            install_shims(target)
+            extra["launcher_sha256"] = archive_launchers(archive)
         tree, size, files = tree_digest(target)
         items.append({"name": item["name"], "version": item["version"], "kind": "download",
                       "path": archive.relative_to(prefix).as_posix(),
@@ -445,7 +474,7 @@ def verify(args):
             if got != row["tree_sha256"]:
                 problems.append(f"tree digest {got} differs from MANIFEST")
             if row["kind"] == "toolchain" and row["name"] == "graalvm":
-                problems += check_java_shim(path, row.get("java_sha256"))
+                problems += check_shims(path, row.get("launcher_sha256"))
             if row["kind"] == "std-seed":
                 seed_sha = seed_tree_sha(path)
                 if seed_sha != row["seed_tree_sha256"]:

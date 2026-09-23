@@ -186,9 +186,9 @@ prefix 模式下一个 job 的环境等价于 `env -i` 加白名单：`PATH` = p
 
 实测中查出并修掉的一处：HotSpot 把 `hsperfdata_<用户>` 写在写死的 `/tmp`，不看 `TMPDIR`。第 3 刀只在后端探测 JDK 版本的那次 `java -version` 命令行上加了 `-XX:-UsePerfData`，门禁步骤自己起的 JVM 仍然写，集群全套运行后 `/tmp/hsperfdata_root` 的 mtime 落在运行窗口里。
 
-第 3b′ 刀改成 prefix 布局的一部分：`inputs.py` 解包 GraalVM 之后把 `bin/java` 改名 `bin/java.real`，在原位置写一个 shim，`exec` 同目录的 `java.real` 并把 `-XX:-UsePerfData` 放在调用者参数之前。shim 的内容与 prefix 在哪无关（它按自己的位置找 `java.real`），所以工具链的目录树摘要在本机与集群上相同。锁里的 GraalVM 条目不变：原件还是那些字节，shim 是 `build`/`install` 解包后写的；`MANIFEST.json` 记下原件里 `bin/java` 的 sha256，`verify` 核 `java.real` 等于它、shim 逐字节等于 `inputs.py` 里的那份。不用 `JAVA_TOOL_OPTIONS`/`JDK_JAVA_OPTIONS`：它们让每个 JVM 往 stderr 打一行 `Picked up ...`，改变被测输出。只包 `java` 一个启动器：门禁里起 JVM 的都是 `java`（`bin/dawn`、`java -jar`，以及 JVM 按 `java.home` 找到的 `bin/java`），`javac`、`jar` 之类没有步骤直接调用。
+第 3b′ 刀改成 prefix 布局的一部分：`inputs.py` 解包 GraalVM 之后把 `bin/java` 改名 `bin/java.real`，在原位置写一个 shim，`exec` 同目录的 `java.real` 并把 `-XX:-UsePerfData` 放在调用者参数之前。shim 的内容与 prefix 在哪无关（它按自己的位置找 `java.real`），所以工具链的目录树摘要在本机与集群上相同。锁里的 GraalVM 条目不变：原件还是那些字节，shim 是 `build`/`install` 解包后写的；`MANIFEST.json` 记下原件里 `bin/java` 的 sha256，`verify` 核 `java.real` 等于它、shim 逐字节等于 `inputs.py` 里的那份。不用 `JAVA_TOOL_OPTIONS`/`JDK_JAVA_OPTIONS`：它们让每个 JVM 往 stderr 打一行 `Picked up ...`，改变被测输出。第一版只包了 `java`，理由是门禁里起 JVM 的都是它；这个判断错了：incremental 家族的七八个合约脚本直接跑 `javac --release 21` 与 `jar cf`，`configured-lsp-contract.py` 也按 `$JAVA_HOME/bin/javac` 调用。所以现在 `bin/` 里每个普通文件启动器都换成 shim（符号链接如 `native-image` 指向 `lib/`，不动）：`java` 前置 `-XX:-UsePerfData`，其余前置 `-J-XX:-UsePerfData`（JDK 启动器把 `-J` 选项交给自己的 JVM）。`MANIFEST.json` 记原件里每个启动器的 sha256（从原件读，不从解包后的树读）。
 
-负控（本机，`bwrap` 给命令一个私有 `/tmp`，在 prefix 里的新检出上跑会触发重建的 `./bin/dawn --version`）：没有 shim 时私有 `/tmp` 里出现 `hsperfdata_dawn`；有 shim 时为空。把 `java.real` 改一个字节，`inputs.py verify` 红（目录树摘要与「不是原件的 `bin/java`」两条），复原后绿。
+负控（本机，`bwrap` 给命令一个私有 `/tmp`）：在 prefix 里的新检出上跑会触发重建的 `./bin/dawn --version`，没有 shim 时私有 `/tmp` 里出现 `hsperfdata_dawn`，有 shim 时为空。逐个启动器同样：`java.real -version`、`java.real -cp . A`、`javac.real -d`、`jar.real cf` 各留下 `hsperfdata_dawn`，经 shim 的同一命令都为空。把 `java.real` 或 `javac.real` 改一个字节，`inputs.py verify` 红（目录树摘要与「不是原件的启动器」两条），复原后绿。
 
 共享工作站上 `find` 不可能为空：本机同时有别的写者、编辑器、定时任务（零点的 dpkg 备份与 logrotate 就撞进过一次窗口）。所以本机的证明分两层：
 
