@@ -75,6 +75,30 @@ def parse_time(stamp):
     return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
 
 
+def parse_since(text):
+    """--since as an instant, or SystemExit naming what it could not read.
+
+    This used to be compared with the API's createdAt as a string, which is
+    only right when both are spelled the same way. `2026-9-23` sorts after
+    every `2026-09-...` stamp and silently matched nothing (the failure then
+    reads "no completed runs matched", as if the runs were missing), and an
+    offset like `+08:00` was compared character by character with a `Z`
+    stamp, so the window was off by the offset without a word. Now the value
+    is parsed: a bare date means midnight UTC, a stamp without an offset is
+    UTC, and anything else is refused.
+    """
+    try:
+        when = datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
+    except ValueError:
+        raise SystemExit(
+            f"--since {text!r} is not an ISO 8601 date or timestamp "
+            "(for example 2026-09-23 or 2026-09-23T00:00:00Z)"
+        )
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when
+
+
 def collect(repo, branch, workflow, runs, since):
     listed = gh_json([
         "gh", "run", "list",
@@ -88,7 +112,7 @@ def collect(repo, branch, workflow, runs, since):
     for run in listed:
         if run["status"] != "completed":
             continue
-        if since and run["createdAt"] < since:
+        if since and parse_time(run["createdAt"]) < since:
             continue
         picked.append(run)
         if len(picked) >= runs:
@@ -96,7 +120,7 @@ def collect(repo, branch, workflow, runs, since):
     if not picked:
         raise SystemExit(
             f"no completed {workflow} runs on {branch} matched"
-            f"{' since ' + since if since else ''}"
+            f"{' since ' + since.isoformat() if since else ''}"
         )
 
     seconds = {}
@@ -134,14 +158,16 @@ def main():
     ap.add_argument("--out", type=pathlib.Path, required=True)
     args = ap.parse_args()
 
+    since = parse_since(args.since) if args.since else None
     picked, seconds, where = collect(
-        args.repo, args.branch, args.workflow, args.runs, args.since
+        args.repo, args.branch, args.workflow, args.runs, since
     )
     report = {
         "generated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "repo": args.repo,
         "branch": args.branch,
         "workflow": args.workflow,
+        "since": since.isoformat() if since else None,
         "runs": [run["databaseId"] for run in picked],
         "oldest_run_created": picked[-1]["createdAt"],
         "newest_run_created": picked[0]["createdAt"],
