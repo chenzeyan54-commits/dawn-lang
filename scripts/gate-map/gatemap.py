@@ -1328,11 +1328,11 @@ class _PyModule:
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     self.imports.append((self.unit_of.get(id(node)), alias.name,
-                                         None, alias.asname or alias.name))
+                                         None, node.lineno))
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 names = [a.name for a in node.names]
                 self.imports.append((self.unit_of.get(id(node)), node.module,
-                                     None if "*" in names else names, None))
+                                     None if "*" in names else names, node.lineno))
             elif (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
@@ -1407,7 +1407,7 @@ class _PyModule:
                 for path in self.value(node) or ():
                     if path in reader.tree.dirs and path not in search:
                         search.append(path)
-        for unit, module, names, alias in self.imports:
+        for unit, module, names, _line in self.imports:
             rel = module.replace(".", "/") + ".py"
             target = next(
                 (f"{d}/{rel}" for d in search if f"{d}/{rel}" in reader.tree.fileset),
@@ -1776,7 +1776,7 @@ class HarnessReader:
             for path, why in whole.items():
                 out.whole.setdefault(path, why)
             todo |= {r for r in refs if r in mod.units} - done
-        for unit, module, names, alias in mod.imports:
+        for unit, module, names, _line in mod.imports:
             if unit not in done:
                 continue
             target = mod.module_files.get(module)
@@ -3364,6 +3364,141 @@ class Baseline:
         self.signature_coupling = choose_signature_coupling(tree)
         self.package = choose_package(tree)
         self.js_gate = choose_js_gate(gm)
+        self.import_edge = choose_import_edge(gm)
+        self.read_edge = choose_read_edge(gm)
+        self.step_harness = choose_step_harness(gm)
+
+
+def _gate_sees(gm, gate_id, path):
+    return any(
+        o.level == "exact" and o.gate_id == gate_id for o in gm.verdict(path)
+    )
+
+
+def _harness_candidates(gm):
+    """-> [(gate, script, its reach)] for every harness script a step runs,
+    in a stable order, with the directories that step reads whole."""
+    out = []
+    for gate in sorted(gm.gates, key=lambda g: (g.workflow, g.id)):
+        scripts = sorted(s for s in gate_scripts(gate, gm.tree) if harness_dir(s))
+        reaches = {s: gm.harness.reach(s) for s in scripts}
+        whole = set().union(*(set(r.whole) for r in reaches.values())) if reaches else set()
+        out.append((gate, scripts, reaches, whole))
+    return out
+
+
+def choose_import_edge(gm):
+    """-> (gate id, importer, module, the import line) for the mutant that
+    drops an import, or None.
+
+    Read from the tree for the reason `choose_coupling` is. The edge has to be
+    the only way that step reaches the module, so dropping it has something to
+    take away: the step does not run the module itself, reads no directory
+    whole, and no other script it runs imports or names the module. The first
+    such edge is checked by building the mutated map once, so a choice that
+    would leave the mutant silent is refused here rather than recorded.
+    """
+    tree = gm.tree
+    for gate, scripts, reaches, whole in _harness_candidates(gm):
+        for importer in scripts:
+            if Path(importer).suffix != ".py":
+                continue
+            mod = gm.harness.py_module(importer)
+            if mod.error:
+                continue
+            lines = tree.read(importer).splitlines()
+            for unit, module, names, line in mod.imports:
+                target = mod.module_files.get(module)
+                if unit != "<module>" or target is None or target in scripts:
+                    continue
+                if posixpath.dirname(target) in whole:
+                    continue
+                others = [s for s in scripts if s != importer
+                          and target in reaches[s].reads]
+                if others or not _gate_sees(gm, gate.id, target):
+                    continue
+                text = lines[line - 1]
+                if sum(1 for ln in lines if text in ln) != 1:
+                    continue
+                dropped = Map(tree.mutate(overrides={
+                    importer: drop_line(text)(tree.read(importer), importer)
+                }))
+                if not _gate_sees(dropped, gate.id, target):
+                    return gate.id, importer, target, text
+    return None
+
+
+def choose_read_edge(gm):
+    """-> (gate id, script, file, the quoted name) for the mutant that
+    renames a template a harness reads, or None. Chosen the way
+    `choose_import_edge` is: a non-script file that step reaches only because
+    this script names it, once, in quotes."""
+    tree = gm.tree
+    for gate, scripts, reaches, whole in _harness_candidates(gm):
+        for script in scripts:
+            text = tree.read(script)
+            for path, how in sorted(reaches[script].reads.items()):
+                if (
+                    path not in tree.fileset
+                    or Path(path).suffix in SCRIPT_SUFFIXES
+                    or posixpath.dirname(path) in whole
+                    or not how.startswith(posixpath.basename(script) + ":")
+                    or not _inside(path, posixpath.dirname(script))
+                ):
+                    continue
+                others = [s for s in scripts if s != script
+                          and path in reaches[s].reads]
+                if others or not _gate_sees(gm, gate.id, path):
+                    continue
+                name = path[len(posixpath.dirname(script)) + 1:]
+                quoted = next(
+                    (q for q in (f'"{name}"', f"'{name}'") if text.count(q) == 1),
+                    None,
+                )
+                if quoted is None:
+                    continue
+                renamed = quoted[0] + name + RENAMED + quoted[0]
+                moved = Map(tree.mutate(overrides={
+                    script: swap(quoted, renamed)(text, script)
+                }))
+                if not _gate_sees(moved, gate.id, path):
+                    return gate.id, script, path, quoted
+    return None
+
+
+def choose_step_harness(gm):
+    """-> (the gates.yml run line, the harness it runs) for the recorded
+    mutant that takes a harness out of its step, or None.
+
+    A harness run by one inline `run:` line and reached by nothing else, in a
+    directory no step reads whole: without that line it is run by no step,
+    so it has to surface as a path the ratchet has not recorded.
+    """
+    tree = gm.tree
+    workflow = ".github/workflows/gates.yml"
+    text = tree.read(workflow)
+    reached_by = {}
+    for gate, scripts, reaches, whole in _harness_candidates(gm):
+        for script, reach in reaches.items():
+            for path in [script] + list(reach.reads):
+                reached_by.setdefault(path, set()).add(gate.id)
+            for directory in whole:
+                for path in tree.under(directory):
+                    reached_by.setdefault(path, set()).add(gate.id)
+    for gate in sorted(gm.gates, key=lambda g: g.id):
+        if gate.workflow != "gates.yml" or len(gate.commands) != 1:
+            continue
+        line = f"run: {gate.commands[0]}"
+        scripts = [s for s in gate_scripts(gate, tree) if harness_dir(s)]
+        if len(scripts) != 1 or text.count(line) != 1:
+            continue
+        script = scripts[0]
+        if reached_by.get(script) != {gate.id}:
+            continue
+        if gm.fallback.get(posixpath.dirname(script)):
+            continue
+        return line, script
+    return None
 
 
 def js_gate_script(gm):
@@ -3645,6 +3780,20 @@ ASSERTIONS = [
         lambda c, b: not _cites(
             c, "scripts/pipe-contract/matrix.txt", "scripts/doc-check.py"
         ),
+    ),
+    (
+        "harness_import_probe",
+        "a module a harness imports is its step's code, so a change to the "
+        "shared module selects every step that runs an importer (#169)",
+        lambda c, b: b.import_edge is not None
+        and _gate_sees(c.map, b.import_edge[0], b.import_edge[2]),
+    ),
+    (
+        "harness_read_probe",
+        "a template a harness names inside its directory is its step's input, "
+        "file by file rather than through the whole directory (#169)",
+        lambda c, b: b.read_edge is not None
+        and _gate_sees(c.map, b.read_edge[0], b.read_edge[2]),
     ),
     (
         "unwatched_floor",
@@ -4199,6 +4348,44 @@ def mutants(base):
             },
         ),
         Mutant(
+            "drop-an-import-edge",
+            "file-level rule A through its import edge: the harness stops "
+            "importing the shared module, and the step that runs it has to "
+            "stop being selected by a change to that module. With the edge "
+            "unread, a shared helper would look like nobody's code",
+            edits={
+                base.import_edge[1]: drop_line(base.import_edge[3]),
+            },
+        ),
+        Mutant(
+            "rename-a-template-read",
+            "file-level rule A through a named read: the harness asks for a "
+            "template under another name, and the file it used to read stops "
+            "being that step's input",
+            edits={
+                base.read_edge[1]: swap(
+                    base.read_edge[3],
+                    base.read_edge[3][0]
+                    + base.read_edge[3][1:-1]
+                    + RENAMED
+                    + base.read_edge[3][0],
+                ),
+            },
+        ),
+        Mutant(
+            "harness-leaves-its-step",
+            "the negative control the file-level rule owes the ratchet: take "
+            "a harness out of the one step that runs it and it is run by "
+            "nothing, so it has to arrive as a path unseen.txt does not "
+            "record. Recorded rather than counted, because that assertion is "
+            "`a-new-file-nobody-watches`'s to own; rule 3 is what keeps it "
+            "red",
+            edits={
+                ".github/workflows/gates.yml": drop_line(base.step_harness[0]),
+            },
+            record=lambda text: text,
+        ),
+        Mutant(
             "glob-with-a-literal-head",
             "rule B's other half: a glob whose head is literal is a gate "
             "stating its input, and has to be expanded. Also the vacuity "
@@ -4237,6 +4424,17 @@ def observe(base_tree, base_record):
             "path join and a package.json, so rule B's JavaScript half has "
             "nothing to mutate"
         ]
+    for edge, what in (
+        (base.import_edge, "a harness import that is its step's only way to a "
+                           "shared module"),
+        (base.read_edge, "a template a harness names once and is its step's "
+                         "only way to it"),
+        (base.step_harness, "a harness run by one gates.yml line and reached "
+                            "by nothing else"),
+    ):
+        if edge is None:
+            return {}, [f"file-level rule A finds no {what} in this tree, so "
+                        "it has nothing to mutate"]
 
     clean = Check(Map(base_tree), base_record)
     for name, what, test in ASSERTIONS:

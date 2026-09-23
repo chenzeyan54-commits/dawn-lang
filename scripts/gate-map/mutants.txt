@@ -14,7 +14,7 @@
 # is only that an owner is not shared, and a later mutant is free to redden
 # more than one thing as long as the one it owns stays its own.
 #
-# Seven entries are not like the others:
+# Eight entries are not like the others:
 #
 #   unwatched_floor is a `control`. Nothing here owns it and nothing may redden
 #   it. It is the sentence every mutant has to keep true, and it exists because
@@ -53,6 +53,14 @@
 #   perfectly correct. A manifest-driven rule C is unmoved by it, so its red
 #   set is empty and rule 3 is what holds it there.
 #   package-renamed-in-its-manifest edits the same manifest and is counted.
+#
+#   harness-leaves-its-step is recorded with a red set that is not empty. It
+#   deletes the one gates.yml line that runs a harness nothing else reaches,
+#   and the harness has to come back as a path unseen.txt does not record,
+#   which is unseen_no_new. That assertion is a-new-file-nobody-watches's to
+#   own, so this one cannot be counted; rule 3 is what holds it red. It is the
+#   negative control for file-level rule A (#169): without it a harness that
+#   stopped being run would keep whatever attribution it had.
 
 control	unwatched_floor
 
@@ -80,6 +88,10 @@ role	corpus-target-that-is-not-here	counted
 owner	corpus-target-that-is-not-here	corpus_target_exists
 red	corpus-target-that-is-not-here	corpus_target_exists
 
+role	drop-an-import-edge	counted
+owner	drop-an-import-edge	harness_import_probe
+red	drop-an-import-edge	harness_import_probe
+
 role	drop-the-one-path-join	counted
 owner	drop-the-one-path-join	python_join_probe
 red	drop-the-one-path-join	python_join_probe
@@ -97,6 +109,9 @@ red	golden-forgets-a-module	golden_covers_selfhost
 role	golden-names-a-ghost-module	counted
 owner	golden-names-a-ghost-module	golden_module_resolves
 red	golden-names-a-ghost-module	golden_module_resolves
+
+role	harness-leaves-its-step	recorded
+red	harness-leaves-its-step	unseen_no_new
 
 role	js-gate-migrated-to-esm	recorded
 
@@ -135,6 +150,10 @@ red	prev-diff-drops-its-own-std	prev_diff_std_premise
 role	prev-diff-head-leg-uses-prev	counted
 owner	prev-diff-head-leg-uses-prev	prev_diff_head_compiler_premise
 red	prev-diff-head-leg-uses-prev	prev_diff_head_compiler_premise
+
+role	rename-a-template-read	counted
+owner	rename-a-template-read	harness_read_probe
+red	rename-a-template-read	harness_read_probe
 
 role	rewrite-a-shared-sentence	counted
 owner	rewrite-a-shared-sentence	coupling_probe
