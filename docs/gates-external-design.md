@@ -1,6 +1,6 @@
 # 在 GitHub 之外跑完整门禁集
 
-> 状态：**current**，第 1 刀（本地后端 + 证据包）。签名、verify 工作流、crun 后端、release 守卫是后续刀，本文只把它们记在「不做的」。
+> 状态：**current**。第 1 刀（本地后端 + 证据包）与第 2 刀（签名、`refs/notes/gates`、`verify-external.yml` 回写 commit status）已落地；release 守卫接受外部证据、crun 后端、自动触发是后续刀，记在「不做的」。`verify-external.yml` 尚未在真实 GitHub 上跑过：`workflow_dispatch` 要求工作流先在默认分支上，首次运行在合并之后。
 
 ## 要解决的问题
 
@@ -105,6 +105,43 @@
 
 分工：`gatesplan.py` 决定跑什么，后端决定在哪跑、每个替换 id 怎么实现，`bundle.py` 决定结果算不算完整，`runner.py` 只管调度（按 `gates.yml` 的定义顺序，即预期时长降序，最多 `--jobs` 个并行；有 `needs:` 的 job 等依赖结束后照跑，对应 `if: always()`）。crun 后端因此只需新增 `backend_crun.py`，通过 `--backend crun` 选中，不改现有文件。后端专属选项走 `--backend-opt KEY=VALUE`，也不需要改 `run.sh`。
 
+## 签名、落盘与 GitHub 侧核验（第 2 刀）
+
+证据包能被任何人重算，但说不出是谁跑的。任何人都能写一份 `bundle.json`，所以没有签名的证据包只是声明。第 2 刀补上这一半，协议的摘要写在 [bootstrap.md](bootstrap.md)「GitHub 之外执行门禁集的证据协议」，这里记取舍。
+
+新增文件：
+
+- `allowed_signers`：一行，identity `dawn-gates`，`namespaces="dawn-gates"`，后接维护者专用钥 `~/.ssh/dawn-gates-sign` 的公钥。
+- `verify_note.py`：读 note、拆信封、验签、核对提交，`--selftest` 在临时仓库里用两把一次性钥演示每条负控先红后绿。
+- `publish.py`：本地复核、拒绝不完整的包、签名、本地验签、写 note、推 `refs/notes/gates`、派发工作流。`--dry-run` 停在推之前，`--dry-run-dispatch` 停在派发之前，`--remote` 可以是本地 bare 仓库；`--remote` 不是 `origin` 时拒绝派发，免得把一次演练派发到真仓库。
+- `.github/workflows/verify-external.yml`：`workflow_dispatch`，输入 `sha`，一个 job，写 `gates/maintainer` status。
+
+### 签什么
+
+签名对象是 bundle 的规范字节：`json.dumps(bundle, sort_keys=True, separators=(',', ':'))` 加换行。不签信封文本，所以 note 可以缩进排版、便于人读；核验方把解析出的 bundle 重新规范化再验，签名绑定的是内容而不是排版。信封的 JSON 解析拒绝重复键：否则同一段文本在不同解析器下可能得出两个不同的 bundle。
+
+签名用 `ssh-keygen -Y sign/verify`，namespace 固定为 `dawn-gates`。选 SSH 签名而不是 GPG：runner 自带 OpenSSH，不需要装钥匙环；公钥一行即可入库，信任根在仓库里而不在某个钥匙服务器上。
+
+### 核验清单与共用代码
+
+`verify_note.py` 逐项核，每一项都执行并打印，不在第一项失败时停：note、信封、签名、`tree == sha`、`gates_blob == git rev-parse <sha>:.github/workflows/gates.yml`、`bundle.check`、`complete`。其中 `bundle.check` 是从 `bundle.py verify` 里抽出来的函数，`bundle.py verify`、`publish.py`、`verify_note.py` 三处都调它，不存在第二份核验逻辑。替换表的「只含已知行」由它覆盖：`validate` 拒绝未知主语与未知替换 id，另外整张表必须逐行等于该提交 `gates.yml` 推出的那张，已知 id 挂错行也红。
+
+核验方给泄露过滤传空的身份集合。泄露过滤里「本机主机名、用户名」一条保护的是生产者的机器，核验方不知道生产者叫什么；传入 runner 自己的名字只会让结论随运行地点变化。路径、主机名形状、地址形状这些形状规则照常生效。
+
+### 偏离任务单的一处：核验器不取自被测提交
+
+任务单写的是「checkout 该 sha」。实际做法是 `actions/checkout` 取派发所在的 ref（默认分支），再 `git fetch --depth=1 origin <sha> refs/notes/gates` 把被测提交当作对象读进来。理由：如果核验器与 `allowed_signers` 取自被测提交，一个改了 `allowed_signers` 或 `verify_note.py` 的提交就能给自己作保。`gatesplan.py` 本来就只从 git 对象读 `gates.yml` 与复合 action，不需要工作树。工作流的第一步还要求 `GITHUB_REF` 是默认分支，挡住 `gh workflow run --ref <别的分支>` 的误用。
+
+这挡不住有写权限的恶意者：他可以在任何分支上写一个直接打 `success` 的工作流。commit status 的可信度上限就是仓库写权限，这一点写进了 bootstrap.md 的诚实边界。能脱离 GitHub 复核的是 note 里的签名。
+
+### 失败也要写 status
+
+status 步骤 `if: always()`，verify 步骤的 outcome 不是 `success` 就写 `failure`，包括前面的 fetch 失败导致 verify 被跳过的情况。只有输入不是 40 位十六进制时不写，因为那时没有可写的提交。沉默的失败与没跑无法区分。
+
+### 实测
+
+本地 bare 仓库演练（2026-09-23，详细记录在任务报告里）：浅克隆 + 按 sha 取对象与 notes + `verify_note.py`，对一个两步的小 `gates.yml` 合计约 0.6s；对真实 `gates.yml`（173 个 run 步骤）`verify_note.py` 本身不到 1s。托管 runner 上加上排队、起机与 `actions/checkout`，预计整个 job 在 15s 到 30s 之间；这是估计，首次真实运行后以 run 的计时为准。预算按 floor 记，timeout 5 分钟。
+
 ## 与 #167 的关系
 
 #167 要的是「分片之后各分片步骤的并集仍等于原 job 的步骤」的核对。本刀的多重集比较（`bundle.multiset_diff`）就是这个并集检查的核心：它逐条点名少了的和多出的命令。
@@ -144,9 +181,11 @@
 
 ## 不做的（理由）
 
-- **签名。** 证据包本身不签名。签名要回答「谁的钥匙、怎么轮换、验证者从哪拿公钥」，这是第 2 刀的范围；在它之前签名只会给一个未定的信任模型盖章。
-- **GitHub 回写（status、check run、git notes）。** 同样是第 2 刀。本刀不碰 GitHub，也不需要 token；`github-token` 输入被丢弃，从不传给步骤。
-- **crun 后端。** 契约为它留好了位置，但 GPU 集群的派发、同步和锁卡是另一套问题，而且 `gates.yml` 今天没有 GPU 门禁（tile 的 GPU 差分在 `tile.yml`，不在本刀范围）。
+- **release 守卫接受外部证据。** `release.yml` 的 `verified` job 仍然只认 `ci.yml` 在该 sha 上的成功运行。让它也接受 `gates/maintainer`，要先回答维护者自证能不能替代托管 runner 的独立运行、以及 status 可被有写权限者伪造时守卫该读 status 还是自己验 note。这是第 4 刀。
+- **自动触发。** `publish.py` 之后派发工作流是手动的一步（脚本替维护者执行 `gh workflow run`）。不做推 `refs/notes/gates` 时自动触发：Actions 的 `push` 触发器按分支与 tag 过滤，推 notes ref 能否可靠地触发工作流没有实测；更要紧的是，自动触发意味着任何能推 notes 的人都能让 runner 替他写 status，而派发是一个需要写权限、留在 Actions 记录里的显式动作。
+- **发布红的证据。** `publish.py` 拒绝 `complete` 不为 true 的包。签名的「门禁没过」不能让任何人做任何事，没有绿 status 已经说明了这一点。
+- **多钥与轮换过渡期。** `allowed_signers` 只有一行。换钥即改这一行，旧 note 从此核不过；要保留旧证据的可核验性，需要按时间段接受多把钥，等真的换钥时再说。
+- **crun 后端。** 仍不做。契约为它留好了位置，但 GPU 集群的派发、同步和锁卡是另一套问题，而且 `gates.yml` 今天没有 GPU 门禁（tile 的 GPU 差分在 `tile.yml`，不在本刀范围）。
 - **时长字段。** 证据包不记时长。时长是机器画像的一部分（核数、负载、邻居），不是树的性质；它也无法被验证者复核。本地计时写在 `summary.json`，只给跑的人看。
 - **把 `/tmp/gate-emit`、8097 改掉。** 任务单明确本刀不改仓库源码，且 #168 正在改 `gates.yml`；这些列进上一节。
 - **解析复合 action 并逐步替换其内部步骤。** 复合 action 的内部是 GraalVM 下载与缓存，没有门禁；整体替换加指纹更简单，也更早暴露变化。

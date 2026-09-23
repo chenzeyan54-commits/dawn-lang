@@ -1,0 +1,10 @@
+# The one key whose signature makes an external gate bundle evidence.
+#
+# verify_note.py hands this file to `ssh-keygen -Y verify -I dawn-gates
+# -n dawn-gates`. The identity is a label, not an address, so the file names
+# no person or machine; the namespaces option confines the key to gate
+# evidence even if some other tool is ever pointed at this file. The private
+# half lives only on the maintainer's machine. Rotating it is an edit to this
+# line on the default branch, which is the copy verify-external.yml reads;
+# notes signed by the old key stop verifying from that commit on.
+dawn-gates namespaces="dawn-gates" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFX4PYQmPyZWcnKSZ8Mo6TnEn6IWLlrEhhEmSamoAG7u
