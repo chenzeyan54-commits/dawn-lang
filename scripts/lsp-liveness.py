@@ -9,7 +9,7 @@ debounced read loop can introduce (docs/audit/lsp-robustness-design.md §2.2),
 so the first three experiments existed *before* the loop changed, recording the
 undebounced numbers as the baseline the change had to hold.
 
-  hangup    after the client closes its end, the server exits within a limit.
+  hangup    after the client closes its end, the server exits 0 by itself.
   liveness  before the silent window starts, the server has already published
             diagnostics.
   idle      over the silent window, the server's CPU time stays near zero.
@@ -41,10 +41,24 @@ import time
 # 6.18 WSL2) and on the two stand-in loops of design §2.2.2.
 
 # Exit delay after hangup: 0.06s measured for ./bin/dawn lsp, 0.00s / 0.02s for
-# the C and JVM stand-ins. 5s is ~80x the observed worst case -- wide enough
-# that a loaded CI runner cannot trip it, narrow enough that the `hang` mutant
-# (which never exits at all) is caught by a mile.
-HANGUP_LIMIT_S = 5.0
+# the C and JVM stand-ins. The claim under test is "closing stdin makes the
+# server exit", not "it exits fast", so this is a give-up bound, not a latency
+# budget. It was 5s (~80x the observed worst case), and that still went red on
+# a well-behaved server on a shared machine at load average ~30, where a JVM
+# that has been told to exit can wait seconds for a core. Scaling by
+# os.getloadavg() was the other option and was not taken: the load average is
+# a one-minute trailing mean of the whole machine (on WSL2 it also counts
+# D-state tasks), not the CPU this process is getting now, so it would make
+# the threshold a guess about the scheduler that differs per machine.
+#
+# 60s (STARTUP_LIMIT_S, the bound for the same JVM doing far more work) keeps
+# the `hang` mutant red -- it never exits, so any finite bound catches it --
+# and costs nothing on the green path, which returns the moment the server
+# exits. What the old bound also carried, "the exit was caused by the close",
+# is asserted directly instead: the server must still be running when stdin
+# is closed (an exit before it proves nothing about hangup handling), and it
+# must end by exiting 0 on its own (a crash or a signal is not noticing EOF).
+HANGUP_LIMIT_S = 60.0
 
 # Silent window and its CPU budget: 0.01-0.08s measured over six 6s windows.
 # (The stand-ins answered 0.00s; the real server does not, so do not take that
@@ -234,14 +248,28 @@ def exp_hangup(cmd, results):
     try:
         srv.send(HANDSHAKE)
         seen = srv.await_output(b"", STARTUP_LIMIT_S)
+        if srv.proc.poll() is not None:
+            results.append(("hangup", False,
+                            "exited with status %d before the client closed "
+                            "stdin, so the close cannot have caused it"
+                            % srv.proc.returncode, head_of_stdout(srv)))
+            return
         srv.close_stdin()
         t0 = time.time()
         try:
-            srv.proc.wait(timeout=HANGUP_LIMIT_S)
+            rc = srv.proc.wait(timeout=HANGUP_LIMIT_S)
             dt = time.time() - t0
-            results.append(("hangup", True,
-                            "exited %.2fs after the client closed stdin "
-                            "(limit %.2fs)" % (dt, HANGUP_LIMIT_S), None))
+            if rc == 0:
+                results.append(("hangup", True,
+                                "exited 0 %.2fs after the client closed stdin "
+                                "(give-up bound %.0fs)" % (dt, HANGUP_LIMIT_S),
+                                None))
+            else:
+                results.append(("hangup", False,
+                                "ended with status %d %.2fs after the client "
+                                "closed stdin -- a crash or a signal, not a "
+                                "clean exit on end of input" % (rc, dt),
+                                head_of_stdout(srv)))
         except subprocess.TimeoutExpired:
             detail = ("        no stdout in %.0fs before the close, so the server "
                       "may never have started" % STARTUP_LIMIT_S) if seen is None \
