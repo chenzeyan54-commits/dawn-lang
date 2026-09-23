@@ -91,8 +91,24 @@ ADJUSTMENTS = {
     "adjust:runner-temp": "per-job-directory",
     "adjust:tmpdir": "per-job-directory",
     "adjust:literal-tmp-paths": "machine-wide-lock",
-    "adjust:playground-port": "free-port-per-run",
     "adjust:github-env-files": "per-step-files",
+    # The ones below are made only inside a prefix (run.sh --prefix), and a
+    # row appears only when the commit's gates.yml has something for them to
+    # act on (ADJUSTMENT_WHEN): a commit whose wasi-sdk step does not read
+    # WASI_SDK_TARBALL would carry a row describing nothing.
+    "adjust:wasi-sdk-tarball": "input-pack-tarball",
+    "adjust:npm-offline-cache": "input-pack-npm-cache",
+}
+
+# subject -> predicate over the planned jobs; subjects not named here are
+# always in the table.
+ADJUSTMENT_WHEN = {
+    "adjust:wasi-sdk-tarball": lambda jobs: any(
+        "WASI_SDK_TARBALL" in action["command"]
+        for job in jobs for action in job["actions"] if action["kind"] == "run"),
+    "adjust:npm-offline-cache": lambda jobs: any(
+        action["kind"] == "use" and action["uses"] == "actions/setup-node@v4"
+        for job in jobs for action in job["actions"]),
 }
 
 PLAN_JOB = "plan"
@@ -441,6 +457,8 @@ def substitution_rows(jobs):
                     seen.add("actions/cache@v4")
                     rows.append({"subject": "actions/cache@v4", "replacement": "noop"})
     for subject, replacement in ADJUSTMENTS.items():
+        if subject in ADJUSTMENT_WHEN and not ADJUSTMENT_WHEN[subject](jobs):
+            continue
         rows.append({"subject": subject, "replacement": replacement})
     return rows
 
@@ -584,6 +602,20 @@ def self_test(repo):
             failures.append("no plan -> external-all row")
     except PlanError as error:
         failures.append(f"refused the #168 shape: {error}")
+
+    # Conditional adjustment rows: present exactly when gates.yml gives them
+    # something to act on.
+    def subjects(text):
+        return {row["subject"] for row in substitution_rows(parse(text, ok_action))}
+    plain = subjects(doc({"a": job([{"run": "echo"}])}))
+    hooked = subjects(doc({"a": job([{"run": 'cp "$WASI_SDK_TARBALL" x'},
+                                     {"uses": "actions/setup-node@v4",
+                                      "with": {"node-version": "lts/*"}}])}))
+    for subject in ADJUSTMENT_WHEN:
+        if subject in plain:
+            failures.append(f"{subject} listed for a gates.yml with nothing for it to act on")
+        if subject not in hooked:
+            failures.append(f"{subject} missing where gates.yml has its hook")
 
     def tier_with(**jobs_over):
         base = {"plan": plan_job,

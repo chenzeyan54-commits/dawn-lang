@@ -228,7 +228,7 @@
    "./scripts/wasm-dom-contract/run.sh",
    "python3 scripts/incremental-semantics-contract/callee-publication.py",
    "python3 scripts/incremental-semantics-contract/scalar-replay.py --suite core --shards 3 --shard 2",
-   "v=34\nsha=b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4\ncurl -fsSL -o wasi-sdk.tar.gz \\\n  \"https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${v}/wasi-sdk-${v}.0-x86_64-linux.tar.gz\"\necho \"${sha}  wasi-sdk.tar.gz\" | sha256sum -c -\nmkdir -p \"$RUNNER_TEMP/wasi-sdk\"\ntar xzf wasi-sdk.tar.gz -C \"$RUNNER_TEMP/wasi-sdk\" --strip-components=1\nrm -f wasi-sdk.tar.gz\necho \"DAWN_WASM_CC=$RUNNER_TEMP/wasi-sdk/bin/clang\" >>\"$GITHUB_ENV\"\n"
+   "v=34\nsha=b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4\nif [ -n \"${WASI_SDK_TARBALL:-}\" ] && [ -f \"$WASI_SDK_TARBALL\" ]; then\n  cp \"$WASI_SDK_TARBALL\" wasi-sdk.tar.gz\nelse\n  curl -fsSL -o wasi-sdk.tar.gz \\\n    \"https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${v}/wasi-sdk-${v}.0-x86_64-linux.tar.gz\"\nfi\necho \"${sha}  wasi-sdk.tar.gz\" | sha256sum -c -\nmkdir -p \"$RUNNER_TEMP/wasi-sdk\"\ntar xzf wasi-sdk.tar.gz -C \"$RUNNER_TEMP/wasi-sdk\" --strip-components=1\nrm -f wasi-sdk.tar.gz\necho \"DAWN_WASM_CC=$RUNNER_TEMP/wasi-sdk/bin/clang\" >>\"$GITHUB_ENV\"\n"
   ]
  }
 }

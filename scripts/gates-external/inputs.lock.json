@@ -37,5 +37,14 @@
       "bin": "bin",
       "why": "the python3 of ubuntu-latest (24.04) is 3.12.3; a relocatable python-build-standalone build of the same version, because the host's 3.14 changes a gate's result"
     }
+  ],
+  "npm_caches": [
+    {
+      "name": "npm-play-ui",
+      "lockfile": "site/play-ui/package-lock.json",
+      "lockfile_sha256": "7bc2c186e0b842697c97428c2e5879a368681763a0e61efeddb3d69e1daf10b4",
+      "dir": "inputs/npm-cache",
+      "why": "site/build.sh runs npm install in site/play-ui (the docs job); an npm cache filled by npm ci from this lockfile, whose integrity fields npm checks on every tarball it takes from the cache"
+    }
   ]
 }

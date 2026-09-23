@@ -21,7 +21,8 @@ Layout (created by `layout`):
     inputs/MANIFEST.json what inputs.py put there, with a sha256 per item
     jobs/<sha>/          per-job checkouts and temp directories
     repos/<sha>.git      a bare repository made from a shipped git bundle (crun)
-    home/ tmp/ cache/    HOME, lock files, XDG_CACHE_HOME and the coursier cache
+    home/ tmp/ cache/    HOME (with the coursier cache where CI has it,
+                         home/.cache/coursier/v1), lock files, npm's cache
     out/<sha>/           bundle.json, summary.json, logs/, artifacts/
 
 The claim that a run stays inside the prefix is checked, not asserted:
@@ -33,7 +34,7 @@ Subcommands:
     env --prefix P                          print the whitelist environment
     exec --prefix P [--break-env-i] -- CMD  run CMD in that environment
     check-isolation --prefix P --marker M [--root R] [--exclude X] -- CMD
-    run-job ...                             the crun backend's remote half
+    run-job ... [--run-as UID:GID]          the crun backend's remote half
     selftest --prefix P [--break-env-i]     the JAVA_HOME leak control
 """
 
@@ -44,6 +45,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -64,6 +66,10 @@ def download(name):
         if item["name"] == name:
             return item
     raise KeyError(name)
+
+
+def archive_name(item):
+    return urllib.parse.unquote(item["url"].rsplit("/", 1)[1])
 
 
 def toolchain_dir(prefix, name):
@@ -105,10 +111,22 @@ def job_env(prefix, *, tmpdir=None, runner_temp=None, inherit_host=False):
         "HOME": str(prefix / "home"),
         "TMPDIR": str(tmpdir or prefix / "tmp"),
         "RUNNER_TEMP": str(runner_temp or prefix / "tmp"),
-        "XDG_CACHE_HOME": str(prefix / "cache"),
-        "COURSIER_CACHE": str(prefix / "cache" / "coursier"),
+        # Where they are on a runner, which sets neither: HOME/.cache and
+        # coursier's default under it. Not a separate cache/ directory,
+        # because gate scripts read ~/.cache/coursier/v1 directly
+        # (configured-lsp-contract.py and source-parse-counts.py find the
+        # ASM jar there, as the toolchain action's cache restores it).
+        "XDG_CACHE_HOME": str(coursier_home(prefix).parents[1]),
+        "COURSIER_CACHE": str(coursier_home(prefix)),
         "LANG": "C.UTF-8",
         "CI": "true",
+        # wasm-target's wasi-sdk step copies this instead of downloading it
+        # and checks the same pinned sha256 (the adjust:wasi-sdk-tarball row).
+        "WASI_SDK_TARBALL": str(prefix / "inputs" / "downloads" / archive_name(download("wasi-sdk"))),
+        # site/build.sh's `npm install` resolves from the input pack's cache
+        # and never from the registry (the adjust:npm-offline-cache row).
+        "npm_config_cache": str(prefix / "cache" / "npm"),
+        "npm_config_offline": "true",
     }
     if inherit_host:
         # The broken variant keeps whatever the host had for these, which is
@@ -135,19 +153,51 @@ def locked(prefix, name):
     return _Lock()
 
 
+def coursier_home(prefix):
+    return Path(prefix) / "home" / ".cache" / "coursier" / "v1"
+
+
 def restore_coursier(prefix):
-    """cache/coursier from inputs/coursier, once: the actions/cache restore.
+    """home/.cache/coursier/v1 from inputs/coursier, once: the actions/cache
+    restore of ~/.cache/coursier.
 
     Jobs write to the cache (coursier keeps lock and last-check files); the
     inputs copy stays as inputs.py hashed it.
     """
     import shutil
     prefix = Path(prefix)
-    cache = prefix / "cache" / "coursier"
+    cache = coursier_home(prefix)
     source = prefix / "inputs" / "coursier"
     with locked(prefix, "coursier-restore"):
         if not cache.exists() and source.is_dir():
             shutil.copytree(source, cache, symlinks=True)
+
+
+def restore_npm(prefix):
+    """cache/npm from inputs/npm-cache: what setup-node's `cache: npm` restores.
+
+    npm writes into its cache even offline (_logs, index touches), so jobs
+    get a copy and the input pack stays as inputs.py hashed it. The copy is
+    replaced when the pack's cache is not the one it was made from.
+    """
+    import shutil
+    prefix = Path(prefix)
+    cache = prefix / "cache" / "npm"
+    stamp = prefix / "cache" / "npm.source"
+    manifest = prefix / "inputs" / "MANIFEST.json"
+    if not manifest.exists():
+        return
+    rows = [row for row in json.loads(manifest.read_text())["items"] if row["kind"] == "npm-cache"]
+    if not rows:
+        return
+    source = prefix / rows[0]["path"]
+    want = rows[0]["tree_sha256"]
+    with locked(prefix, "npm-restore"):
+        if cache.exists() and stamp.exists() and stamp.read_text().strip() == want:
+            return
+        shutil.rmtree(cache, ignore_errors=True)
+        shutil.copytree(source, cache, symlinks=True)
+        stamp.write_text(want + "\n")
 
 
 # ------------------------------------------------------------ isolation
@@ -255,6 +305,111 @@ def cmd_selftest(args):
     return 0 if ok else 1
 
 
+# ------------------------------------------------------------ identity
+
+def parse_identity(text):
+    uid, _, gid = text.partition(":")
+    uid, gid = int(uid), int(gid or uid)
+    if uid == 0 or gid == 0:
+        raise SystemExit("run-job: --run-as must name a non-root uid and gid")
+    return uid, gid
+
+
+def writable_paths(prefix, sha):
+    """What a job may write: everything else in the prefix stays root's.
+
+    toolchain/ and inputs/ are not in the list, so a job cannot change the
+    toolchain it is measured with; jobs/<sha>/tree is crun's mirror of the
+    staging directory and is only read.
+    """
+    prefix = Path(prefix)
+    flat = [prefix / "jobs", prefix / "jobs" / sha, prefix / "repos", prefix / "out",
+            prefix / "out" / sha]
+    deep = [prefix / "home", prefix / "tmp", prefix / "cache", prefix / "repos" / f"{sha}.git"]
+    return flat, deep
+
+
+def hand_over(prefix, sha, uid, gid):
+    """As root: give the writable part of the prefix to uid:gid.
+
+    Only entries that are not already theirs are changed, so a second job of
+    the same run walks the trees and changes nothing. A previous run as root
+    (the negative control) leaves root-owned files behind; they are handed
+    over here rather than failing the job.
+    """
+    flat, deep = writable_paths(prefix, sha)
+    for path in flat:
+        path.mkdir(parents=True, exist_ok=True)
+    changed = 0
+
+    def own(path):
+        nonlocal changed
+        st = os.lstat(path)
+        if st.st_uid != uid or st.st_gid != gid:
+            os.lchown(path, uid, gid)
+            changed += 1
+    for path in flat:
+        own(path)
+    for root in deep:
+        if not root.exists():
+            continue
+        own(root)
+        for dirpath, dirnames, filenames in os.walk(root):
+            for name in dirnames + filenames:
+                own(os.path.join(dirpath, name))
+    return changed
+
+
+# The world-writable places a non-root job could still write outside the
+# prefix, each replaced by a per-job directory inside it.
+SHARED_TMP = ("/tmp", "/var/tmp", "/dev/shm")
+
+
+def private_tmp_dirs(prefix, sha, run_id, job_id, uid, gid):
+    base = Path(prefix) / "jobs" / sha / f"{run_id or 'run'}-{job_id}-shared-tmp"
+    dirs = {}
+    for target in SHARED_TMP:
+        path = base / target.strip("/").replace("/", "-")
+        path.mkdir(parents=True, exist_ok=True)
+        os.chown(path, uid, gid)
+        path.chmod(0o1777)
+        dirs[target] = path
+    os.chown(base, uid, gid)
+    return dirs
+
+
+def drop_to(uid, gid, argv, private_tmp):
+    """exec argv as uid:gid with no supplementary groups and no way back up.
+
+    setpriv rather than `unshare -U`: a user namespace that maps the job's
+    uid onto real root makes every root-owned file outside the prefix the
+    job's own, so it could write them; a real uid change leaves them root's.
+    --no-new-privs stops a setuid binary from undoing the drop.
+
+    A uid change does not close /tmp, /var/tmp and /dev/shm, which anyone
+    may write. With private_tmp ({target: dir}) the job gets a private mount
+    namespace in which each is a bind mount of a per-job directory in the
+    prefix: what CI gives a job (a fresh VM's /tmp), and a JVM's
+    java.io.tmpdir, which ignores TMPDIR, then lands in the prefix too.
+    """
+    drop = ["setpriv", f"--reuid={uid}", f"--regid={gid}", "--clear-groups", "--no-new-privs",
+            "--"] + argv
+    if not private_tmp:
+        os.execvp(drop[0], drop)
+    binds = " && ".join(f'mount --bind "{src}" {target}' for target, src in private_tmp.items())
+    os.execvp("unshare", ["unshare", "--mount", "--propagation", "private", "--", "sh", "-c",
+                          f'{binds} && exec "$@"', "sh"] + drop)
+
+
+def shared_tmp_state():
+    """What a job's /tmp looks like now: (mtime_ns, entries)."""
+    try:
+        st = os.stat("/tmp")
+        return st.st_mtime_ns, sorted(os.listdir("/tmp"))
+    except OSError:
+        return None, []
+
+
 def cmd_run_job(args):
     """Run one planned job inside the prefix: the crun backend's remote half.
 
@@ -262,12 +417,38 @@ def cmd_run_job(args):
     PyYAML and never re-plans), the commit's objects as a git bundle. The
     result is one fragment, written under out/<sha>/fragments and printed on
     one line for the controller to parse; logs stay in out/<sha>/logs.
+
+    With --run-as UID:GID and started as root (a cluster container gives
+    nothing else), the writable part of the prefix is handed to UID:GID and
+    this command re-executes itself as that identity, without --run-as.
+    Two contracts refuse root outright (atomic-write, unreadable-lock),
+    because root reads a chmod 000 file and writes an unwritable directory,
+    and CI runs every job as an ordinary user.
     """
     sys.path.insert(0, str(HERE))
     import backend_local
     prefix = Path(args.prefix).resolve()
     ensure_layout(prefix)
     sha = args.sha
+    if args.run_as:
+        uid, gid = parse_identity(args.run_as)
+        if os.getuid() != uid:
+            if os.getuid() != 0:
+                raise SystemExit(f"run-job: --run-as {uid}:{gid} needs root to start from; "
+                                 f"running as uid {os.getuid()}")
+            changed = hand_over(prefix, sha, uid, gid)
+            job_id = Path(args.job_file).stem
+            private = (private_tmp_dirs(prefix, sha, args.run_id, job_id, uid, gid)
+                       if args.private_tmp else None)
+            print(f"[{job_id}] run-job: handed {changed} prefix entr(ies) to {uid}:{gid}; "
+                  f"dropping root{'; /tmp, /var/tmp, /dev/shm private' if private else ''}",
+                  file=sys.stderr, flush=True)
+            drop_to(uid, gid, [sys.executable] + sys.orig_argv[1:], private)
+    elif os.getuid() == 0:
+        # Root without --run-as (the negative control): what a run as another
+        # uid left behind goes back to root, or git refuses the repository
+        # as of dubious ownership before any step runs.
+        hand_over(prefix, sha, 0, 0)
     repo = prefix / "repos" / f"{sha}.git"
     with locked(prefix, f"repo-{sha}"):
         if not repo.exists():
@@ -298,10 +479,19 @@ def cmd_run_job(args):
                                     "options": options, "log": log})
     backend.prepare()
     (out / "artifacts").mkdir(parents=True, exist_ok=True)
+    tmp_before = shared_tmp_state()
     try:
         result = backend.run_job(job, out / "artifacts")
     finally:
         backend.cleanup()
+    if args.private_tmp:
+        # The job's /tmp is a directory in the prefix here, so whether the
+        # job itself used /tmp is visible, apart from other tenants' writes
+        # to the real one, which check-isolation (outside) still sees.
+        tmp_after = shared_tmp_state()
+        log(f"private /tmp: {'modified' if tmp_after[0] != tmp_before[0] else 'untouched'} "
+            f"during the job, {len(tmp_after[1])} entr(ies) left "
+            f"{' '.join(tmp_after[1][:8])}")
     fragment = {"job": job["id"], "result": result, "toolchain": backend.toolchain()}
     fragments = out / "fragments"
     fragments.mkdir(parents=True, exist_ok=True)
@@ -343,6 +533,11 @@ def main():
     p.add_argument("--needs", default="")
     p.add_argument("--run-id", default="")
     p.add_argument("--opt", action="append", default=[])
+    p.add_argument("--run-as", default="",
+                   help="UID:GID to run the job as, dropped to from root with setpriv")
+    p.add_argument("--private-tmp", action="store_true",
+                   help="with --run-as: /tmp, /var/tmp and /dev/shm are per-job directories "
+                        "in the prefix (a private mount namespace)")
     args = parser.parse_args()
     if args.cmd == "layout":
         ensure_layout(args.prefix)

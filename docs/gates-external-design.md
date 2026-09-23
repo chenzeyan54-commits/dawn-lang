@@ -1,6 +1,6 @@
 # 在 GitHub 之外跑完整门禁集
 
-> 状态：**current**。第 1 刀（本地后端 + 证据包）、第 2 刀（签名、`refs/notes/gates`、`verify-external.yml` 回写 commit status）、第 3 刀（prefix、离线输入包、隔离证明、crun 后端）与第 4 刀（2026-09-24：release 守卫接受外部证据；`steps.lock.json` 进 tree-policy，关 #167）已落地；自动触发仍记在「不做的」。`verify-external.yml` 至今只在真实 GitHub 上跑过一次（run 35888113634，输入不是 40 位 sha，按设计失败且不写 status），还没有一次写出 `success`。
+> 状态：**current**。第 1 刀（本地后端 + 证据包）、第 2 刀（签名、`refs/notes/gates`、`verify-external.yml` 回写 commit status）、第 3 刀（prefix、离线输入包、隔离证明、crun 后端）、第 3b′ 刀（集群上 `complete = true`：启动器 shim、非 root 与私有 `/tmp`、wasi-sdk 与 npm 离线）与第 4 刀（2026-09-24：release 守卫接受外部证据；`steps.lock.json` 进 tree-policy，关 #167）已落地；自动触发仍记在「不做的」。`verify-external.yml` 至今只在真实 GitHub 上跑过一次（run 35888113634，输入不是 40 位 sha，按设计失败且不写 status），还没有一次写出 `success`。
 
 ## 要解决的问题
 
@@ -65,8 +65,9 @@
 | `adjust:runner-temp` | `per-job-directory` | `RUNNER_TEMP` 与 `${{ runner.temp }}` 指向每 job 一个的目录，放在 worktree 外，免得脏了树。 |
 | `adjust:tmpdir` | `per-job-directory` | `TMPDIR` 每 job 一个，`mktemp` 类的临时文件互不相见。runner 上没有设它；设了只会更隔离。 |
 | `adjust:literal-tmp-paths` | `machine-wide-lock` | 步骤里写死的 `/tmp/<名字>`（今天只有 `contracts-1` 的 `/tmp/gate-emit`）在同一台机器的所有检出之间共享。按字面路径取一把机器级文件锁，两个 `run.sh` 不会同时用它；挡不住别的程序。路径是从命令文本里扫出来的，不是手写的表。 |
-| `adjust:playground-port` | `free-port-per-run` | `playground/test/contract.sh` 默认 8097，结束时 `fuser -k` 这个端口。WSL2 下 8097 可能落在 WinNAT 保留段里 bind 失败；共享机器上 `fuser -k 8097` 还会杀掉别人的进程。每次运行挑一个空闲端口经 `PLAY_TEST_PORT` 传入（该脚本本来就支持这个变量）。 |
 | `adjust:github-env-files` | `per-step-files` | `GITHUB_ENV`、`GITHUB_PATH` 等是每步一个文件，`ENV` 与 `PATH` 按 runner 的规则带到后续步骤。`wasm-target` 靠它把 `DAWN_WASM_CC` 与 `DAWNC_BIN` 传给后面的步骤。 |
+| `adjust:npm-offline-cache` | `input-pack-npm-cache` | 第 3b′ 刀加的。prefix 模式下 `npm_config_cache` 指向 prefix 的 `cache/npm`（输入包 npm 缓存的副本：npm 离线也往缓存里写日志），`npm_config_offline=true`。`docs` job 的 `site/build.sh` 跑 `npm install`，于是只从缓存取包，拿不到就 `ENOTCACHED` 红，不会悄悄去 registry。步骤本身不改。只在该提交用 `actions/setup-node` 时列出。 |
+| `adjust:wasi-sdk-tarball` | `input-pack-tarball` | 第 3b′ 刀加的。prefix 模式下环境里有 `WASI_SDK_TARBALL`，指向输入包里已校验的 wasi-sdk 原件；`wasm-target` 的步骤见到它就拷贝而不下载，sha256 照旧对两条路径都核。只在该提交的 `gates.yml` 读这个变量时才列出（`gatesplan.ADJUSTMENT_WHEN`），否则这一行描述的是不存在的东西。不带 `--prefix` 时不设，步骤照旧下载。 |
 
 另外，宿主环境里的 `GITHUB_*`、`RUNNER_*`、`DAWN_*`、`JAVA_HOME` 等变量在交给步骤前被清掉，再设 `CI=true`。`DAWN_SEED` 之类的变量会悄悄改变工具链的来源，不能从开发者的 shell 漏进来。
 
@@ -172,6 +173,8 @@ status 步骤 `if: always()`，verify 步骤的 outcome 不是 `success` 就写 
 
 prefix 模式下一个 job 的环境等价于 `env -i` 加白名单：`PATH` = prefix 各工具链 bin + `/usr/bin:/bin`（git、cc、bash、curl、coreutils 仍来自系统）；`JAVA_HOME`、`GRAALVM_HOME` 指 prefix 的 GraalVM；`HOME`、`TMPDIR`、`RUNNER_TEMP`、`XDG_CACHE_HOME`、`COURSIER_CACHE` 都在 prefix 下；`LANG=C.UTF-8`（ubuntu-latest 的值；没有 locale 时 JVM 的文件名编码退回 ASCII）；`CI=true`；加上本地后端本来就设的每 job `GITHUB_*`。
 
+`XDG_CACHE_HOME` 与 `COURSIER_CACHE` 取的是 runner 上的默认位置（`$HOME/.cache`、`$HOME/.cache/coursier/v1`，`HOME` 在 prefix 里），coursier 缓存从输入包恢复到那里。第 3 刀曾把它们放在 prefix 单独的 `cache/` 下；第 3b′ 刀在当前 main 上跑全套时，`configured-lsp-contract.py` 与 `source-parse-counts.py` 以退出 2 红：它们不看 `COURSIER_CACHE`，直接在 `~/.cache/coursier/v1/https` 下找 ASM 9.7.1，而 CI 的工具链 action 恰好把缓存恢复在 `~/.cache/coursier`。环境与 CI 不同的地方就是会被某个脚本读到的地方，所以改成与 CI 相同，而不是改脚本。
+
 偏离任务单的一处：白名单里**没有** `DAWN_SEED`。CI 不设它；设了会让 `seedjar.sh` 跳过校验并打印一行 CI 不会打印的警告。种子照 cache restore 的方式拷进 `.dawn/seeds`，`seedjar.sh` 照常校验。
 
 另一处：prefix 模式的检出是 `git clone --shared`，不是 `git worktree add`。worktree 会往源仓库的 `.git/worktrees` 写东西，那在 prefix 外面。
@@ -182,7 +185,13 @@ prefix 模式下一个 job 的环境等价于 `env -i` 加白名单：`PATH` = p
 
 `prefix.py check-isolation` 在 prefix 里放一个 marker，跑命令，再对 `/` 与 prefix 所在文件系统各做一次 `find -xdev`（剪掉 `/proc` `/sys` `/dev` `/run`、prefix 本身与 `--exclude` 列出的路径），列出 mtime 或 ctime 新于 marker 的一切。
 
-实测中查出并修掉的一处：HotSpot 把 `hsperfdata_<用户>` 写在写死的 `/tmp`，不看 `TMPDIR`。后端探测 JDK 版本的那次 `java -version` 因此在 prefix 外留了痕迹。改为在命令行上加 `-XX:-UsePerfData`；不用 `JAVA_TOOL_OPTIONS`，因为它会让每个 JVM 往 stderr 打一行 `Picked up ...`，改变被测输出。门禁步骤里自己起的 JVM 仍会写 `/tmp/hsperfdata_<用户>`，全套运行时它会出现在清单里，这是已知的一条，见「不做的」。
+实测中查出并修掉的一处：HotSpot 把 `hsperfdata_<用户>` 写在写死的 `/tmp`，不看 `TMPDIR`。第 3 刀只在后端探测 JDK 版本的那次 `java -version` 命令行上加了 `-XX:-UsePerfData`，门禁步骤自己起的 JVM 仍然写，集群全套运行后 `/tmp/hsperfdata_root` 的 mtime 落在运行窗口里。
+
+第 3b′ 刀改成 prefix 布局的一部分：`inputs.py` 解包 GraalVM 之后把 `bin/java` 改名 `bin/java.real`，在原位置写一个 shim，`exec` 同目录的 `java.real` 并把 `-XX:-UsePerfData` 放在调用者参数之前。shim 的内容与 prefix 在哪无关（它按自己的位置找 `java.real`），所以工具链的目录树摘要在本机与集群上相同。锁里的 GraalVM 条目不变：原件还是那些字节，shim 是 `build`/`install` 解包后写的；`MANIFEST.json` 记下原件里 `bin/java` 的 sha256，`verify` 核 `java.real` 等于它、shim 逐字节等于 `inputs.py` 里的那份。不用 `JAVA_TOOL_OPTIONS`/`JDK_JAVA_OPTIONS`：它们让每个 JVM 往 stderr 打一行 `Picked up ...`，改变被测输出。第一版只包了 `java`，理由是门禁里起 JVM 的都是它；这个判断错了：incremental 家族的七八个合约脚本直接跑 `javac --release 21` 与 `jar cf`，`configured-lsp-contract.py` 也按 `$JAVA_HOME/bin/javac` 调用。所以现在 `bin/` 里每个普通文件启动器都换成 shim（符号链接如 `native-image` 指向 `lib/`，不动）：`java` 前置 `-XX:-UsePerfData`，其余前置 `-J-XX:-UsePerfData`（JDK 启动器把 `-J` 选项交给自己的 JVM）。`MANIFEST.json` 记原件里每个启动器的 sha256（从原件读，不从解包后的树读）。
+
+shim 还要保住 `argv[0]`。第一版用 `/bin/sh` 直接 `exec .../java.real`，进程的 `argv[0]` 就成了 `java.real`；`scripts/selfhost-bench.py` 按 `argv[0]` 的基名是不是 `java` 认 JVM，于是 `compiler-weight-contract` 与 `dependency-heap-contract` 在集群全套里以「role parent/compiler is missing an actual MaxHeapSize」红。现在 shim 是 bash，`exec -a "$0"` 保留调用者的 `argv[0]`；启动器按 `/proc/self/exe` 找自己的 home，`java.home` 不变。shim 也不再 fork（不用 `dirname`/`readlink`，用 `${0%/*}`）：exec 之前进程还是 bash，而那个 bench 每 2ms 采一次 `/proc`。带 fork 的版本在本机把 `compiler-weight-contract` 的一个变异体对照跑红过一次（`sampling-200ms` 多红了 `bench.vmhwm_reads_proc`），另两次绿；不 fork 的版本在集群上两个 job 各连跑两次全绿，隔离 0 条。
+
+负控（本机，`bwrap` 给命令一个私有 `/tmp`）：在 prefix 里的新检出上跑会触发重建的 `./bin/dawn --version`，没有 shim 时私有 `/tmp` 里出现 `hsperfdata_dawn`，有 shim 时为空。逐个启动器同样：`java.real -version`、`java.real -cp . A`、`javac.real -d`、`jar.real cf` 各留下 `hsperfdata_dawn`，经 shim 的同一命令都为空。把 `java.real` 或 `javac.real` 改一个字节，`inputs.py verify` 红（目录树摘要与「不是原件的启动器」两条），复原后绿。
 
 共享工作站上 `find` 不可能为空：本机同时有别的写者、编辑器、定时任务（零点的 dpkg 备份与 logrotate 就撞进过一次窗口）。所以本机的证明分两层：
 
@@ -245,9 +254,68 @@ prefix 模式下一个 job 的环境等价于 `env -i` 加白名单：`PATH` = p
 | `wasm-target` | 钉住的 wasi-sdk（exit 28，curl 超时） | 容器没有外网。prefix 里有同一个包，但步骤自己下载，见「不做的」 |
 | `docs` | `playground/test/contract.sh`（exit 127） | 合约本身 10 passed、0 failed（python 3.12.3 下 #170 同样不复现），收尾的 `fuser -k` 找不到命令：容器没有 psmisc，而本任务不许 apt。其后的 site 构建（`npm install` 要外网）因此没有执行 |
 
-全套运行没有套隔离检查（任务单只要求一次，放在不起 JVM 的 tree-policy 上）。事后只读查看，容器里 `/tmp/hsperfdata_root` 的 mtime 落在全套运行窗口内，目录为空：门禁步骤起的 JVM 在 prefix 外留了痕迹，就是「不做的」里 hsperfdata 那一条。在集群上它违反「不写 prefix 之外」，修法（每 job 一个指进 prefix 的私有 `/tmp`，要容器允许 `unshare -m`）尚未验证。
+全套运行没有套隔离检查（任务单只要求一次，放在不起 JVM 的 tree-policy 上）。事后只读查看，容器里 `/tmp/hsperfdata_root` 的 mtime 落在全套运行窗口内，目录为空：门禁步骤起的 JVM 在 prefix 外留了痕迹，就是「不做的」里 hsperfdata 那一条。在集群上它违反「不写 prefix 之外」，修法（每 job 一个指进 prefix 的私有 `/tmp`，要容器允许 `unshare -m`）尚未验证。第 3b′ 刀已收掉：启动器 shim 关掉 hsperfdata，私有 `/tmp` 实测可用，全套 39 个 job 都套了隔离检查，见下节。
 
-要在集群上拿到 `complete = true`，还差：以非 root 身份执行 job（例如 `setpriv` 降到一个无特权 uid，prefix 相应 chown，不需要写 prefix 外）；`wasm-target` 能用预置的 wasi-sdk；`fuser` 进输入包或合约不再依赖它；npm 依赖进输入包。前一条是后端的事，后三条要改 `gates.yml` 或被测脚本，都不在本刀。
+要在集群上拿到 `complete = true`，还差：以非 root 身份执行 job（例如 `setpriv` 降到一个无特权 uid，prefix 相应 chown，不需要写 prefix 外）；`wasm-target` 能用预置的 wasi-sdk；`fuser` 进输入包或合约不再依赖它；npm 依赖进输入包。前一条是后端的事，后三条要改 `gates.yml` 或被测脚本，都不在本刀。（第 3b′ 刀：非 root、wasi-sdk、npm 三条已做；`fuser` 由 #173 从合约里去掉。）
+
+## 第 3b′ 刀：集群跑到 complete
+
+第 3 刀的集群全套 31/35 绿，四个红 job 全是容器事实，另有 hsperfdata 一条隔离破规。本刀逐条收掉，每条一个提交。
+
+### 非 root 执行
+
+容器里只有 root；CI 的每个 job 是普通用户，`atomic-write-contract` 与 `java-target-classpath-contract` 的 unreadable-lock 都在 root 下必红（root 读得了 `chmod 000`、写得进不可写目录）。做法：`prefix.py run-job --run-as 20000:20000` 以 root 启动，先把 prefix 里 job 该写的部分（`home/`、`tmp/`、`cache/`、`repos/<sha>.git`、`jobs/<sha>`、`out/<sha>`）交给该身份，只改属主不对的条目；再经 `setpriv --reuid --regid --clear-groups --no-new-privs` 以该身份重新执行自己。`toolchain/` 与 `inputs/` 仍归 root，job 改不了量它的工具链。
+
+选 `setpriv` 不选 `unshare -U`：用户命名空间若把 job 的 uid 映射到真 root，prefix 外所有 root 的文件在 job 眼里都成了自己的，照样可写；真实的 uid 切换让它们仍归 root。uid 20000 在容器的 `/etc/passwd` 里没有条目，这是有意的：借镜像里现成的 `nobody`，就与容器里别的以 `nobody` 跑的东西共享 prefix 的写权限。没有条目的代价实测过：JVM 的 `user.name` 是 `?`，`user.home` 回落到 `$HOME`（prefix 的 `home/`），python 的 `~` 同样取 `$HOME`。反倒是以 root 跑时 JVM 的 `user.home` 取自 passwd，是 prefix 外的 `/root`。
+
+uid 切换挡不住 `/tmp`、`/var/tmp`、`/dev/shm`：它们人人可写。第一次非 root 试跑时两个 job 的隔离检查都报了 `/tmp` 的 mtime（目录里没留下东西，是建了又删）。容器是多人共用的，这一条分不清是谁写的；门禁里的 JVM 本来就会写：`java.io.tmpdir` 不看 `TMPDIR`，默认就是 `/tmp`。所以 job 另得一个私有 mount 命名空间（容器允许 `unshare -m`，实测过），里面这三处各是 prefix 里一个每 job 的目录（`jobs/<sha>/<run>-<job>-shared-tmp/`）的 bind mount。这与 CI 一致：每个 job 是一台新 VM，`/tmp` 本来就是它自己的。`run-job` 在 job 结束时记录私有 `/tmp` 有没有被动过，于是「job 自己用了 `/tmp`」与「别的租户写了真 `/tmp`」分得开；后者仍由外面的 `check-isolation` 看见。`run-as=root` 是负控，`private-tmp=0` 保留共享的三处。
+
+实测（2026-09-24，集群，08a5232e，`--only contracts-2,java-target-classpath --jobs 2`，`isolation=1`）：
+
+| 运行 | 结果 |
+|---|---|
+| uid 20000，共享 `/tmp` | 两个 job 全绿（415s、454s）；隔离检查各报 `OUTSIDE /tmp` 一条 |
+| uid 20000，私有 `/tmp`（默认） | 两个 job 全绿（415s、452s，墙钟 501s）；隔离检查各 0 条；两个 job 的私有 `/tmp` 都被动过、结束时 0 个条目，所以上一行的 `/tmp` 是 job 自己写的 |
+| `run-as=root`（负控） | `contracts-2` 的 atomic write 退出 1：`this contract must not run as root`；`java-target-classpath` 第一步退出 1：`unreadable-lock did not fail closed on stderr with exit 1` |
+
+负控第一次跑时两个 job 都在检出一步失败：上一次以 uid 20000 建的 `repos/<sha>.git` 归 20000，git 以 root 打开时报 dubious ownership。所以 root 模式下 `run-job` 同样把可写部分交回 root。
+
+### wasi-sdk 步骤离线
+
+`gates.yml` 的 `wasm-target` 里「the pinned wasi-sdk」一步改成：`${WASI_SDK_TARBALL:-}` 指向一个文件就 `cp` 它，否则照旧 `curl`；之后的 `sha256sum -c` 不动，两条路径都执行。钉住的是摘要，字节从哪来不改变它核的是什么。CI 不设这个变量，走 `curl` 分支，行为与墙钟都不变：改动只是一个分支条件，没有新的下载或计算（`check-gate-budgets.py` 照旧绿，不动预算行）。prefix 的白名单环境设它，指向 `inputs/downloads/` 里 `inputs.py` 按锁核过的原件；替换表因此多一行 `adjust:wasi-sdk-tarball`。
+
+负控（本机，直接执行该步骤的 `run:` 原文）：变量指向改了一个字节的原件，`sha256sum` 报 `FAILED`，退出 1；指向输入包原件、在 `bwrap --unshare-net` 里跑，`OK`，退出 0；不设变量、同样无网，`curl` 报 `Could not resolve host`，退出 6；不设变量、有网（CI 的路径），`OK`，13s。
+
+### npm 依赖离线
+
+`inputs.lock.json` 加 `npm_caches` 一项：`site/play-ui/package-lock.json` 的 sha256。`inputs.py build` 在 prefix 里拷出 `package.json` 与这份 lockfile，用 prefix 的 node 跑 `npm ci --ignore-scripts`，缓存落在 `inputs/npm-cache`（26 个包，7.1 MiB，3s），再删掉 npm 自己的 `_logs`。锁钉的是 lockfile 而不是缓存的字节：npm 的索引里带时间，两次填出来的缓存不同；每个 tarball 从缓存取出时 npm 按 lockfile 的 `integrity`（sha512）核，所以钉 lockfile 就钉住了内容。`MANIFEST.json` 记这次填出的缓存的目录树摘要，`verify` 按它核，并核 lockfile 摘要与锁一致（给 `--repo` 时还核仓库里的 lockfile）。某个提交改了 lockfile，锁就得一起改，否则 `build` 拒绝；而旧缓存下那个提交的 `npm install` 会 `ENOTCACHED` 红，不会静默联网。
+
+job 看到的是 `cache/npm`，由后端在 prepare 时从 `inputs/npm-cache` 拷一份（按摘要判断是否需要重拷），因为 npm 离线也会往缓存里写。环境里 `npm_config_cache` 指向它、`npm_config_offline=true`，`gates.yml` 与 `site/build.sh` 都不改。`site/build.sh` 之后没有别的步骤联网（`vite build`、`gen-builtins` 都只读本地）。
+
+负控（本机，`bwrap --unshare-net`，prefix 环境）：完整缓存下 `npm ci --offline` 装上 26 个包，退出 0；删掉缓存里 `@codemirror/state` 的内容文件后 `ENOTCACHED`，退出 1；`site/build.sh` 用的 `npm install --silent`（只靠环境注入的离线）退出 0。端到端：整个 `run.sh --only docs`（08a5232e，本机 prefix）套在 `bwrap --unshare-net` 里跑，6 步全绿，job 268s，`site/build.sh` 的日志里 `vite build` 建出了 `playground.js`（765.56 kB），不是跳过。
+
+一处与 CI 不同，照实记下：prefix 的 node 20.20.2 带 npm 10.8.2，`npm install` 会改写检出里的 `package-lock.json`（去掉 npm 11 写进去的 `libc` 字段）。CI 的 `lts/*` 自带的 npm 版本不同。之后没有步骤检查工作树是否干净；`site-dist-diff.sh` 的快照里带着改写后的文件，但 JVM 与 native 两条腿读的是同一份快照，比较不受影响。这属于「不做的」里「node 版本与 `lts/*`」那一条。
+
+### 途中查出的三处 prefix 与 CI 的差异
+
+跑全套时又红了三处，都是 prefix 的环境与 CI 不同，都改在 `scripts/gates-external/`，没有改被测脚本：
+
+1. **coursier 缓存的位置。** 见「执行壳」一节：两个脚本直接读 `~/.cache/coursier/v1`。
+2. **只包了 `java`。** `javac`、`jar` 起的 JVM 照样写 hsperfdata。改成包 `bin/` 里全部启动器，见「隔离证明」。
+3. **shim 改了 `argv[0]`。** `selfhost-bench.py` 按 `argv[0]` 认 JVM，两个 heap 合约红。改成 `exec -a`，见「隔离证明」。
+
+### 实测（2026-09-24，第 3b′ 刀，集群 `--jobs 16`，每个 job 套隔离检查）
+
+| 运行 | 墙钟 | 结果 |
+|---|---|---|
+| main 97af76ce（第 2、3 处修正之前） | 1570s | 39 个 job 里 36 个绿；红：`wasm-target`（main 的 wasi-sdk 步骤还只会 `curl`，exit 28）、`compiler-weight-contract` 与 `dependency-heap-contract`（上面第 3 处）。39 次隔离检查全部 0 条 |
+| 5f18182b（main 984d2076 + 本刀） | 1730s | **`complete = true`**，175 个 run 步骤全部执行、全部退出 0，39 个 job 全绿；39 次隔离检查全部 0 条；`bundle.py verify` 复算一致 |
+
+5f18182b 那次各 job 的秒数（含 crun 推送与两次 `find`）：最长的是 `incremental-2` 921s、`test` 884s、`syntax-mutants-1/2` 878/871s、`incremental-4` 867s；`wasm-target` 497s（wasi-sdk 走输入包），`docs` 449s（npm 离线）。工具链字段：`java` `21.0.2+13-jvmci-23.1-b30`、`python` `3.12.3`、`node` `v20.20.2`、种子 `a320e3ee…e679`，`cc` 是集群的 gcc 11.4。
+
+本机 prefix 全套（5f18182b，`--jobs 8`，load 约 28）：墙钟 4893s，39 个 job 里 38 个绿，`complete = false`。红的是 `compiler-weight-contract` 的一个变异体对照：`sampling-200ms` 预期只让「采样间隔」一条断言红，负载下 `bench.vmhwm_reads_proc` 也红了。不是 shim 造成的：同一检出单跑这个合约，用不带 shim 的同一 GraalVM 构建，在 24 个 busy loop（load 约 25）下以逐字相同的断言红过；空闲时带 shim 本机两次绿、集群三次绿。两份证据包的 `toolchain` 里 `java`、`python`、`node`、种子摘要相等，`cc` 不等（集群 gcc 11.4、本机 gcc 13.3，cc 不在输入包里，见「不做的」）。
+
+私有 `/tmp` 也说明了它为什么必要：5f18182b 那次有 20 个 job 结束时在自己的 `/tmp` 里留了东西（`dawn-selfhost-stdlib`、`dawn-selfhost-lsp-def`、`dawn-lsp-standalone-close-*.tmp`、`dawn-map-fold-*`、`dawn-spike-io-cli` 等）。这些是门禁脚本与 JVM 直接写 `/tmp` 的产物，CI 上随 VM 消失；没有私有 `/tmp` 时它们会留在共享容器的 `/tmp` 里。没有一个 job 留下 `hsperfdata_*`。
 
 ## 与 #167 的关系
 
@@ -285,7 +353,7 @@ prefix 模式下一个 job 的环境等价于 `env -i` 加白名单：`PATH` = p
 这些是本刀在 `run.sh` 里绕开、但没有在仓库源码里改掉的债：
 
 - `contracts-1` 的 `/tmp/gate-emit` 写死在 `gates.yml`。本地用机器级锁串行化，挡不住其他程序；应改成 `$RUNNER_TEMP/gate-emit`。
-- `playground/test/contract.sh` 默认 8097 并在退出时 `fuser -k` 该端口。本地用 `PLAY_TEST_PORT` 绕开；默认值应改成向内核要空闲端口，`fuser -k` 应改成只杀自己起的进程。
+- ~~`playground/test/contract.sh` 默认 8097 并在退出时 `fuser -k` 该端口。~~ #173 已改：端口向内核要，收尾只杀自己起的进程组。原先的 `adjust:playground-port`（每次运行挑空闲端口经 `PLAY_TEST_PORT` 传入）随之在第 3b′ 刀删掉；`PLAY_TEST_PORT` 仍在宿主环境的清除名单里，开发者 shell 里钉的值不会漏进来。
 - `scripts/spike-native/run.sh` 在编不出 ASan 时只打印一行 note 并把 asan 检查记为 blocked，job 仍然绿。在 CI 上无害（runner 有 ASan），在外部后端上会让「跑过了」少一个维度而证据包看不出来。应让缺 ASan 成为失败，或至少成为可机读的结果。
 - 本地后端用宿主 PATH 上的 `python3`、`node`，只把版本写进证据包，不钉版本。上面的 3.14 实例说明这会改变结果；接入前应能钉住与 ubuntu-latest 一致的解释器版本，或者让不一致成为拒绝。
 - `lsp-liveness.py` 的 5s 上限在高并行的共享机器上会误红；外部后端要么降低并行度，要么这个检查要按机器负载给出可解释的余量。
@@ -297,12 +365,10 @@ prefix 模式下一个 job 的环境等价于 `env -i` 加白名单：`PATH` = p
 - **发布红的证据。** `publish.py` 拒绝 `complete` 不为 true 的包。签名的「门禁没过」不能让任何人做任何事，没有绿 status 已经说明了这一点。
 - **多钥与轮换过渡期。** `allowed_signers` 只有一行。换钥即改这一行，旧 note 从此核不过；要保留旧证据的可核验性，需要按时间段接受多把钥，等真的换钥时再说。
 - **crun 后端占卡。** crun 后端只用零卡运行（`-n 0`）。`gates.yml` 今天没有 GPU 门禁（tile 的 GPU 差分在 `tile.yml`，不在本刀范围）。
-- **集群上以非 root 执行。** 见上面 crun 实测一节；两个合约因 root 而红。本刀只记录，不在集群上建用户（那要写 `/etc/passwd`，在 prefix 外）。
+- **在集群上建用户。** 非 root 执行（第 3b′ 刀）用的是没有 passwd 条目的 uid；建用户要写 `/etc/passwd`，在 prefix 外。
 - **时长字段。** 证据包不记时长。时长是机器画像的一部分（核数、负载、邻居），不是树的性质；它也无法被验证者复核。本地计时写在 `summary.json`，只给跑的人看。
-- **把 `/tmp/gate-emit`、8097 改掉。** 任务单明确本刀不改仓库源码，且 #168 正在改 `gates.yml`；这些列进上一节。
+- **把 `/tmp/gate-emit` 改掉。** 任务单明确本刀不改仓库源码，且 #168 正在改 `gates.yml`；列进上一节。（8097 与 `fuser -k` 已由 #173 改掉。）
 - **解析复合 action 并逐步替换其内部步骤。** 复合 action 的内部是 GraalVM 下载与缓存，没有门禁；整体替换加指纹更简单，也更早暴露变化。
 - **prefix 里的 cc。** C 编译器仍来自 `/usr/bin`（本机 gcc 13.3，集群 gcc 11.4），证据包的 `toolchain.cc` 会随机器变化。把 gcc 连同 libasan 打进输入包是另一件事；集群上又不允许 apt。
 - **node 版本与 `lts/*`。** `docs` job 在 CI 上用 `setup-node` 的 `lts/*`，按任务单这里钉的是 20 LTS；两者不一定相同，证据包如实记录 `node` 字段。
-- **wasi-sdk 步骤离线。** `wasm-target` 的步骤自己 `curl` wasi-sdk。prefix 里已经有同一个钉住的包，但让步骤用它要改 `gates.yml`（例如「预置目录存在且摘要对就不下载」），不在本刀范围；离线机器上这一步会红，照实记录。`docs` 的 `npm install` 同理。
-- **JVM 的 `/tmp/hsperfdata_<用户>`。** HotSpot 的这个路径写死为 `/tmp`。能关掉它的只有 JVM 参数，放进 `JAVA_TOOL_OPTIONS` 会改 stderr；给 prefix 的 `java` 套一层包装又会让工具链不再是 CI 的那个。全套运行的隔离清单会列出这一条。
 - **覆盖 `tile.yml`、`editor-grammar.yml`、`nightly.yml`。** 任务单的范围是 `gates.yml`。前两个是按路径触发的门禁工作流，`tile.yml` 需要 GPU；把它们纳入是 crun 后端那一刀的事。

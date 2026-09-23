@@ -32,7 +32,8 @@ scripts/gates-external/prefix.py selftest --prefix ~/dawn-gates [--break-env-i]
 
 # on the cluster, from a local prefix that holds the input pack
 scripts/gates-external/run.sh --sha <sha> --backend crun --prefix ~/dawn-gates --jobs 16 \
-    --backend-opt remote-prefix=<cluster dir> [--backend-opt isolation=1] [--only ...]
+    --backend-opt remote-prefix=<cluster dir> [--backend-opt isolation=1] [--only ...] \
+    [--backend-opt run-as=UID:GID|root] [--backend-opt private-tmp=0]
 ```
 
 Exit status of `run.sh`: 0 complete, 1 ran but not complete, 2 refused to
@@ -115,13 +116,29 @@ cache, `MANIFEST.json`), `jobs/<sha>/`, `home/`, `tmp/`, `cache/`,
 A prefix job's environment is not the caller's minus a drop list; it is built
 from nothing (the effect of `env -i`): `PATH` is the toolchain bins then
 `/usr/bin:/bin`, `JAVA_HOME` and `GRAALVM_HOME` the prefix's GraalVM, `HOME`,
-`TMPDIR`, `RUNNER_TEMP`, `XDG_CACHE_HOME` and `COURSIER_CACHE` under the prefix,
+`TMPDIR`, `RUNNER_TEMP`, `XDG_CACHE_HOME` and `COURSIER_CACHE` under the prefix
+(the last two at a runner's defaults below `HOME`, `.cache` and
+`.cache/coursier/v1`, because gate scripts read `~/.cache/coursier/v1` directly),
 `LANG=C.UTF-8`, `CI=true`, plus the per-job `GITHUB_*` values the local
 backend already sets. `DAWN_SEED` is not set: CI does not set it, and it makes
 `seedjar.sh` skip its checksum. The seed reaches a job the way the cache
 restore does, copied into `.dawn/seeds`. A job's checkout is a
 `git clone --shared` under the prefix, not a worktree, because a worktree
 writes into the source repository's `.git`.
+
+One change is made to an unpacked toolchain: each GraalVM launcher in `bin/`
+(`java`, `javac`, `jar`, ...) is a shim that execs `bin/<name>.real` with
+`-XX:-UsePerfData` first (`-J-XX:-UsePerfData` for all but `java`), because
+HotSpot writes `/tmp/hsperfdata_<user>` for every JVM whatever `TMPDIR` says,
+and the environment variables that could carry the flag print `Picked up ...`
+on stderr. The lock entry is the archive and does not change; `verify` checks
+each shim's bytes and that each `.real` is the archive's launcher.
+
+The npm cache is the one input whose bytes are not pinned: npm's index
+carries times, so two fills differ. The lock pins the lockfile it is filled
+from (`npm_caches`), npm checks every tarball it takes from the cache against
+that lockfile's integrity fields, and MANIFEST records the tree digest of the
+cache that was built, which `verify` holds it to.
 
 `inputs.py` trusts only the digests in `inputs.lock.json`. The seed jar and std
 are checked against `scripts/seed-checksums.txt` and `seed-std-checksums.txt`,
@@ -139,6 +156,19 @@ command instead of waiting to be found.
 Without `--prefix` nothing changes: the host-environment path of the first
 knife is kept as it was.
 
+On the cluster a container gives root and nothing else, while CI runs every
+job as an ordinary user, and two contracts refuse root (root reads a
+`chmod 000` file and writes an unwritable directory). So `prefix.py run-job`
+starts as root, hands the writable part of the prefix (`home/`, `tmp/`,
+`cache/`, `repos/<sha>.git`, `jobs/<sha>`, `out/<sha>`) to uid 20000, and
+re-executes itself through `setpriv --reuid --regid --clear-groups
+--no-new-privs`. `toolchain/` and `inputs/` stay root's, so a job cannot
+change what it is measured with. A uid change does not close `/tmp`,
+`/var/tmp` and `/dev/shm`, which anyone may write, so the job also gets a
+private mount namespace in which each is a per-job directory in the prefix
+(what a fresh CI VM gives a job; a JVM's `java.io.tmpdir` ignores `TMPDIR`).
+`run-as=root` is the negative control; `private-tmp=0` keeps the shared ones.
+
 ## The substitution table
 
 | `uses:` / adjustment | replacement id | local meaning |
@@ -154,8 +184,9 @@ knife is kept as it was.
 | `adjust:runner-temp` | `per-job-directory` | `RUNNER_TEMP` and `${{ runner.temp }}` point at a per-job directory outside the worktree |
 | `adjust:tmpdir` | `per-job-directory` | `TMPDIR` is per job |
 | `adjust:literal-tmp-paths` | `machine-wide-lock` | a step naming a literal `/tmp/<name>` path holds a lock on it, so two runs of this script cannot share it |
-| `adjust:playground-port` | `free-port-per-run` | `PLAY_TEST_PORT` is a free port, not 8097 |
 | `adjust:github-env-files` | `per-step-files` | `GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY` are per-step files, and ENV/PATH carry to later steps |
+| `adjust:npm-offline-cache` | `input-pack-npm-cache` | under `--prefix`, `npm_config_cache` is a copy of the input pack's npm cache (filled by `npm ci` from the pinned `site/play-ui/package-lock.json`) and `npm_config_offline=true`, so the docs job's `npm install` never reaches a registry. Listed only for a commit that uses `actions/setup-node` |
+| `adjust:wasi-sdk-tarball` | `input-pack-tarball` | under `--prefix`, `WASI_SDK_TARBALL` names the input pack's wasi-sdk archive, which wasm-target's step copies instead of downloading; the step's pinned sha256 is checked either way. Listed only for a commit whose gates.yml reads the variable; without `--prefix` it is not set and the step downloads |
 
 A `uses:` reference not in this table (including a version bump of one that
 is) makes `run.sh` refuse before any job starts.

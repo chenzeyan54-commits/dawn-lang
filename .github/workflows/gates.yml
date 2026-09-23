@@ -2433,12 +2433,23 @@ jobs:
       # size-bound at this scale (9.4s against 8.9s, inside the noise) and
       # the +1.3s is the extra unpacking. Budget +5s to be safe; nothing
       # `needs:` this job, so it is not on any critical path either way.
+      #
+      # WASI_SDK_TARBALL is for a machine with no network: an external gate
+      # run (scripts/gates-external) points it at the tarball in its offline
+      # input pack, and the table of substitutions it publishes says so. It
+      # only changes where the bytes come from. The sha256 below is checked
+      # on either path, so a tarball handed in this way is held to the same
+      # pin as one downloaded. CI never sets it and takes the curl branch.
       - name: the pinned wasi-sdk
         run: |
           v=34
           sha=b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
-          curl -fsSL -o wasi-sdk.tar.gz \
-            "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${v}/wasi-sdk-${v}.0-x86_64-linux.tar.gz"
+          if [ -n "${WASI_SDK_TARBALL:-}" ] && [ -f "$WASI_SDK_TARBALL" ]; then
+            cp "$WASI_SDK_TARBALL" wasi-sdk.tar.gz
+          else
+            curl -fsSL -o wasi-sdk.tar.gz \
+              "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${v}/wasi-sdk-${v}.0-x86_64-linux.tar.gz"
+          fi
           echo "${sha}  wasi-sdk.tar.gz" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/wasi-sdk"
           tar xzf wasi-sdk.tar.gz -C "$RUNNER_TEMP/wasi-sdk" --strip-components=1
