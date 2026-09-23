@@ -1198,7 +1198,7 @@ def gate_scripts(gate, tree, transitive=True):
 #     up next to the importer and on any `sys.path` entry it adds) and the
 #     files they `source`. An import executes the module's top level and the
 #     functions the importer takes from it, so those are what it reaches:
-#     cold.py copies the whole directory in its `main`, and the forty
+#     cold.py copies the whole directory in its `main`, and the 39
 #     harnesses that take `ROOT, edit, run` from it never call `main`;
 #   * the files their code names inside the directory: `HERE / "x.dawn.txt"`,
 #     `Path(__file__).with_name("x")`, `"$here/x"`, or a literal that is a
