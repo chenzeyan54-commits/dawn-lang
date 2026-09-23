@@ -59,8 +59,8 @@ STEP_FIELDS = {"job", "name", "command", "exit_code", "stdout_sha256",
 TOOLCHAIN_FIELDS = {"seed_jar_sha256", "java", "cc", "python", "node"}
 
 REPLACEMENTS = ({r for r, _ in gatesplan.SUBSTITUTIONS.values()}
-                | set(gatesplan.ADJUSTMENTS.values()))
-ADJUSTMENT_SUBJECTS = set(gatesplan.ADJUSTMENTS)
+                | set(gatesplan.ADJUSTMENTS.values()) | {gatesplan.PLAN_REPLACEMENT})
+ADJUSTMENT_SUBJECTS = set(gatesplan.ADJUSTMENTS) | {gatesplan.PLAN_JOB}
 
 # Leak shapes for free text. A host name is dotted labels ending in letters
 # (`build-7.corp.example`); version strings end in digits and pass. An IPv4

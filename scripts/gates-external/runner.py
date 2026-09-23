@@ -78,6 +78,8 @@ def main():
     parser.add_argument("--only", default="",
                         help="comma-separated job ids; the rest are recorded as not executed")
     parser.add_argument("--backend-opt", action="append", default=[], metavar="KEY=VALUE")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="print the plan (jobs, needs, run steps, substitutions) and stop")
     args = parser.parse_args()
 
     started = time.monotonic()
@@ -97,6 +99,18 @@ def main():
         print(f"gates-external: refusing to run: {error}", file=sys.stderr)
         return 2
     jobs = plan["jobs"]
+    if args.dry_run:
+        print(f"tree {plan['tree']}  gates.yml blob {plan['gates_blob']}")
+        rows = gatesplan.substitution_rows(jobs)
+        for row in rows:
+            print(f"substitution  {row['subject']:36} -> {row['replacement']}")
+        for job in jobs:
+            runs = [a for a in job["actions"] if a["kind"] == "run"]
+            needs = ",".join(job["needs"]) or "-"
+            print(f"job  {job['id']:38} needs {needs:14} run steps {len(runs)}")
+        print(f"{len(jobs)} gate jobs, {len(gatesplan.run_commands(jobs))} run steps; "
+              f"plan job {'substituted by external-all' if any(j.get('plan_substituted') for j in jobs) else 'absent'}")
+        return 0
     only = {j for j in args.only.split(",") if j}
     unknown = only - {j["id"] for j in jobs}
     if unknown:
@@ -132,6 +146,12 @@ def main():
         # to succeed. gatesplan refuses any other job condition.
         for need in job["needs"]:
             done[need].wait()
+        # The needed jobs' outcomes, for `${{ needs.<id>.result }}`. A job
+        # that was never run here (--only) is "skipped", as on GitHub.
+        job = dict(job, needs_results={
+            need: ("skipped" if need not in results
+                   else "success" if results[need]["ok"] else "failure")
+            for need in job["needs"]})
         t0 = time.monotonic()
         log(f"start {job['id']}")
         try:

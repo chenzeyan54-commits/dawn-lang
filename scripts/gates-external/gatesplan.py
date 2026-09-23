@@ -15,11 +15,26 @@ outside it is an error before any job starts:
 
   * top-level keys: name, on, jobs
   * job keys: runs-on (ubuntu-latest), timeout-minutes, steps, needs, and
-    `if: ${{ always() }}` on a job that has needs
-  * step keys: name, run, uses, with, env
-  * `${{ }}` expressions: `runner.temp` in env values and in `with.path`,
-    `secrets.GITHUB_TOKEN` in the toolchain action's `github-token`, nothing
-    else anywhere (and none at all inside `run:` text)
+    an `if:` of exactly one of the shapes in JOB_CONDITIONS
+  * step keys: name, id, run, uses, with, env, and an `if:` of the one shape
+    `steps.<earlier id>.outputs.<key> == '<literal>'`
+  * `${{ }}` expressions: `runner.temp`, `needs.<needed gate job>.result` and
+    `steps.<earlier id>.outputs.<key>` in env values; `runner.temp` in
+    `with.path`; `secrets.GITHUB_TOKEN` in the toolchain action's
+    `github-token`; nothing else anywhere (and none inside `run:` text)
+
+The pull-request tier (#168). gates.yml opens with a `plan` job that decides,
+per pull request, which gate jobs the diff can reach; every gate job
+`needs: [plan]` and runs when the plan says `all` or names it. The plan job
+is not a gate: it gates nothing about the tree, it only thins a pull
+request's run. An external run is by definition the whole set, so the plan
+job is never executed here, it is recorded in the substitution table as
+`plan -> external-all`, and each gate job's condition on the plan's outputs
+is taken as satisfied. That is only sound while the condition is exactly the
+wiring #168 wrote (`all == 'true'` or the job naming itself), so the
+condition is matched against those shapes with the job's own id substituted,
+and any other condition is refused. A job that names another job's id, or
+adds a clause, is a different question and does not get the answer "all".
   * `uses:` references: exactly those in SUBSTITUTIONS, spelled with their
     version; a version bump is a new reference and is refused until someone
     reviews what the new version does
@@ -78,9 +93,29 @@ ADJUSTMENTS = {
     "adjust:github-env-files": "per-step-files",
 }
 
+PLAN_JOB = "plan"
+PLAN_REPLACEMENT = "external-all"
+
 TOP_KEYS = {"name", True, "on", "jobs"}  # PyYAML reads the key `on` as True
 JOB_KEYS = {"runs-on", "timeout-minutes", "steps", "needs", "if"}
-STEP_KEYS = {"name", "run", "uses", "with", "env"}
+STEP_KEYS = {"name", "id", "run", "uses", "with", "env", "if"}
+
+# Job conditions, whitespace-normalised, with {job} standing for the job's
+# own id. "legacy" is the pre-#168 mutant-shards-complete; the other two are
+# #168's wiring. All three mean "run" in an external run: the first because
+# the needed jobs always end, the others because the plan is `all` here.
+_PLAN_SELECT = ("needs.plan.outputs.all == 'true' || "
+                "contains(fromJSON(needs.plan.outputs.jobs), '{job}')")
+JOB_CONDITIONS = {
+    "legacy-always": "always()",
+    "plan-selected": _PLAN_SELECT,
+    "plan-selected-always": ("always() && needs.plan.result == 'success' && ("
+                             + _PLAN_SELECT + ")"),
+}
+STEP_CONDITION = re.compile(
+    r"^steps\.([A-Za-z_][\w-]*)\.outputs\.([A-Za-z_][\w-]*) == '([^']*)'$")
+ENV_EXPR_NEEDS = re.compile(r"^needs\.([A-Za-z_][\w-]*)\.result$")
+ENV_EXPR_STEPS = re.compile(r"^steps\.([A-Za-z_][\w-]*)\.outputs\.([A-Za-z_][\w-]*)$")
 EXPR = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
 RUNNER_TEMP_EXPR = re.compile(r"\$\{\{\s*runner\.temp\s*\}\}")
 
@@ -117,8 +152,25 @@ def _no_expr(where, value):
         raise PlanError(f"{where}: unsupported expression {value!r}")
 
 
-def _env(where, env):
-    """Step env with `${{ runner.temp }}` kept symbolic for the backend."""
+def _check_expr(where, expr, needs, step_ids):
+    """One `${{ }}` body in an env value: is it one this model can evaluate?"""
+    if expr == "runner.temp":
+        return
+    match = ENV_EXPR_NEEDS.match(expr)
+    if match:
+        if match.group(1) == PLAN_JOB or match.group(1) not in needs:
+            raise PlanError(f"{where}: `{expr}` does not name a needed gate job")
+        return
+    match = ENV_EXPR_STEPS.match(expr)
+    if match:
+        if match.group(1) not in step_ids:
+            raise PlanError(f"{where}: `{expr}` does not name an earlier step id")
+        return
+    raise PlanError(f"{where}: unsupported expression `{expr}`")
+
+
+def _env(where, env, needs=(), step_ids=()):
+    """Step env with its expressions kept symbolic; `expand` evaluates them."""
     if env is None:
         return {}
     if not isinstance(env, dict):
@@ -126,10 +178,59 @@ def _env(where, env):
     out = {}
     for key, value in env.items():
         value = str(value)
-        rest = RUNNER_TEMP_EXPR.sub("", value)
-        _no_expr(f"{where} env {key}", rest)
+        for expr in EXPR.findall(value):
+            _check_expr(f"{where} env {key}", expr, needs, step_ids)
         out[str(key)] = value
     return out
+
+
+def expand(value, runner_temp, needs_results, step_outputs):
+    """Evaluate the expressions `_env` admitted, for a backend to use."""
+    def one(match):
+        expr = match.group(1)
+        if expr == "runner.temp":
+            return runner_temp
+        m = ENV_EXPR_NEEDS.match(expr)
+        if m:
+            return needs_results[m.group(1)]
+        m = ENV_EXPR_STEPS.match(expr)
+        if m:
+            return step_outputs.get(m.group(1), {}).get(m.group(2), "")
+        raise PlanError(f"unplanned expression `{expr}`")
+    return EXPR.sub(one, value)
+
+
+def step_condition_holds(condition, step_outputs):
+    """A step `if:` as gatesplan admitted it; None means no condition."""
+    if condition is None:
+        return True
+    step_id, key, literal = STEP_CONDITION.match(condition).groups()
+    return step_outputs.get(step_id, {}).get(key, "") == literal
+
+
+def _normalise(condition):
+    text = str(condition).strip()
+    match = re.fullmatch(r"\$\{\{\s*(.*?)\s*\}\}", text, re.S)
+    if match:
+        text = match.group(1)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def job_condition_kind(job_id, condition, needs):
+    """Which admitted shape a job `if:` is, or PlanError."""
+    text = _normalise(condition)
+    for kind, shape in JOB_CONDITIONS.items():
+        if text != shape.replace("{job}", job_id):
+            continue
+        uses_plan = kind != "legacy-always"
+        if uses_plan and PLAN_JOB not in needs:
+            break
+        if kind != "plan-selected" and not [n for n in needs if n != PLAN_JOB]:
+            break  # always() only means something with gate jobs to wait on
+        if kind == "plan-selected" and needs != [PLAN_JOB]:
+            break
+        return kind
+    raise PlanError(f"job {job_id}: unsupported job condition {condition!r}")
 
 
 def check_toolchain_action(text):
@@ -200,8 +301,18 @@ def parse(gates_text, action_text=None):
         raise PlanError("gates.yml has no jobs")
     jobs = []
     toolchain_seen = False
+    has_plan = PLAN_JOB in jobs_doc
+    if has_plan:
+        plan_job = jobs_doc[PLAN_JOB]
+        if not isinstance(plan_job, dict) or plan_job.get("needs") or "if" in plan_job:
+            raise PlanError("job plan: the plan job must need nothing and be unconditional")
+        outputs = plan_job.get("outputs") or {}
+        if set(outputs) != {"all", "jobs"}:
+            raise PlanError(f"job plan: outputs are {sorted(outputs)}, not all and jobs")
     for job_id, job in jobs_doc.items():
         where = f"job {job_id}"
+        if job_id == PLAN_JOB:
+            continue  # not a gate; substituted whole by `external-all`
         if not isinstance(job, dict):
             raise PlanError(f"{where} is not a mapping")
         extra = set(job) - JOB_KEYS
@@ -215,14 +326,19 @@ def parse(gates_text, action_text=None):
         needs = job.get("needs") or []
         if isinstance(needs, str):
             needs = [needs]
+        needs = list(needs)
         for need in needs:
             if need not in jobs_doc:
                 raise PlanError(f"{where}: needs unknown job {need!r}")
+        if has_plan and PLAN_JOB not in needs:
+            raise PlanError(f"{where}: gates.yml has a plan job and this job does not need it")
         if "if" in job:
-            cond = str(job["if"]).strip()
-            if not needs or EXPR.sub(lambda m: m.group(1), cond).strip() != "always()":
-                raise PlanError(f"{where}: unsupported job condition {cond!r}")
+            job_condition_kind(job_id, job["if"], needs)
+        elif PLAN_JOB in needs or len(needs) > 0:
+            raise PlanError(f"{where}: `needs:` without an admitted condition")
+        gate_needs = [n for n in needs if n != PLAN_JOB]
         actions = []
+        step_ids = []
         for index, step in enumerate(job.get("steps") or []):
             swhere = f"{where} step {index + 1}"
             if not isinstance(step, dict):
@@ -235,7 +351,18 @@ def parse(gates_text, action_text=None):
                 raise PlanError(f"{swhere}: needs exactly one of run/uses")
             name = step.get("name")
             _no_expr(f"{swhere} name", name)
-            env = _env(swhere, step.get("env"))
+            env = _env(swhere, step.get("env"), gate_needs, step_ids)
+            condition = None
+            if "if" in step:
+                condition = _normalise(step["if"])
+                match = STEP_CONDITION.match(condition)
+                if not match or match.group(1) not in step_ids:
+                    raise PlanError(f"{swhere}: unsupported step condition {step['if']!r}")
+            if "id" in step:
+                step_id = str(step["id"])
+                if not re.fullmatch(r"[A-Za-z_][\w-]*", step_id) or step_id in step_ids:
+                    raise PlanError(f"{swhere}: bad or repeated step id {step_id!r}")
+                step_ids.append(step_id)
             if has_run:
                 if "with" in step:
                     raise PlanError(f"{swhere}: `with` on a run step")
@@ -243,7 +370,8 @@ def parse(gates_text, action_text=None):
                 if not isinstance(command, str) or not command.strip():
                     raise PlanError(f"{swhere}: empty run")
                 _no_expr(f"{swhere} run", command)
-                actions.append({"kind": "run", "name": name, "command": command, "env": env})
+                actions.append({"kind": "run", "name": name, "command": command, "env": env,
+                                "id": step.get("id"), "if": condition})
                 continue
             uses = step["uses"]
             if uses not in SUBSTITUTIONS:
@@ -275,11 +403,12 @@ def parse(gates_text, action_text=None):
                 if clean.get("java-version") != "21":
                     raise PlanError(f"{swhere}: setup-java asks for {clean.get('java-version')!r}")
             actions.append({"kind": "use", "name": name, "uses": uses,
-                            "replacement": replacement, "with": clean, "env": env})
+                            "replacement": replacement, "with": clean, "env": env,
+                            "id": step.get("id"), "if": condition})
         if not actions:
             raise PlanError(f"{where}: no steps")
-        jobs.append({"id": job_id, "timeout_minutes": timeout, "needs": needs,
-                     "actions": actions})
+        jobs.append({"id": job_id, "timeout_minutes": timeout, "needs": gate_needs,
+                     "actions": actions, "plan_substituted": PLAN_JOB in needs})
     if toolchain_seen:
         if action_text is None:
             raise PlanError("the toolchain composite was not read at this commit")
@@ -296,6 +425,8 @@ def run_commands(jobs):
 def substitution_rows(jobs):
     """Distinct (uses, replacement) rows in first-use order, then adjustments."""
     rows, seen = [], set()
+    if any(job.get("plan_substituted") for job in jobs):
+        rows.append({"subject": PLAN_JOB, "replacement": PLAN_REPLACEMENT})
     for job in jobs:
         for action in job["actions"]:
             if action["kind"] == "use" and action["uses"] not in seen:
@@ -327,10 +458,29 @@ def plan_at(repo, sha):
 RUN_KEY_LINE = re.compile(r"^\s*(?:-\s+)?run:", re.M)
 
 
+JOB_HEADER = re.compile(r"^  ([-A-Za-z0-9_]+):\s*$")
+
+
 def line_scan_count(text):
-    """Independent count of `run:` keys, so the YAML walk cannot lose one."""
-    return sum(1 for line in text.splitlines()
-               if not line.lstrip().startswith("#") and RUN_KEY_LINE.match(line))
+    """Independent count of gate `run:` keys, so the YAML walk cannot lose one.
+
+    Lines are attributed to the last two-space-indented job header above them,
+    and the plan job's lines are not counted, as the parser does not plan it.
+    """
+    count, job, in_jobs = 0, None, False
+    for line in text.splitlines():
+        if line.startswith("jobs:"):
+            in_jobs = True
+            continue
+        header = JOB_HEADER.match(line) if in_jobs else None
+        if header:
+            job = header.group(1)
+            continue
+        if line.lstrip().startswith("#") or not RUN_KEY_LINE.match(line):
+            continue
+        if job != PLAN_JOB:
+            count += 1
+    return count
 
 
 def self_test(repo):
@@ -363,7 +513,7 @@ def self_test(repo):
     refused = {
         "unknown uses": doc({"a": job([{"uses": "actions/checkout@v5"}])}),
         "unknown third-party uses": doc({"a": job([{"uses": "someone/thing@v1"}])}),
-        "step if": doc({"a": job([{"run": "echo", "if": "success()"}])}),
+        "step if other than a step output": doc({"a": job([{"run": "echo", "if": "success()"}])}),
         "step shell": doc({"a": job([{"run": "echo", "shell": "sh"}])}),
         "working-directory": doc({"a": job([{"run": "echo", "working-directory": "x"}])}),
         "continue-on-error": doc({"a": job([{"run": "echo", "continue-on-error": True}])}),
@@ -394,6 +544,86 @@ def self_test(repo):
             continue
         failures.append(f"accepted: {label}")
 
+    # The #168 shape: a plan job, gate jobs selected by its outputs.
+    plan_job = {"runs-on": "ubuntu-latest", "timeout-minutes": 3,
+                "outputs": {"all": "${{ steps.plan.outputs.all }}",
+                            "jobs": "${{ steps.plan.outputs.jobs }}"},
+                "steps": [{"uses": "actions/checkout@v4"},
+                          {"id": "plan", "run": "python3 scripts/gate-map/plan.py"}]}
+
+    def selected(job_id):
+        return ("${{ needs.plan.outputs.all == 'true' || "
+                f"contains(fromJSON(needs.plan.outputs.jobs), '{job_id}') }}}}")
+
+    def selected_always(job_id):
+        return ("${{ always() && needs.plan.result == 'success' && "
+                "(needs.plan.outputs.all == 'true' || "
+                f"contains(fromJSON(needs.plan.outputs.jobs), '{job_id}')) }}}}")
+
+    tiered = doc({
+        "plan": plan_job,
+        "a": job([{"run": "echo a"}], needs=["plan"], **{"if": selected("a")}),
+        "b": job([{"id": "fam", "run": "echo ran=true >> \"$GITHUB_OUTPUT\"",
+                   "env": {"R": "${{ needs.a.result }}"}},
+                  {"if": "${{ steps.fam.outputs.ran == 'true' }}", "run": "echo b",
+                   "env": {"F": "${{ steps.fam.outputs.flags }}"}}],
+                 needs=["plan", "a"], **{"if": selected_always("b")}),
+    })
+    try:
+        plan = parse(tiered, ok_action)
+        if [j["id"] for j in plan] != ["a", "b"]:
+            failures.append(f"the plan job was not excluded: {[j['id'] for j in plan]}")
+        if [j["needs"] for j in plan] != [[], ["a"]]:
+            failures.append(f"plan was not dropped from needs: {[j['needs'] for j in plan]}")
+        if substitution_rows(plan)[0] != {"subject": PLAN_JOB, "replacement": PLAN_REPLACEMENT}:
+            failures.append("no plan -> external-all row")
+    except PlanError as error:
+        failures.append(f"refused the #168 shape: {error}")
+
+    def tier_with(**jobs_over):
+        base = {"plan": plan_job,
+                "a": job([{"run": "echo a"}], needs=["plan"], **{"if": selected("a")})}
+        base.update(jobs_over)
+        return doc(base)
+
+    refused.update({
+        "a gate job naming another job's id": tier_with(
+            a=job([{"run": "echo a"}], needs=["plan"], **{"if": selected("b")})),
+        "a gate job condition with an extra clause": tier_with(
+            a=job([{"run": "echo a"}], needs=["plan"],
+                  **{"if": selected("a")[:-3] + " && github.event_name == 'push' }}"})),
+        "a gate job condition on the plan's all only": tier_with(
+            a=job([{"run": "echo a"}], needs=["plan"],
+                  **{"if": "${{ needs.plan.outputs.all == 'true' }}"})),
+        "a gate job that does not need plan": tier_with(a=job([{"run": "echo a"}])),
+        "a plan-selected job that needs another gate job": tier_with(
+            c=job([{"run": "echo c"}], needs=["plan", "a"], **{"if": selected("c")})),
+        "always() without plan.result success": tier_with(
+            c=job([{"run": "echo c"}], needs=["plan", "a"],
+                  **{"if": selected_always("c").replace(
+                      "needs.plan.result == 'success'", "needs.plan.result != 'x'")})),
+        "a plan job with a needs": tier_with(plan=dict(plan_job, needs=["a"])),
+        "a plan job with other outputs": tier_with(
+            plan=dict(plan_job, outputs={"all": "x"})),
+        "a step condition on something other than a step output": doc({
+            "a": job([{"run": "echo", "if": "${{ github.event_name == 'push' }}"}])}),
+        "a step condition on a later step id": doc({
+            "a": job([{"run": "echo", "if": "${{ steps.x.outputs.y == 'z' }}"},
+                      {"id": "x", "run": "echo"}])}),
+        "env reading the plan's result": tier_with(
+            c=job([{"run": "echo", "env": {"R": "${{ needs.plan.result }}"}}],
+                  needs=["plan", "a"], **{"if": selected_always("c")})),
+        "env reading a job not needed": tier_with(
+            c=job([{"run": "echo", "env": {"R": "${{ needs.zz.result }}"}}],
+                  needs=["plan", "a"], **{"if": selected_always("c")})),
+    })
+    for label in list(refused)[-12:]:
+        try:
+            parse(refused[label], ok_action)
+        except PlanError:
+            continue
+        failures.append(f"accepted: {label}")
+
     drifted = ok_action.replace("path: .dawn/seeds", "path: .dawn")
     if drifted == ok_action:
         failures.append("the toolchain drift fixture did not change the action")
@@ -415,7 +645,7 @@ def self_test(repo):
         print(f"FAIL gatesplan self-test: {line}", file=sys.stderr)
     if failures:
         return 1
-    print(f"OK: gatesplan self-test, {len(refused) + 1} refusals, "
+    print(f"OK: gatesplan self-test, {len(refused)} refusals, "
           f"{len(live['jobs'])} jobs and {parsed} run steps at {head[:12]}")
     return 0
 

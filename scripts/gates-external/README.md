@@ -12,6 +12,7 @@ scripts/gates-external/run.sh --sha <sha> --backend local --jobs 8 --out <dir> [
 scripts/gates-external/bundle.py verify <dir>/bundle.json   # recompute everything from git
 scripts/gates-external/bundle.py --selftest
 scripts/gates-external/gatesplan.py --self-test
+scripts/gates-external/run.sh --sha <sha> --backend local --out <dir> --dry-run   # the plan only
 ```
 
 Exit status of `run.sh`: 0 complete, 1 ran but not complete, 2 refused to
@@ -38,7 +39,7 @@ returns implements:
 | method | meaning |
 |---|---|
 | `prepare()` | once, before any job |
-| `run_job(job, artifacts)` | run one planned job (its ordered actions: `run` steps and `use` steps carrying a replacement id); `artifacts` is the run's artifact store. Returns `{"steps": [...], "ok": bool}`, one step dict per `run` action with `executed`, `exit_code`, `stdout_sha256`, `stderr_sha256` |
+| `run_job(job, artifacts)` | run one planned job (its ordered actions: `run` steps and `use` steps carrying a replacement id, each with an optional step `id` and `if`; plus `needs_results` from the runner). Expressions and step conditions are evaluated with `gatesplan.expand` and `gatesplan.step_condition_holds`; `artifacts` is the run's artifact store. Returns `{"steps": [...], "ok": bool}`, one step dict per `run` action with `executed`, `exit_code`, `stdout_sha256`, `stderr_sha256` |
 | `toolchain()` | the bundle's toolchain fields |
 | `cleanup()` | once, after every job |
 
@@ -50,6 +51,7 @@ It does not decide what runs (`gatesplan.py`) or what counts as complete
 
 | `uses:` / adjustment | replacement id | local meaning |
 |---|---|---|
+| `plan` (the #168 job) | `external-all` | not executed: an external run is the full set, so each gate job's condition on the plan's outputs is taken as satisfied. Only the exact wiring #168 wrote is accepted (the job naming itself); any other condition is refused |
 | `actions/checkout@v4` | `tree-worktree` | `git worktree add --detach <sha>` in a fresh directory per job. Full history and tags are present even where CI checks out at depth 1 |
 | `./.github/actions/dawn-toolchain` | `dawn-toolchain-local` | JDK 21 on `JAVA_HOME` and `PATH`; the seed cache copied in from the shared cache (seedjar.sh re-verifies it); `./bin/dawn --version` unless `build: 'false'`. The composite's `action.yml` is fingerprinted at the same commit and a changed composite is refused |
 | `actions/cache@v4` | `noop` | nothing saved; the restore half is the seed-cache copy above, and coursier's cache is the user's own |

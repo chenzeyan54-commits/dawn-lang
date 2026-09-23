@@ -14,6 +14,7 @@
 # Usage:
 #   run.sh --sha <sha> --backend local --out <dir> [--jobs N] [--keep-going]
 #          [--only job1,job2] [--backend-opt KEY=VALUE ...] [--repo DIR]
+#   run.sh --sha <sha> --backend local --out <dir> --dry-run   # the plan only
 #
 # Local backend options (--backend-opt):
 #   workdir=DIR        where per-job worktrees go (default: a sibling
@@ -37,6 +38,7 @@ args=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --keep-going) args+=(--backend-opt keep-going=1); shift ;;
+    --dry-run) args+=(--dry-run); shift ;;
     --sha|--backend|--out|--jobs|--only|--backend-opt|--repo)
       [ $# -ge 2 ] || { echo "run.sh: $1 needs a value" >&2; exit 2; }
       args+=("$1" "$2"); shift 2 ;;

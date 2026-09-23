@@ -19,8 +19,28 @@
 具体做法（`gatesplan.py`）：
 
 1. 用 `git rev-parse <sha>:.github/workflows/gates.yml` 和 `git cat-file` 读**该提交**上的文件，不读工作树。在 X 上计划、在 Y 的检出上跑，这种错位由此排除。
-2. 接受的形状是封闭的。顶层键、job 键、step 键、`${{ }}` 表达式都有白名单；`if:` 只接受挂在有 `needs:` 的 job 上的 `always()`。白名单外的东西一律在任何 job 开始前拒绝。原因：不认识的构造在本地怎么执行只能靠猜，猜错了就是静默地跑了另一套门禁。
-3. 与 `sweep-plan.py` 一样做一次独立的行扫描交叉核对：YAML 遍历找到的 `run:` 步骤数必须等于逐行数出的 `run:` 键数（d9b10e62 上 39 个 job、169 个 run 步骤）。
+2. 接受的形状是封闭的。顶层键、job 键、step 键、`${{ }}` 表达式都有白名单；job 的 `if:` 只接受下一节列出的三种形状，step 的 `if:` 只接受 `steps.<前面的 id>.outputs.<键> == '<字面量>'`，env 里的表达式只接受 `runner.temp`、`needs.<所需 gate job>.result`、`steps.<前面的 id>.outputs.<键>`。白名单外的东西一律在任何 job 开始前拒绝。原因：不认识的构造在本地怎么执行只能靠猜，猜错了就是静默地跑了另一套门禁。
+3. 与 `sweep-plan.py` 一样做一次独立的行扫描交叉核对：YAML 遍历找到的 `run:` 步骤数必须等于逐行数出的 `run:` 键数，plan job 的行不计（d9b10e62 上 39 个 job、169 个 run 步骤；cdeb40ca 上 40 个 job，除去 plan 是 39 个 gate job、173 个 run 步骤）。
+
+### plan job（#168 的 PR 分层）
+
+#168 之后 `gates.yml` 先跑一个 `plan` job，按 PR 的 diff 决定哪些 gate job 要跑；每个 gate job `needs: [plan]`，`if:` 是「plan 说 `all`，或者 plan 的列表里有我」。plan job 不是门禁：它不判断树的任何性质，只负责给 PR 减负。外部运行按定义就是全集，所以：
+
+- plan job 不执行，它的 run 行也不进 `complete` 的多重集；
+- 替换表记一行 `plan -> external-all`，读者看得见这一步被换成了「全部都跑」；
+- gate job 对 plan 输出的条件视为成立，`needs:` 里的 `plan` 从调度依赖里去掉。
+
+「视为成立」只在条件正是 #168 写下的接线时才诚实。所以条件去掉 `${{ }}`、压缩空白后，必须逐字等于下面之一（`{job}` 代入该 job 自己的 id）：
+
+| 形状 | 条件 | 另外要求 |
+|---|---|---|
+| plan-selected | `needs.plan.outputs.all == 'true' \|\| contains(fromJSON(needs.plan.outputs.jobs), '{job}')` | `needs` 恰好是 `[plan]` |
+| plan-selected-always | `always() && needs.plan.result == 'success' && (…同上…)` | `needs` 含 plan 与至少一个 gate job |
+| legacy-always | `always()` | #168 之前的形状，`needs` 里要有 gate job |
+
+名字写成别的 job、多一个子句、只看 `all`、不 `needs: plan`、plan job 自己有 `needs:` 或 `if:`、plan 的 outputs 不是 `all`/`jobs`，都拒绝，各有自测负控。
+
+`mutant-shards-complete` 在 #168 里还读 `${{ needs.<分片>.result }}`、用 step `id` 与 `GITHUB_OUTPUT` 算出本次跑了哪些分片家族，再用 step `if:` 决定是否汇总。这些按 GitHub 的语义求值：`needs.<id>.result` 是本次运行里那个 job 的真实结果（`success`/`failure`；`--only` 没选中的记 `skipped`，与 GitHub 相同）。step 条件为假时该步跳过，跳过的 run 步骤记 `executed=false`，`complete` 因此为假。外部全量运行里所有分片都跑了，条件为真，汇总照常执行。
 4. 不复用 `sweep-plan.py` 的解析函数。它读工作树里的 `gates.yml`、只认 incremental 家族，而且会把含 `&&`、`|` 的块当错误拒掉；全量 job 里这类块很多（`wasm-target` 的 wasi-sdk 步骤就是）。这里的执行单位是整个 `run:` 块，按 GitHub 的方式交给 `bash -e`，不需要把块拆成单条命令。
 
 ## 替换表
@@ -29,6 +49,7 @@
 
 | `uses:` | 替换 id | 为什么合理 |
 |---|---|---|
+| `plan`（job） | `external-all` | 见上一节：外部运行就是全集，plan job 不执行，gate job 对它的条件视为成立。 |
 | `actions/checkout@v4` | `tree-worktree` | CI 每个 job 都是新检出。`git worktree add --detach <sha>` 给每个 job 一棵独立的树，内容与检出相同。差别：worktree 带全部历史和 tag，CI 默认 depth 1 无 tag（`fetch-depth: 0` 的三个 job 除外）。依赖「没有历史」的脚本会表现不同；目前没有发现这样的脚本，`seedjar.sh` 在缺 tag 时会自己去取，有 tag 时直接用。 |
 | `./.github/actions/dawn-toolchain` | `dawn-toolchain-local` | 这个复合 action 做四件事：装 GraalVM 21、恢复种子缓存、恢复 coursier 缓存、`./bin/dawn --version`。本地对应：`JAVA_HOME`/`PATH` 指向本机 JDK 21；把共享种子缓存里对应 tag 的两个目录拷进 worktree 的 `.dawn/seeds`（等价于 cache restore，`seedjar.sh` 每次命中都会按校验表重验，所以拷来的缓存不需要被信任）；`build: 'false'` 时不构建。整体替换只在复合 action 仍是这个形状时才诚实，所以同一提交上的 `action.yml` 会被取指纹（输入集合与默认值、两次 setup-graalvm、两个缓存的路径、重试提示与构建两个 run 步骤），形状变了就拒绝。 |
 | `actions/cache@v4` | `noop` | 保存一侧不需要：本地缓存本来就在。恢复一侧由上一行的种子拷贝承担；coursier 缓存就是用户自己的 `~/.cache/coursier`，与 runner 上一样由同一个 HOME 共享。它在 `gates.yml` 里没有直接出现，只在复合 action 内部，表里仍列出，免得读者以为它被漏掉。 |
@@ -120,7 +141,6 @@
 - `scripts/spike-native/run.sh` 在编不出 ASan 时只打印一行 note 并把 asan 检查记为 blocked，job 仍然绿。在 CI 上无害（runner 有 ASan），在外部后端上会让「跑过了」少一个维度而证据包看不出来。应让缺 ASan 成为失败，或至少成为可机读的结果。
 - 本地后端用宿主 PATH 上的 `python3`、`node`，只把版本写进证据包，不钉版本。上面的 3.14 实例说明这会改变结果；接入前应能钉住与 ubuntu-latest 一致的解释器版本，或者让不一致成为拒绝。
 - `lsp-liveness.py` 的 5s 上限在高并行的共享机器上会误红；外部后端要么降低并行度，要么这个检查要按机器负载给出可解释的余量。
-- #168 给每个 gate job 加 `needs: [plan]` 与基于 `fromJSON` 的 `if:`。`gatesplan.py` 今天会拒绝这种 job 条件（这是故意的）；#168 合并后要显式建模「外部运行等价于 `all`」再放行。
 
 ## 不做的（理由）
 

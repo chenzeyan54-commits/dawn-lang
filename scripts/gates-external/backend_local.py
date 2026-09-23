@@ -11,9 +11,14 @@ THE BACKEND CONTRACT (every backend module implements exactly this):
 
     backend.prepare()                 once, before any job
     backend.run_job(job, artifacts)   once per job, possibly concurrently
-        job        one entry of gatesplan's plan: id, timeout_minutes and the
+        job        one entry of gatesplan's plan: id, timeout_minutes, the
                    ordered actions ({"kind": "run", ...} or
-                   {"kind": "use", "replacement": <id>, ...})
+                   {"kind": "use", "replacement": <id>, ...}, each with an
+                   optional step `id` and `if`), and needs_results, the
+                   runner's "success"/"failure" for each job in `needs`.
+                   Expressions and step conditions are evaluated with
+                   gatesplan.expand and gatesplan.step_condition_holds, so
+                   every backend reads them the same way.
         artifacts  Path, the run's artifact store (upload writes a directory
                    per artifact name there, download reads from it)
         returns    {"steps": [one dict per run action, in order, with
@@ -54,8 +59,12 @@ import socket
 import subprocess
 import threading
 import time
+import sys
 import uuid
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import gatesplan  # noqa: E402
 
 TMP_LITERAL = re.compile(r"/tmp/[A-Za-z0-9._-]+")
 HOST_ENV_DROP = re.compile(r"^(GITHUB_|RUNNER_|DAWN_|ACTIONS_)")
@@ -187,11 +196,20 @@ class LocalBackend:
                    TMPDIR=str(tmp / "tmp"))
         state = {"env": env, "ws": ws, "tmp": tmp, "logs": logs, "checked_out": False,
                  "deadline": time.monotonic() + job["timeout_minutes"] * 60 * self.timeout_scale,
-                 "artifacts": Path(artifacts), "job": jid}
+                 "artifacts": Path(artifacts), "job": jid, "outputs": {},
+                 "needs_results": dict(job.get("needs_results") or {})}
         steps, failed, index = [], False, 0
         try:
             for number, action in enumerate(job["actions"], 1):
                 label = f"{jid}#{number}"
+                if not gatesplan.step_condition_holds(action.get("if"), state["outputs"]):
+                    # A false step condition is a skip, and a skipped run step
+                    # is recorded as not executed: complete will say so.
+                    self.log(f"{label} skipped: its condition is false")
+                    if action["kind"] == "run":
+                        steps.append({"executed": False, "exit_code": None,
+                                      "stdout_sha256": None, "stderr_sha256": None})
+                    continue
                 if action["kind"] == "run":
                     if failed and not self.keep_going:
                         steps.append({"executed": False, "exit_code": None,
@@ -234,7 +252,8 @@ class LocalBackend:
     # ------------------------------------------------------------- run steps
 
     def _expand(self, state, value):
-        return re.sub(r"\$\{\{\s*runner\.temp\s*\}\}", state["env"]["RUNNER_TEMP"], value)
+        return gatesplan.expand(value, state["env"]["RUNNER_TEMP"], state["needs_results"],
+                                state["outputs"])
 
     def _run_process(self, state, argv, env, stem, lock_paths=()):
         """Run one process in its own session; (exit code, out sha, err sha)."""
@@ -300,13 +319,16 @@ class LocalBackend:
             state, ["bash", "-e", str(script)], env, f"step-{number}",
             TMP_LITERAL.findall(action["command"]))
         self._apply_env_files(state, files)
+        if action.get("id"):
+            state["outputs"][action["id"]] = self._read_kv(files["GITHUB_OUTPUT"])
         return {"executed": True, "exit_code": code,
                 "stdout_sha256": out_sha, "stderr_sha256": err_sha}
 
     @staticmethod
-    def _apply_env_files(state, files):
-        """GITHUB_ENV (`K=V` and `K<<DELIM` blocks) and GITHUB_PATH, as the runner does."""
-        lines = files["GITHUB_ENV"].read_text().splitlines()
+    def _read_kv(path):
+        """A GITHUB_ENV / GITHUB_OUTPUT file: `K=V` lines and `K<<DELIM` blocks."""
+        found = {}
+        lines = path.read_text().splitlines()
         i = 0
         while i < len(lines):
             line = lines[i]
@@ -317,11 +339,16 @@ class LocalBackend:
                 while i < len(lines) and lines[i] != delim:
                     body.append(lines[i])
                     i += 1
-                state["env"][key] = "\n".join(body)
+                found[key] = "\n".join(body)
             elif "=" in line:
                 key, value = line.split("=", 1)
-                state["env"][key] = value
+                found[key] = value
             i += 1
+        return found
+
+    def _apply_env_files(self, state, files):
+        """GITHUB_ENV and GITHUB_PATH carry into later steps, as the runner does."""
+        state["env"].update(self._read_kv(files["GITHUB_ENV"]))
         for entry in reversed(files["GITHUB_PATH"].read_text().splitlines()):
             if entry.strip():
                 state["env"]["PATH"] = f"{entry.strip()}:{state['env']['PATH']}"
