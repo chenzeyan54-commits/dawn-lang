@@ -44,7 +44,7 @@
 # This is the first of the three acceptance gates in
 # docs/native-backend-plan.md 5.
 #
-# Each corpus yields up to seven named checks:
+# Each corpus yields up to eight named checks:
 #
 #   emitc   `dawn __emitc` produced C
 #   cc      that C compiles
@@ -437,18 +437,36 @@ done
 work="$(mktemp -d)"
 mkdir -p "$work/logs"
 
+trap 'rm -rf "$work"' EXIT
+
 # Whether this machine's cc can build with AddressSanitizer. Probed once,
-# because a full run would otherwise ask once per corpus entry, and reported as
-# `blocked` rather than as a failure: a missing sanitizer is no evidence either
-# way.
+# because a full run would otherwise ask once per corpus entry.
+#
+# A missing sanitizer is fatal, not skipped. It used to print a note and
+# report every asan check as `blocked`, and the run stayed green -- which is
+# right about one entry (no evidence either way) and wrong about the run: asan
+# is the only check here that sees a use-after-free or a leak (see the header),
+# so a green run without it is green about exactly the memory oracle it did not
+# consult, and nothing reading the exit code can tell. On a hosted runner cc
+# always has ASan, so the old rule cost nothing there and hid everything
+# elsewhere. DAWN_SPIKE_ALLOW_NO_ASAN=1 is the explicit, local-only way to run
+# the other checks anyway; it keeps the run green (the checks it did run are
+# real evidence) but says so on stderr, and gates.yml never sets it.
 asan_ok=1
 printf 'int main(void){return 0;}\n' >"$work/asan_probe.c"
 if ! "$cc_bin" -fsanitize=address -o "$work/asan_probe" "$work/asan_probe.c" \
-  >/dev/null 2>&1; then
-  asan_ok=0
-  echo "note: $cc_bin cannot build with -fsanitize=address; asan checks skipped"
+  >"$work/asan_probe.log" 2>&1; then
+  if [ "${DAWN_SPIKE_ALLOW_NO_ASAN:-}" = 1 ]; then
+    asan_ok=0
+    echo "WARNING: ASan checks skipped: $cc_bin cannot build with -fsanitize=address (DAWN_SPIKE_ALLOW_NO_ASAN=1)" >&2
+  else
+    head -5 "$work/asan_probe.log" >&2
+    echo "FAIL  $cc_bin cannot build with -fsanitize=address, so no asan check can run." >&2
+    echo "      Install the compiler's AddressSanitizer runtime (gcc: libasan; clang: compiler-rt)," >&2
+    echo "      or set DAWN_SPIKE_ALLOW_NO_ASAN=1 to run the other checks without it (local use only)." >&2
+    exit 1
+  fi
 fi
-trap 'rm -rf "$work"' EXIT
 
 # warm the toolchain before any output is captured: bin/dawn announces a
 # rebuild on stderr, and stderr is compared now. It is also what keeps the
@@ -548,6 +566,10 @@ elif [ "$known_hit" -gt 0 ]; then
   echo "no new failures ($known_hit known-red, see known-red.txt)"
 else
   echo "differential ok"
+fi
+# Repeated last: the first one scrolled away 120 entries ago.
+if [ "$asan_ok" -ne 1 ]; then
+  echo "WARNING: ASan checks skipped (DAWN_SPIKE_ALLOW_NO_ASAN=1); this run says nothing about memory safety" >&2
 fi
 
 exit "$fail"
