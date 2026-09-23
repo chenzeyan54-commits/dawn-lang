@@ -454,8 +454,10 @@ jobs:
     # the worst run in the window, so the line follows it up.
     # 2026-09-21: anchor preflight plus controls measured 16.579s locally.
     # Add 17s to the previous 241s observation; the 13-minute ceiling still fits.
-    # budget: 3x 258s worst observed
-    timeout-minutes: 13
+    # 2026-09-23: 383s (run 35768988146) over the 15 completed main runs of
+    # 09-19T11:23Z .. 09-22T18:42Z, 125s over the 258s claim.
+    # budget: 3x 383s worst observed
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -562,8 +564,12 @@ jobs:
     # by position % 2 and the old three-way membership does not carry over,
     # so both lines take the same half of the total rather than a sum of
     # named predecessors.
-    # budget: 3x 857s planning value (half the three shards' observed work)
-    timeout-minutes: 43
+    # 2026-09-23: 895s (run 35744308645) over the 15 completed main runs of
+    # 09-19T11:23Z .. 09-22T18:42Z, 38s over the 857s planning value.
+    # That is 55s under the 950s pole: the next restatement of this line
+    # past the pole is a split, not a pole edit.
+    # budget: 3x 895s worst observed
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -593,8 +599,10 @@ jobs:
     # 09-08T00:18Z .. 09-10T13:48Z (the 2026-09-10 CI audit's obs.json),
     # 54s over the 524s claim.
     # 2026-09-11: the other half of the same total; see shard 1.
-    # budget: 3x 857s planning value (half the three shards' observed work)
-    timeout-minutes: 43
+    # 2026-09-23: 874s (run 35768988146) over the 15 completed main runs of
+    # 09-19T11:23Z .. 09-22T18:42Z, 17s over the 857s planning value.
+    # budget: 3x 874s worst observed
+    timeout-minutes: 44
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -722,8 +730,10 @@ jobs:
     # 198 + 70 = 268, doubled is 536s.
     # 2026-09-11, N=4 -> N=2: what shards 2 and 4 ran between them.
     # (428 - 36) + (379 - 36) = 735s of work, plus one 36s setup.
-    # budget: 3x 771s planning value (two merged shards' worst observations)
-    timeout-minutes: 39
+    # 2026-09-23: 794s (run 35768988146) over the 15 completed main runs of
+    # 09-19T11:23Z .. 09-22T18:42Z, 23s over the 771s planning value.
+    # budget: 3x 794s worst observed
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -1418,19 +1428,46 @@ jobs:
       - name: Java member candidate read contracts
         run: python3 scripts/incremental-semantics-contract/java-member-reads.py
 
-  incremental-7:
+  # incremental-7 until 2026-09-23, split in two because it had passed the
+  # pole: 1005s (run 35768988146) over the 15 completed main runs of
+  # 09-19T11:23Z .. 09-22T18:42Z, against an 894s planning value. The one
+  # step "allocation provenance and world admission contracts" was 572s of
+  # that, and its log splits it as allocation.py 132.92s and provenance.py
+  # 439.95s (424.10s in run 35738938382's 987s job). The two scripts share
+  # nothing but the toolchain, so they become two steps in two jobs; the
+  # heavier and still-growing provenance.py (the step went 402s to 572s over
+  # the window) is alone in -1. Nothing is added or removed: the union of
+  # the two jobs' `run:` lines is exactly incremental-7's.
+  #
+  # Each planning value is the sum of its steps' worst observations in that
+  # window plus the worst fixed overhead any of the three split families
+  # showed there (job duration less its work steps: 50s). That is an
+  # estimate from observations, not an observation of these jobs; restate
+  # both lines at their own worst once three main runs of them exist.
+  incremental-7-1:
     runs-on: ubuntu-latest
-    # allocation 419s + diagnostic-1 359s
-    # = 778s of work, plus one 36s setup = 814s.
-    # 2026-09-14: derived nominal/trait ids add five mint mutants to
-    # allocation.py and seven carry/consumer mutants to provenance.py.
-    # Measured locally on an idle machine, allocation went 54s to 74s and
-    # provenance 101s to 202s, so the existing baseline plus twice the 121s
-    # delta is 1056s, which is over the pole. function-products.py (81s
-    # locally) moves to incremental-1 to pay for it:
-    # 814 - 2 * 81 + 2 * 121 = 894s.
-    # budget: 3x 894s planning value (two merged jobs' observations, less function products, plus the new controls)
-    timeout-minutes: 45
+    # provenance.py 440s + 50s fixed overhead = 490s.
+    # budget: 3x 490s planning value (provenance.py's worst observation plus setup; restate after three main runs)
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/dawn-toolchain
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # was the incremental-allocation job until 2026-09-11, and the second
+      # command of incremental-7's allocation step until 2026-09-23.
+      # 2026-09-14: derived nominal/trait ids added seven carry/consumer
+      # mutants here; provenance went 101s to 202s locally on an idle machine.
+      - name: provenance producer contracts
+        run: python3 scripts/incremental-semantics-contract/provenance.py
+
+  incremental-7-2:
+    runs-on: ubuntu-latest
+    # allocation.py 133s + diagnostic self-test 3s + diagnostic shard 1 382s
+    # + 50s fixed overhead = 568s.
+    # budget: 3x 568s planning value (allocation and diagnostic shard 1 worst observations plus setup; restate after three main runs)
+    timeout-minutes: 29
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -1444,11 +1481,9 @@ jobs:
       # The six production producer mutants took 94.65s on the same date.
       # Named function/method/value headers and fifteen mutants took 112.97s.
       # Keeping identity here costs 708s, so it moves to state above.
-      # 2*(90+95+113)+38=634s planning value.
-      - name: allocation provenance and world admission contracts
-        run: |
-          python3 scripts/incremental-semantics-contract/allocation.py
-          python3 scripts/incremental-semantics-contract/provenance.py
+      # 2026-09-14: derived nominal/trait ids add five mint mutants here.
+      - name: allocation and world admission contracts
+        run: python3 scripts/incremental-semantics-contract/allocation.py
 
       # was the incremental-diagnostic-1 job until 2026-09-11.
       # All 124 controls passed across three shards on 2026-09-08; slowest 289.33s.
@@ -1512,36 +1547,61 @@ jobs:
       - name: incremental prefix engine mutants shard 1
         run: python3 scripts/incremental-semantics-contract/prefix.py --shards 3 --shard 1
 
-  incremental-body-execution:
+  # incremental-body-execution until 2026-09-23, split in two. Its worst
+  # observation over the 15 completed main runs of 09-19T11:23Z ..
+  # 09-22T18:42Z is 1118s (run 35632425163), past the pole -- but that run,
+  # like every run before 09-22T11:01Z, still carried the "Opt-in body
+  # recording contracts" and "Scalar cross-revision executor contracts"
+  # steps (93s and 430s at worst), which the ledger below moved out on
+  # 2026-09-22. The worst run of the job as it stood at the split is 740s
+  # (run 35768988146; the configured project LSP step is in the last three).
+  # The split is taken anyway: the observation window keeps the 1118s run
+  # under this name until it ages out, and a claim may not sit under its
+  # own worst run, so the name could not carry a line under the pole.
+  #
+  # Steps are dealt whole, by their worst observations in the window:
+  # executor 129 + configured LSP 92 + scheduler 48 + consumers 67 = 336s
+  # in -1; journal 77 + ownership inventory 1 + scalar oracle 52 + prefix
+  # shard 2 232 = 362s in -2. Each adds the 50s worst fixed overhead of the
+  # three split families (see incremental-7-1). Planning values from
+  # observations, not observations of these jobs: restate both lines once
+  # three main runs of them exist. The union of the two jobs' `run:` lines
+  # is exactly this job's.
+  #
+  # The job's ledger until the split, kept for where each term was argued;
+  # its arithmetic is superseded by the two lines below.
+  # New contracts, not a split of the eight existing jobs. Local complete
+  # runs: executor 78.66s, recorder 54.44s, scheduler 30.48s, journal 44.62s
+  # on 2026-09-10/12. Double the rounded totals for runner headroom and add
+  # one 36s setup: 2 * (79 + 55 + 31 + 45) + 36 = 456s. This is a planning
+  # estimate, not a runner observation; replace it after the first CI run.
+  # The expanded nine-control recorder took 52.00s, within its 55s term.
+  # Six actual-consumer controls took 36.57s; the ownership inventory took
+  # under 1s. Add 2 * (37 + 1) = 76s, for a total of 532s.
+  # Scalar replay's six compiling controls took 34.22s on 2026-09-12;
+  # add 2 * 35s to the existing planning total, for 602s.
+  # The prepared-index rerun took 37.80s; add 2 * (38 - 35) = 6s.
+  # Full-product replay oracle and three independent controls took 20.22s;
+  # add 2 * 21s. Total planning value: 602 + 6 + 42 = 650s.
+  # Primitive parameters and immutable locals: the executor's controls grew
+  # from six to ten (58.87s) and the oracle from three to seven over 32
+  # pairs (39.21s), both local on 2026-09-12. Those replace the 35s and 21s
+  # terms above: add 2 * (59 - 35) + 2 * (40 - 21) = 86s, for 736s.
+  # 2026-09-13: prefix's shard 2 lands here, four of its thirteen subjects,
+  # 153s of its 497s observation, for 736 + 153 = 889s.
+  # 2026-09-22: move the complete scalar suite into four existing jobs.
+  # Remove only its documented 2 * 59s term; preserve other headroom.
+  # The expanded recorder moves intact to std-version below. Remove only
+  # its documented 2 * 55s term: 771 - 110 = 661s; retain other headroom.
+  # Configured project LSP: shared fresh-build setup plus this scope's
+  # complete matrices/control summed to 119.11s in the local all-suite run.
+  # Double rounded headroom: 661 + 2 * 120 = 901s; no job is added.
+  incremental-body-execution-1:
     runs-on: ubuntu-latest
-    # New contracts, not a split of the eight existing jobs. Local complete
-    # runs: executor 78.66s, recorder 54.44s, scheduler 30.48s, journal 44.62s
-    # on 2026-09-10/12. Double the rounded totals for runner headroom and add
-    # one 36s setup: 2 * (79 + 55 + 31 + 45) + 36 = 456s. This is a planning
-    # estimate, not a runner observation; replace it after the first CI run.
-    # The expanded nine-control recorder took 52.00s, within its 55s term.
-    # Six actual-consumer controls took 36.57s; the ownership inventory took
-    # under 1s. Add 2 * (37 + 1) = 76s, for a total of 532s.
-    # Scalar replay's six compiling controls took 34.22s on 2026-09-12;
-    # add 2 * 35s to the existing planning total, for 602s.
-    # The prepared-index rerun took 37.80s; add 2 * (38 - 35) = 6s.
-    # Full-product replay oracle and three independent controls took 20.22s;
-    # add 2 * 21s. Total planning value: 602 + 6 + 42 = 650s.
-    # Primitive parameters and immutable locals: the executor's controls grew
-    # from six to ten (58.87s) and the oracle from three to seven over 32
-    # pairs (39.21s), both local on 2026-09-12. Those replace the 35s and 21s
-    # terms above: add 2 * (59 - 35) + 2 * (40 - 21) = 86s, for 736s.
-    # 2026-09-13: prefix's shard 2 lands here, four of its thirteen subjects,
-    # 153s of its 497s observation, for 736 + 153 = 889s.
-    # 2026-09-22: move the complete scalar suite into four existing jobs.
-    # Remove only its documented 2 * 59s term; preserve other headroom.
-    # The expanded recorder moves intact to std-version below. Remove only
-    # its documented 2 * 55s term: 771 - 110 = 661s; retain other headroom.
-    # Configured project LSP: shared fresh-build setup plus this scope's
-    # complete matrices/control summed to 119.11s in the local all-suite run.
-    # Double rounded headroom: 661 + 2 * 120 = 901s; no job is added.
-    # budget: 3x 901s planning value (prior baseline plus configured project LSP)
-    timeout-minutes: 46
+    # executor 129 + configured LSP 92 + scheduler 48 + consumers 67 = 336s,
+    # plus 50s fixed overhead = 386s.
+    # budget: 3x 386s planning value (moved steps' worst observations plus setup; restate after three main runs)
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -1553,12 +1613,24 @@ jobs:
         run: python3 scripts/incremental-semantics-contract/configured-lsp-contract.py --suite project --output "$RUNNER_TEMP/configured-lsp-project"
       - name: Full-product frozen body scheduler oracle
         run: python3 scripts/incremental-semantics-contract/body-scheduler.py
+      - name: Canonical body writer consumer contracts
+        run: python3 scripts/incremental-semantics-contract/journal-consumers.py
+
+  incremental-body-execution-2:
+    runs-on: ubuntu-latest
+    # journal 77 + ownership inventory 1 + scalar oracle 52 + prefix shard 2
+    # 232 = 362s, plus 50s fixed overhead = 412s.
+    # budget: 3x 412s planning value (moved steps' worst observations plus setup; restate after three main runs)
+    timeout-minutes: 21
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/dawn-toolchain
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Body write journal contracts
         run: python3 scripts/incremental-semantics-contract/write-journal.py
       - name: Body table writer ownership inventory
         run: python3 scripts/incremental-semantics-contract/journal-coverage.py
-      - name: Canonical body writer consumer contracts
-        run: python3 scripts/incremental-semantics-contract/journal-consumers.py
       - name: Scalar full-product and real execution oracle
         run: python3 scripts/incremental-semantics-contract/scalar-oracle.py
 
@@ -1568,33 +1640,55 @@ jobs:
       - name: incremental prefix engine mutants shard 2
         run: python3 scripts/incremental-semantics-contract/prefix.py --shards 3 --shard 2
 
-  contracts:
+  # contracts until 2026-09-23, split in two again because it had passed the
+  # pole: 966s (run 35632425163) over the 15 completed main runs of
+  # 09-19T11:23Z .. 09-22T18:42Z, against an 871s planning value. Every step
+  # here is its own script sharing nothing but the toolchain with the rest
+  # (the halves were two jobs from 2026-09-03 to 09-11 for that reason), so
+  # steps are dealt whole. The old seam (up to the error model / from the
+  # atomic write) would be 610s / 312s of work, so the map-reuse (48s) and
+  # tea reconciler (105s) steps, each building its own private compiler or
+  # oracle, move across to even it: 457s in -1, 465s in -2, by the worst
+  # observation of each step in the window. Each adds the 50s worst fixed
+  # overhead of the three split families (see incremental-7-1). Planning
+  # values from observations, not observations of these jobs: restate both
+  # lines once three main runs of them exist. The union of the two jobs'
+  # `run:` lines is exactly this job's.
+  #
+  # The job's ledger until the split, kept for where each term was argued;
+  # its arithmetic is superseded by the two lines below.
+  # The lines below are the split job's ledger. The 2026-09-11 note above
+  # the timeout supersedes them.
+  # No CI observation of this half exists yet -- the job is new. The
+  # planning value is this half's own steps at their worst over the five
+  # runs above (375s) plus the job's fixed overhead at its worst over the
+  # same five (checkout 3s, the toolchain action 32s, set-up and the two
+  # post steps 3s = 38s): 413s. That is a sum of runner observations rather
+  # than a local measurement doubled, which is the better estimate available
+  # here and is why it is not doubled again. It supersedes the 558s line the
+  # unsplit job carried, and the first run of this job replaces it.
+  # 2026-09-04: the first runs of this half replace the planning value --
+  # 419s (run 33774195662) over the four completed main runs of 2026-09-03
+  # (15:26Z .. 17:42Z), 6s over it. The pruned tree ran 271s; the line may
+  # not follow that while pre-prune runs are in the window.
+  # 2026-09-11: 550s (run 34177318302) over the 25 completed main runs of
+  # 09-08T00:18Z .. 09-10T13:48Z (the 2026-09-10 CI audit's obs.json),
+  # 131s over the 419s claim.
+  # 2026-09-11, the two halves are one job again. Worst observations 550s
+  # and 322s; on one runner that is 872 - 36 = 836s. The split was made on
+  # 2026-09-03 because the unsplit job would have had to claim past the
+  # 660s pole; the pole is 950s now and this claim is 114s under it.
+  # 2026-09-19: constructor-shape controls measured 17.12s locally with a
+  # warm compiler. Reserve 35s on the runner in addition to the prior 836s.
+  contracts-1:
     runs-on: ubuntu-latest
-    # The lines below are the split job's ledger. The 2026-09-11 note above
-    # the timeout supersedes them.
-    # No CI observation of this half exists yet -- the job is new. The
-    # planning value is this half's own steps at their worst over the five
-    # runs above (375s) plus the job's fixed overhead at its worst over the
-    # same five (checkout 3s, the toolchain action 32s, set-up and the two
-    # post steps 3s = 38s): 413s. That is a sum of runner observations rather
-    # than a local measurement doubled, which is the better estimate available
-    # here and is why it is not doubled again. It supersedes the 558s line the
-    # unsplit job carried, and the first run of this job replaces it.
-    # 2026-09-04: the first runs of this half replace the planning value --
-    # 419s (run 33774195662) over the four completed main runs of 2026-09-03
-    # (15:26Z .. 17:42Z), 6s over it. The pruned tree ran 271s; the line may
-    # not follow that while pre-prune runs are in the window.
-    # 2026-09-11: 550s (run 34177318302) over the 25 completed main runs of
-    # 09-08T00:18Z .. 09-10T13:48Z (the 2026-09-10 CI audit's obs.json),
-    # 131s over the 419s claim.
-    # 2026-09-11, the two halves are one job again. Worst observations 550s
-    # and 322s; on one runner that is 872 - 36 = 836s. The split was made on
-    # 2026-09-03 because the unsplit job would have had to claim past the
-    # 660s pole; the pole is 950s now and this claim is 114s under it.
-    # 2026-09-19: constructor-shape controls measured 17.12s locally with a
-    # warm compiler. Reserve 35s on the runner in addition to the prior 836s.
-    # budget: 3x 871s planning value (prior baseline plus dictionary shape controls)
-    timeout-minutes: 44
+    # classfile 203 + ASM adapter 40 + call sites 13 + Core golden 23 +
+    # opaque twin 47 + dtoa 15 + inflate 33 + unicode 4 + array 8 +
+    # collections 6 + path 3 + JSON 8 + table freight 7 + dict owner 5 +
+    # dict shapes 32 + intrinsic parity 1 + builtin mirror 6 + error model 3
+    # = 457s, plus 50s fixed overhead = 507s.
+    # budget: 3x 507s planning value (moved steps' worst observations plus setup; restate after three main runs)
+    timeout-minutes: 26
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -1695,30 +1789,10 @@ jobs:
       - name: Array contract
         run: ./scripts/array-contract/run.sh
 
-      # The other `array_with` axis. The step above accumulates with `++`, so
-      # every call it counts comes from std/pvec; `map.insert` reaches the
-      # same primitive through std/hamt and the two rates move independently.
-      # They did, by 29 points, while the step above measured the identical
-      # 11241/11241 on both sides. The whole script is 33s locally on a warm
-      # toolchain (66s runner-doubled), of which about 31s is the private
-      # compiler build for the keep-record-spread-source mutant. It runs in
-      # `contracts`, budgeted at 28 minutes from a 558s worst observation.
-      - name: Map reuse contract
-        run: ./scripts/map-reuse-contract/run.sh
-
       - name: Collection contracts
         run: |
           ./scripts/hamt-contract/run.sh
           ./scripts/pvec-contract/run.sh
-
-      # packages/tea-core's reconciler is the one piece of the tree with no
-      # production caller and no way to get one here (the terminal's increment
-      # is a screen row, not a node). A package suite alone would then be a
-      # suite marking its own homework, so this adds the reconciler it replaced
-      # as an oracle over 484 tree pairs and 30 mutants that must each turn the
-      # suites red. 42s measured, on a job budgeted at 265s.
-      - name: tea reconciler contract
-        run: ./scripts/tea-reconciler-contract/run.sh
 
       # std/fspath replaces a `use java` the compiler spelled in two places, so
       # the thing it replaces is the oracle.
@@ -1775,10 +1849,45 @@ jobs:
       - name: Error model contract
         run: ./scripts/error-contract/run.sh
 
+  contracts-2:
+    runs-on: ubuntu-latest
+    # map reuse 48 + tea reconciler 105 + atomic write 98 + RC 24 + ctl-live
+    # 12 + RC mode 64 + source loop label 46 + range bound order 31 +
+    # display layering 37 = 465s, plus 50s fixed overhead = 515s.
+    # budget: 3x 515s planning value (moved steps' worst observations plus setup; restate after three main runs)
+    timeout-minutes: 26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/dawn-toolchain
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The other `array_with` axis. The Array contract step (contracts-1
+      # since 2026-09-23) accumulates with `++`, so
+      # every call it counts comes from std/pvec; `map.insert` reaches the
+      # same primitive through std/hamt and the two rates move independently.
+      # They did, by 29 points, while that step measured the identical
+      # 11241/11241 on both sides. The whole script is 33s locally on a warm
+      # toolchain (66s runner-doubled), of which about 31s is the private
+      # compiler build for the keep-record-spread-source mutant. It runs in
+      # `contracts`, budgeted at 28 minutes from a 558s worst observation.
+      - name: Map reuse contract
+        run: ./scripts/map-reuse-contract/run.sh
+
+      # packages/tea-core's reconciler is the one piece of the tree with no
+      # production caller and no way to get one here (the terminal's increment
+      # is a screen row, not a node). A package suite alone would then be a
+      # suite marking its own homework, so this adds the reconciler it replaced
+      # as an oracle over 484 tree pairs and 30 mutants that must each turn the
+      # suites red. 42s measured, on a job budgeted at 265s.
+      - name: tea reconciler contract
+        run: ./scripts/tea-reconciler-contract/run.sh
+
       # The steps below were the contracts-2 job until 2026-09-11: the half
       # that builds a private compiler or a sanitized runtime. The two halves
       # never shared anything but the toolchain, which is why the split was
-      # free to make and is now free to undo.
+      # free to make and is now free to undo. Redone on 2026-09-23 at a
+      # different seam: the two steps above joined this half to balance it.
 
       # The atomic manifest write, its six failure steps, a live mutant per
       # promise, and the two call sites it was raised for -- `dawn add` and

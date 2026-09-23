@@ -160,6 +160,6 @@ Each judgement was broken once and watched refuse (2026-08-27, locally):
 ## Cost
 
 34s locally (2026-08-27, warm toolchain): ~24 `__emitc` runs, ~14 ASan
-builds, ~14 sanitized runs. Rides in the `contracts` job (it wants a JVM
+builds, ~14 sanitized runs. Rides in the `contracts-2` job (it wants a JVM
 compile plus a `cc` with sanitizers, and that job is off the critical path);
 see the budget note in gates.yml.
