@@ -209,7 +209,10 @@ untitled buffers currently call cold `analyze_standalone`. Give those buffers an
 owner with the same lifecycle, preserving path checks, standard-library identity,
 document version publication and lease disposal. The synchronous server does not
 currently reject lower/equal versions. Normal Playground
-editing uses this persistent LSP path. Do not invent cross-request identity or
+editing uses this persistent LSP path. Only the LSP process persists: production
+`run_lsp` is fixed to `legacy_analysis_config()`, and untitled documents still run
+`analyze_standalone` cold on every edit, which is not incremental reuse.
+Do not invent cross-request identity or
 global caching for the stateless HTTP `/check` fallback.
 
 Before enabling the new path, require:
@@ -231,7 +234,9 @@ Before enabling the new path, require:
 ## Non-goals and remaining scope
 
 This integration does not make the currently conservative body shape admit all
-language constructs. Generic dictionaries, methods, defaults, tests, constants,
+language constructs. Generic dictionaries have only the bounded explicit-integer
+slice (see [generic-dictionary-admission-design.md](generic-dictionary-admission-design.md));
+the remaining generic shapes are not done. Methods, defaults, tests, constants,
 closures, Java and comptime dependency handling still require their planned
 work. No disk/global cache, incremental parser, checker parallelism, new language
 semantics, backend ABI change, or deployment is included. Phase-5 and phase-7
