@@ -143,11 +143,18 @@ def git_common_dir(repo):
 # itself, so no path is written into them and the toolchain's tree digest
 # does not depend on where the prefix lives. `java` takes the flag as it is;
 # every other launcher (javac, jar, ...) starts its JVM from options it is
-# given as -J<option>.
-SHIM = """#!/bin/sh
+# given as -J<option>. argv[0] is kept (bash's exec -a; dash has no such
+# option) because scripts/selfhost-bench.py and its contracts recognise a JVM by
+# argv[0]'s basename being `java`; the launcher finds its home through
+# /proc/self/exe, not argv[0], so java.home is unchanged. The shim forks
+# nothing (no dirname, no readlink): until its exec the process is bash, and
+# the bench samples /proc every 2ms. bash is given the script's own path
+# when it is run through PATH or by path; nothing links to these launchers.
+SHIM = """#!/bin/bash
 # Written by scripts/gates-external/inputs.py, not part of GraalVM: every JVM
 # of a gate run starts without hsperfdata, which HotSpot would write to /tmp.
-exec "$(dirname -- "$(readlink -f -- "$0")")/{name}.real" {flag} "$@"
+# argv[0] stays the caller's, so the process still reads as {name}.
+exec -a "$0" "${{0%/*}}/{name}.real" {flag} "$@"
 """
 
 
