@@ -10,7 +10,7 @@
 它起初是 Phase −1 的接缝 spike(TAST 直接发 C,平凡子集),现在 `emitc` 已改吃 **Core IR**,
 语料已压到 `match`/ADT/闭包/trait 字典/相等/渲染/字典转发/comptime 折叠。
 
-每个语料产出至多七个具名检查:
+每个语料产出至多八个具名检查:
 
 | 检查 | 含义 |
 |---|---|
@@ -21,6 +21,13 @@
 | `diff` | 两个后端的 stdout 一致 |
 | `stderr` | 两个后端的 stderr 一致 |
 | `exit` | 两个后端的退出码一致 |
+| `asan` | 同一程序在 AddressSanitizer(含泄漏检测)下干净 |
+
+`cc` 编不出 `-fsanitize=address` 时整个 run **直接红**(非零退出,并说明缺什么),不再只打一行 note
+把 asan 记成 `blocked` 而 job 照绿:asan 是这里唯一看得见 use-after-free 与泄漏的检查,没有它的绿
+恰恰对内存这一半什么都没说,而退出码看不出来。本机确实缺 ASan 又想跑其余检查,显式设
+`DAWN_SPIKE_ALLOW_NO_ASAN=1`:run 仍可绿,但开头和结尾各打一行 `WARNING: ASan checks skipped`;
+`gates.yml` 不设这个变量。
 
 **`jvm` / `native` 是对 `codebase-audit.md` TEST-01 的回答。** 只做后端互比,等于把 JVM 今天的
 行为认证成正确答案;而**两个后端共有的缺陷会让它们在错答案上达成一致**——凡是编译期折叠的东西
