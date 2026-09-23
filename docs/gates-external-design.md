@@ -67,6 +67,7 @@
 | `adjust:literal-tmp-paths` | `machine-wide-lock` | 步骤里写死的 `/tmp/<名字>`（今天只有 `contracts-1` 的 `/tmp/gate-emit`）在同一台机器的所有检出之间共享。按字面路径取一把机器级文件锁，两个 `run.sh` 不会同时用它；挡不住别的程序。路径是从命令文本里扫出来的，不是手写的表。 |
 | `adjust:playground-port` | `free-port-per-run` | `playground/test/contract.sh` 默认 8097，结束时 `fuser -k` 这个端口。WSL2 下 8097 可能落在 WinNAT 保留段里 bind 失败；共享机器上 `fuser -k 8097` 还会杀掉别人的进程。每次运行挑一个空闲端口经 `PLAY_TEST_PORT` 传入（该脚本本来就支持这个变量）。 |
 | `adjust:github-env-files` | `per-step-files` | `GITHUB_ENV`、`GITHUB_PATH` 等是每步一个文件，`ENV` 与 `PATH` 按 runner 的规则带到后续步骤。`wasm-target` 靠它把 `DAWN_WASM_CC` 与 `DAWNC_BIN` 传给后面的步骤。 |
+| `adjust:wasi-sdk-tarball` | `input-pack-tarball` | 第 3b′ 刀加的。prefix 模式下环境里有 `WASI_SDK_TARBALL`，指向输入包里已校验的 wasi-sdk 原件；`wasm-target` 的步骤见到它就拷贝而不下载，sha256 照旧对两条路径都核。只在该提交的 `gates.yml` 读这个变量时才列出（`gatesplan.ADJUSTMENT_WHEN`），否则这一行描述的是不存在的东西。不带 `--prefix` 时不设，步骤照旧下载。 |
 
 另外，宿主环境里的 `GITHUB_*`、`RUNNER_*`、`DAWN_*`、`JAVA_HOME` 等变量在交给步骤前被清掉，再设 `CI=true`。`DAWN_SEED` 之类的变量会悄悄改变工具链的来源，不能从开发者的 shell 漏进来。
 
@@ -275,6 +276,12 @@ uid 切换挡不住 `/tmp`、`/var/tmp`、`/dev/shm`：它们人人可写。第�
 
 负控第一次跑时两个 job 都在检出一步失败：上一次以 uid 20000 建的 `repos/<sha>.git` 归 20000，git 以 root 打开时报 dubious ownership。所以 root 模式下 `run-job` 同样把可写部分交回 root。
 
+### wasi-sdk 步骤离线
+
+`gates.yml` 的 `wasm-target` 里「the pinned wasi-sdk」一步改成：`${WASI_SDK_TARBALL:-}` 指向一个文件就 `cp` 它，否则照旧 `curl`；之后的 `sha256sum -c` 不动，两条路径都执行。钉住的是摘要，字节从哪来不改变它核的是什么。CI 不设这个变量，走 `curl` 分支，行为与墙钟都不变：改动只是一个分支条件，没有新的下载或计算（`check-gate-budgets.py` 照旧绿，不动预算行）。prefix 的白名单环境设它，指向 `inputs/downloads/` 里 `inputs.py` 按锁核过的原件；替换表因此多一行 `adjust:wasi-sdk-tarball`。
+
+负控（本机，直接执行该步骤的 `run:` 原文）：变量指向改了一个字节的原件，`sha256sum` 报 `FAILED`，退出 1；指向输入包原件、在 `bwrap --unshare-net` 里跑，`OK`，退出 0；不设变量、同样无网，`curl` 报 `Could not resolve host`，退出 6；不设变量、有网（CI 的路径），`OK`，13s。
+
 ## 与 #167 的关系
 
 #167 要的是「分片之后各分片步骤的并集仍等于原 job 的步骤」的核对。本刀的多重集比较（`bundle.multiset_diff`）就是这个并集检查的核心：它逐条点名少了的和多出的命令。
@@ -325,5 +332,4 @@ uid 切换挡不住 `/tmp`、`/var/tmp`、`/dev/shm`：它们人人可写。第�
 - **解析复合 action 并逐步替换其内部步骤。** 复合 action 的内部是 GraalVM 下载与缓存，没有门禁；整体替换加指纹更简单，也更早暴露变化。
 - **prefix 里的 cc。** C 编译器仍来自 `/usr/bin`（本机 gcc 13.3，集群 gcc 11.4），证据包的 `toolchain.cc` 会随机器变化。把 gcc 连同 libasan 打进输入包是另一件事；集群上又不允许 apt。
 - **node 版本与 `lts/*`。** `docs` job 在 CI 上用 `setup-node` 的 `lts/*`，按任务单这里钉的是 20 LTS；两者不一定相同，证据包如实记录 `node` 字段。
-- **wasi-sdk 步骤离线。** `wasm-target` 的步骤自己 `curl` wasi-sdk。prefix 里已经有同一个钉住的包，但让步骤用它要改 `gates.yml`（例如「预置目录存在且摘要对就不下载」），不在本刀范围；离线机器上这一步会红，照实记录。`docs` 的 `npm install` 同理。
 - **覆盖 `tile.yml`、`editor-grammar.yml`、`nightly.yml`。** 任务单的范围是 `gates.yml`。前两个是按路径触发的门禁工作流，`tile.yml` 需要 GPU；把它们纳入是 crun 后端那一刀的事。

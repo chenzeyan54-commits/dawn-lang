@@ -44,6 +44,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -64,6 +65,10 @@ def download(name):
         if item["name"] == name:
             return item
     raise KeyError(name)
+
+
+def archive_name(item):
+    return urllib.parse.unquote(item["url"].rsplit("/", 1)[1])
 
 
 def toolchain_dir(prefix, name):
@@ -109,6 +114,9 @@ def job_env(prefix, *, tmpdir=None, runner_temp=None, inherit_host=False):
         "COURSIER_CACHE": str(prefix / "cache" / "coursier"),
         "LANG": "C.UTF-8",
         "CI": "true",
+        # wasm-target's wasi-sdk step copies this instead of downloading it
+        # and checks the same pinned sha256 (the adjust:wasi-sdk-tarball row).
+        "WASI_SDK_TARBALL": str(prefix / "inputs" / "downloads" / archive_name(download("wasi-sdk"))),
     }
     if inherit_host:
         # The broken variant keeps whatever the host had for these, which is
