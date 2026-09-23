@@ -34,6 +34,12 @@ scripts/bench.sh                                                             no-
 scripts/bench_map.dawn                                                       no-gate: the subject of bench.sh's sibling benchmark, run by hand for the same reason. Its own header says so.
 scripts/dawn.slice                                                           no-gate: a systemd unit installed on a developer box to cap memory. CI does not run under it.
 scripts/dcap                                                                 no-gate: the per-run half of the same memory cap. CI does not run under it.
+scripts/gates-external/README.md                                             no-gate: the manual external gate runner's own notes. doc-check.py reads `docs/**.md` and the root `*.md`, and this is under scripts/.
+scripts/gates-external/backend_local.py                                      no-gate: the local backend of the external gate runner, run by hand outside GitHub. No workflow runs it; its self-tests are gatesplan.py --self-test and bundle.py --selftest, also by hand.
+scripts/gates-external/bundle.py                                             no-gate: the external gate runner's bundle schema and completeness check, run by hand. Wiring it into CI is the next step of that line (issue #167).
+scripts/gates-external/gatesplan.py                                          no-gate: the external gate runner's gates.yml parser, run by hand. It reads the workflows but no workflow runs it.
+scripts/gates-external/run.sh                                                no-gate: the external gate runner's entry point, run by hand on a maintainer machine. Running it in CI would be the gate set running itself.
+scripts/gates-external/runner.py                                             no-gate: as run.sh, whose body it is.
 scripts/gen-rtsrc.py                                                         no-gate: a generator run by hand. Its output, selfhost/src/embed/rtsrc.dawn, is committed and watched; nothing re-runs the generator to check the two agree.
 scripts/gen-stdsrc.py                                                        no-gate: as gen-rtsrc.py, for selfhost/src/embed/stdsrc.dawn.
 scripts/native-fixpoint.sh                                                   no-gate: the native bootstrap fixed point. The `selfhost fixed point (B == C)` step runs scripts/selfhost-fixpoint.sh, which is the JVM one; no workflow names this file.
