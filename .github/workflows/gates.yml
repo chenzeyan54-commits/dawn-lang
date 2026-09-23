@@ -679,8 +679,12 @@ jobs:
     # 09-19T11:23Z .. 09-22T18:42Z, 38s over the 857s planning value.
     # That is 55s under the 950s pole: the next restatement of this line
     # past the pole is a split, not a pole edit.
-    # budget: 3x 895s worst observed
-    timeout-minutes: 45
+    # 2026-09-24: 902s (run 35866197071) over the 8 main runs of
+    # 09-23T11:35Z .. 09-23T17:27Z, 7s over the 895s claim; found by the
+    # observed audit for the #166 shard restatement, not by that split.
+    # 48s under the pole.
+    # budget: 3x 902s worst observed (run 35866197071)
+    timeout-minutes: 46
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -714,8 +718,10 @@ jobs:
     # 2026-09-11: the other half of the same total; see shard 1.
     # 2026-09-23: 874s (run 35768988146) over the 15 completed main runs of
     # 09-19T11:23Z .. 09-22T18:42Z, 17s over the 857s planning value.
-    # budget: 3x 874s worst observed
-    timeout-minutes: 44
+    # 2026-09-24: 882s (run 35890458801) over the 8 main runs of
+    # 09-23T11:35Z .. 09-23T17:27Z, 8s over the 874s claim; same audit.
+    # budget: 3x 882s worst observed (run 35890458801)
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
