@@ -1,6 +1,6 @@
 # 在 GitHub 之外跑完整门禁集
 
-> 状态：**current**。第 1 刀（本地后端 + 证据包）、第 2 刀（签名、`refs/notes/gates`、`verify-external.yml` 回写 commit status）、第 3 刀（prefix、离线输入包、隔离证明、crun 后端）与第 4 刀（2026-09-24：release 守卫接受外部证据；`steps.lock.json` 进 tree-policy，关 #167）已落地；自动触发仍记在「不做的」。`verify-external.yml` 至今只在真实 GitHub 上跑过一次（run 35888113634，输入不是 40 位 sha，按设计失败且不写 status），还没有一次写出 `success`。
+> 状态：**current**。第 1 刀（本地后端 + 证据包）、第 2 刀（签名、`refs/notes/gates`、`verify-external.yml` 回写 commit status）、第 3 刀（prefix、离线输入包、隔离证明、crun 后端）、第 3b′ 刀（集群上 `complete = true`：启动器 shim、非 root 与私有 `/tmp`、wasi-sdk 与 npm 离线）与第 4 刀（2026-09-24：release 守卫接受外部证据；`steps.lock.json` 进 tree-policy，关 #167）已落地；自动触发仍记在「不做的」。`verify-external.yml` 至今只在真实 GitHub 上跑过一次（run 35888113634，输入不是 40 位 sha，按设计失败且不写 status），还没有一次写出 `success`。
 
 ## 要解决的问题
 
@@ -254,9 +254,9 @@ shim 还要保住 `argv[0]`。第一版用 `/bin/sh` 直接 `exec .../java.real`
 | `wasm-target` | 钉住的 wasi-sdk（exit 28，curl 超时） | 容器没有外网。prefix 里有同一个包，但步骤自己下载，见「不做的」 |
 | `docs` | `playground/test/contract.sh`（exit 127） | 合约本身 10 passed、0 failed（python 3.12.3 下 #170 同样不复现），收尾的 `fuser -k` 找不到命令：容器没有 psmisc，而本任务不许 apt。其后的 site 构建（`npm install` 要外网）因此没有执行 |
 
-全套运行没有套隔离检查（任务单只要求一次，放在不起 JVM 的 tree-policy 上）。事后只读查看，容器里 `/tmp/hsperfdata_root` 的 mtime 落在全套运行窗口内，目录为空：门禁步骤起的 JVM 在 prefix 外留了痕迹，就是「不做的」里 hsperfdata 那一条。在集群上它违反「不写 prefix 之外」，修法（每 job 一个指进 prefix 的私有 `/tmp`，要容器允许 `unshare -m`）尚未验证。
+全套运行没有套隔离检查（任务单只要求一次，放在不起 JVM 的 tree-policy 上）。事后只读查看，容器里 `/tmp/hsperfdata_root` 的 mtime 落在全套运行窗口内，目录为空：门禁步骤起的 JVM 在 prefix 外留了痕迹，就是「不做的」里 hsperfdata 那一条。在集群上它违反「不写 prefix 之外」，修法（每 job 一个指进 prefix 的私有 `/tmp`，要容器允许 `unshare -m`）尚未验证。第 3b′ 刀已收掉：启动器 shim 关掉 hsperfdata，私有 `/tmp` 实测可用，全套 39 个 job 都套了隔离检查，见下节。
 
-要在集群上拿到 `complete = true`，还差：以非 root 身份执行 job（例如 `setpriv` 降到一个无特权 uid，prefix 相应 chown，不需要写 prefix 外）；`wasm-target` 能用预置的 wasi-sdk；`fuser` 进输入包或合约不再依赖它；npm 依赖进输入包。前一条是后端的事，后三条要改 `gates.yml` 或被测脚本，都不在本刀。
+要在集群上拿到 `complete = true`，还差：以非 root 身份执行 job（例如 `setpriv` 降到一个无特权 uid，prefix 相应 chown，不需要写 prefix 外）；`wasm-target` 能用预置的 wasi-sdk；`fuser` 进输入包或合约不再依赖它；npm 依赖进输入包。前一条是后端的事，后三条要改 `gates.yml` 或被测脚本，都不在本刀。（第 3b′ 刀：非 root、wasi-sdk、npm 三条已做；`fuser` 由 #173 从合约里去掉。）
 
 ## 第 3b′ 刀：集群跑到 complete
 
@@ -295,6 +295,27 @@ job 看到的是 `cache/npm`，由后端在 prepare 时从 `inputs/npm-cache` �
 负控（本机，`bwrap --unshare-net`，prefix 环境）：完整缓存下 `npm ci --offline` 装上 26 个包，退出 0；删掉缓存里 `@codemirror/state` 的内容文件后 `ENOTCACHED`，退出 1；`site/build.sh` 用的 `npm install --silent`（只靠环境注入的离线）退出 0。端到端：整个 `run.sh --only docs`（08a5232e，本机 prefix）套在 `bwrap --unshare-net` 里跑，6 步全绿，job 268s，`site/build.sh` 的日志里 `vite build` 建出了 `playground.js`（765.56 kB），不是跳过。
 
 一处与 CI 不同，照实记下：prefix 的 node 20.20.2 带 npm 10.8.2，`npm install` 会改写检出里的 `package-lock.json`（去掉 npm 11 写进去的 `libc` 字段）。CI 的 `lts/*` 自带的 npm 版本不同。之后没有步骤检查工作树是否干净；`site-dist-diff.sh` 的快照里带着改写后的文件，但 JVM 与 native 两条腿读的是同一份快照，比较不受影响。这属于「不做的」里「node 版本与 `lts/*`」那一条。
+
+### 途中查出的三处 prefix 与 CI 的差异
+
+跑全套时又红了三处，都是 prefix 的环境与 CI 不同，都改在 `scripts/gates-external/`，没有改被测脚本：
+
+1. **coursier 缓存的位置。** 见「执行壳」一节：两个脚本直接读 `~/.cache/coursier/v1`。
+2. **只包了 `java`。** `javac`、`jar` 起的 JVM 照样写 hsperfdata。改成包 `bin/` 里全部启动器，见「隔离证明」。
+3. **shim 改了 `argv[0]`。** `selfhost-bench.py` 按 `argv[0]` 认 JVM，两个 heap 合约红。改成 `exec -a`，见「隔离证明」。
+
+### 实测（2026-09-24，第 3b′ 刀，集群 `--jobs 16`，每个 job 套隔离检查）
+
+| 运行 | 墙钟 | 结果 |
+|---|---|---|
+| main 97af76ce（第 2、3 处修正之前） | 1570s | 39 个 job 里 36 个绿；红：`wasm-target`（main 的 wasi-sdk 步骤还只会 `curl`，exit 28）、`compiler-weight-contract` 与 `dependency-heap-contract`（上面第 3 处）。39 次隔离检查全部 0 条 |
+| 5f18182b（main 984d2076 + 本刀） | 1730s | **`complete = true`**，175 个 run 步骤全部执行、全部退出 0，39 个 job 全绿；39 次隔离检查全部 0 条；`bundle.py verify` 复算一致 |
+
+5f18182b 那次各 job 的秒数（含 crun 推送与两次 `find`）：最长的是 `incremental-2` 921s、`test` 884s、`syntax-mutants-1/2` 878/871s、`incremental-4` 867s；`wasm-target` 497s（wasi-sdk 走输入包），`docs` 449s（npm 离线）。工具链字段：`java` `21.0.2+13-jvmci-23.1-b30`、`python` `3.12.3`、`node` `v20.20.2`、种子 `a320e3ee…e679`，`cc` 是集群的 gcc 11.4。
+
+本机 prefix 全套（5f18182b，`--jobs 8`，load 约 28）：墙钟 4893s，39 个 job 里 38 个绿，`complete = false`。红的是 `compiler-weight-contract` 的一个变异体对照：`sampling-200ms` 预期只让「采样间隔」一条断言红，负载下 `bench.vmhwm_reads_proc` 也红了。不是 shim 造成的：同一检出单跑这个合约，用不带 shim 的同一 GraalVM 构建，在 24 个 busy loop（load 约 25）下以逐字相同的断言红过；空闲时带 shim 本机两次绿、集群三次绿。两份证据包的 `toolchain` 里 `java`、`python`、`node`、种子摘要相等，`cc` 不等（集群 gcc 11.4、本机 gcc 13.3，cc 不在输入包里，见「不做的」）。
+
+私有 `/tmp` 也说明了它为什么必要：5f18182b 那次有 20 个 job 结束时在自己的 `/tmp` 里留了东西（`dawn-selfhost-stdlib`、`dawn-selfhost-lsp-def`、`dawn-lsp-standalone-close-*.tmp`、`dawn-map-fold-*`、`dawn-spike-io-cli` 等）。这些是门禁脚本与 JVM 直接写 `/tmp` 的产物，CI 上随 VM 消失；没有私有 `/tmp` 时它们会留在共享容器的 `/tmp` 里。没有一个 job 留下 `hsperfdata_*`。
 
 ## 与 #167 的关系
 
