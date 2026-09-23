@@ -105,6 +105,49 @@ v0.6.0–v0.8.0 的 release jar 永久保存；`kotlin-final` tag 保有 Kotlin 
 | v0.7.0 | `dawn.jar`（Kotlin） | 包管理线收官版 |
 | v0.8.0 | `dawn.jar` + `dawn-selfhost.jar` 双发 | **首个 selfhost 种子**（LSP 移植完成，Kotlin 最后一发）；随后 `kotlin-final` 归档 Kotlin |
 
+## GitHub 之外执行门禁集的证据协议（2026-09-23）
+
+托管 runner 排队或宕机时，维护者可以在自己的机器上按某个提交的 `gates.yml` 跑完整门禁集，
+再把结果交给 GitHub 核验。设计与理由见 [gates-external-design.md](gates-external-design.md)，
+这里只记协议本身。
+
+1. **跑**：`scripts/gates-external/run.sh --sha <sha> --backend local --out <dir>`，产出
+   `<dir>/bundle.json`（字段白名单，`complete` 按多重集重算）。
+2. **谁签**：维护者本机上的专用 ed25519 密钥 `~/.ssh/dawn-gates-sign`，只签门禁证据。
+   公钥钉在 `scripts/gates-external/allowed_signers`，identity 与签名 namespace 都是
+   `dawn-gates`，文件里没有邮箱、主机名或用户名。私钥不进仓库、不进日志。
+3. **签什么**：bundle 的规范字节，即 `json.dumps(bundle, sort_keys=True, separators=(',', ':'))`
+   加一个换行。信封 `{"bundle": ..., "signature": "<armored SSH 签名>"}` 作为该提交在
+   `refs/notes/gates` 上的 note。信封可以任意排版，签名只绑定 bundle 的内容。
+4. **发布**：`scripts/gates-external/publish.py <sha> --bundle <dir>/bundle.json`。它先在本地
+   复核 bundle，`complete` 不为 true 就拒绝（红的证据不发布），再签名、用本仓库的
+   `allowed_signers` 验一遍自己的签名，然后 `git notes --ref=gates add -f`、
+   `git push origin refs/notes/gates`、`gh workflow run verify-external.yml -f sha=<sha>`。
+   全部连接都由本机发出，GitHub 从不连回来。
+5. **GitHub 核什么**：`verify-external.yml` 从默认分支取核验器与公钥，只把被测提交当作对象读，
+   依次核：note 存在；信封恰好两个字段、无重复键；签名在 `dawn-gates` namespace 下对上钉住的公钥；
+   `bundle.tree` 等于该 sha；`bundle.gates_blob` 等于该 sha 上 `gates.yml` 的 blob；
+   `bundle.check`（与 `bundle.py verify` 同一份代码）通过，即字段白名单、替换表恰为该提交
+   `gates.yml` 推出的那张、多重集相等、每步退出码 0；`complete` 声称与重算都为 true。
+   然后用 `GITHUB_TOKEN` 给该提交写 commit status，context 是 `gates/maintainer`，
+   全部通过写 `success`，否则写 `failure`（不是不写），`target_url` 指向这次 run。
+6. **外人能核什么**：签名与重算。任何人都可以
+   `git fetch origin refs/notes/gates:refs/notes/gates` 后运行
+   `python3 scripts/gates-external/verify_note.py --sha <sha>`，得到与 GitHub 相同的结论。
+   外人核不了的是「这些步骤真的在那台机器上跑过」：退出码与输出摘要是维护者的陈述。
+
+诚实边界：
+
+- 这是**维护者自证**。签名证明的是「持钥人说这棵树上整套门禁全绿」，不是独立复现。
+  它的分量等于对持钥人与那台机器的信任。
+- commit status 本身不是签名。有写权限的人都能给任何提交写同名 context；可复核的证据
+  在 note 里，status 只是 GitHub 界面上的一个指针。
+- **fork 的 PR 不走这条路**。外部贡献者没有签名钥，他们的提交照旧由托管 runner 的
+  `ci.yml` 判定。
+- **release 守卫尚未接受它**。`release.yml` 的 `verified` job 仍然只认 `ci.yml` 在该 sha 上
+  的成功运行；`gates/maintainer` 能否替代它是后续一刀的事。
+- 换钥就是改默认分支上的 `allowed_signers`。旧钥签的 note 从那个提交起核不过，没有多钥过渡期。
+
 ## 链
 
 ```bash

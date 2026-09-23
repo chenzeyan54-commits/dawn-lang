@@ -2,7 +2,9 @@
 
 Run every gate job of `.github/workflows/gates.yml`, as that file stands at
 one commit, somewhere other than GitHub, and leave a bundle that says what ran
-and what it returned. Local tooling. No workflow reads this directory.
+and what it returned; then sign that bundle and have GitHub check it. The
+running is local tooling. The one workflow that reads this directory is
+`verify-external.yml`, which runs `verify_note.py` when dispatched.
 
 The design and its reasons are in
 [docs/gates-external-design.md](../../docs/gates-external-design.md) (Chinese).
@@ -13,6 +15,12 @@ scripts/gates-external/bundle.py verify <dir>/bundle.json   # recompute everythi
 scripts/gates-external/bundle.py --selftest
 scripts/gates-external/gatesplan.py --self-test
 scripts/gates-external/run.sh --sha <sha> --backend local --out <dir> --dry-run   # the plan only
+
+scripts/gates-external/publish.py <sha> --bundle <dir>/bundle.json   # sign, note, push, dispatch
+scripts/gates-external/publish.py <sha> --bundle <dir>/bundle.json --remote <bare> --dry-run-dispatch
+scripts/gates-external/verify_note.py --sha <sha>    # what verify-external.yml runs
+scripts/gates-external/verify_note.py --selftest
+scripts/gates-external/publish.py --selftest
 ```
 
 Exit status of `run.sh`: 0 complete, 1 ran but not complete, 2 refused to
@@ -27,6 +35,9 @@ plan, 3 the bundle was refused (leak or schema), nothing written.
 | `bundle.py` | what it means: schema whitelist, leak filter, and `complete` |
 | `runner.py` | when: schedules jobs up to `--jobs`, honours `needs:`, writes `summary.json` and `bundle.json` |
 | `run.sh` | the entry point |
+| `allowed_signers` | the one public key (identity and namespace `dawn-gates`) a signed bundle is verified against |
+| `publish.py` | refuses an invalid or incomplete bundle, signs it, writes the note on `refs/notes/gates`, pushes it, dispatches `verify-external.yml` |
+| `verify_note.py` | reads the note, checks the signature and then the bundle against the commit through `bundle.check`, the code `bundle.py verify` runs |
 
 ## The backend contract
 
@@ -82,3 +93,27 @@ the bundle's own claim.
 
 Logs, timings and the memory peak stay in `<out>/logs` and
 `<out>/summary.json`, which are for the person who ran it and are not evidence.
+
+## Signed evidence
+
+The note on a commit in `refs/notes/gates` is an envelope with exactly two
+fields, `{"bundle": <bundle>, "signature": "<armored SSH signature>"}`. The
+signature is `ssh-keygen -Y sign -n dawn-gates` over the bundle's canonical
+bytes, `json.dumps(bundle, sort_keys=True, separators=(",", ":"))` plus a
+newline, so the envelope's own formatting does not matter.
+
+`verify-external.yml` takes the verifier and `allowed_signers` from the default
+branch and reads the commit under test as objects only, so a commit cannot
+vouch for itself. It writes the commit status `gates/maintainer`: `success`
+when every item of `verify_note.py`'s checklist holds, `failure` otherwise.
+Anyone can repeat the check:
+
+```bash
+git fetch origin refs/notes/gates:refs/notes/gates
+python3 scripts/gates-external/verify_note.py --sha <sha>
+```
+
+What nobody but the key holder can vouch for is that the steps really ran;
+the exit codes and output digests are the maintainer's statement. The
+protocol and its limits are in [docs/bootstrap.md](../../docs/bootstrap.md)
+(Chinese).
