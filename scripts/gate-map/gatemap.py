@@ -53,15 +53,31 @@ paths no gate watches) is a ratchet checked in both directions.
            because both of today's failures were somebody assuming a gate was
            in a higher tier than this one.
 
-  (none)   No gate. Reported as such, and ratcheted in unseen.txt.
+  (none)   No gate. Reported as such, and ratcheted in unseen.txt. A harness
+           file no step reaches is reported as `unread` and ratcheted under
+           that kind, which plan.py reads as "selects no job".
 
 ## The rules, and the file each is derived from
 
-  A  A gate runs a script, so that script's own directory under scripts/ is
-     exact for it, fixtures included, since the directory is one gate's code.
+  A  A gate runs a script, so the files that script reaches are exact for it:
+     the script, the sibling modules it imports, the files it sources, and
+     the files its code names inside its own directory, closed over whatever
+     those reach in turn (an import reaches the module's top level and the
+     functions taken from it). A script whose reads cannot be bounded that
+     way (its directory used as a value, a computed name inside it, a file
+     that does not parse, a language with no reader) falls back to the old
+     rule for that script alone: its whole directory is exact for it. A file
+     under scripts/ that no step reaches either way is `unread`. The block
+     comment above HarnessReader gives the edges and the reasons (#169).
+     A script outside scripts/ owns only itself.
      From: the `run:` commands in .github/workflows/*.yml, followed through
      the scripts those scripts run.
-  B  A gate's script names a path, so that path is coarse for it. Slash-bearing
+  B  A gate's script names a path, so that path is coarse for it. Read from
+     the scripts rule A says the gate runs or imports, not from every file
+     beside them, and never for the harness's own directory, which rule A
+     already read file by file. A harness directory handed to the toolchain
+     as a project (`./bin/dawn test scripts/x`) is its SourcePlan inputs,
+     the manifest and src, not every harness beside them. Slash-bearing
      tokens, shell globs, and for Python gates the `ROOT / "a" / "b"` joins and
      `.glob()` patterns that a regular expression cannot tell from division.
      For JavaScript gates the `join(ROOT, "a", "b")` and
@@ -1166,6 +1182,722 @@ def gate_scripts(gate, tree, transitive=True):
     return scripts
 
 
+# ---- rule A, file by file --------------------------------------------------
+#
+# Rule A used to give a gate the whole directory of every script it runs. For
+# a directory that is one gate's code that is the right answer, and for
+# scripts/incremental-semantics-contract/, which holds 56 harnesses run by 69
+# steps in 29 jobs, it made every file in it look like every job's code: #164
+# touched four files that one job reads and the pull-request tier ran 30 of
+# 39 jobs (#169).
+#
+# So a step now owns the files its scripts reach, read from the scripts:
+#
+#   * the script it runs, and every script that runs;
+#   * the sibling modules they import (`import x`, `from x import y`, looked
+#     up next to the importer and on any `sys.path` entry it adds) and the
+#     files they `source`. An import executes the module's top level and the
+#     functions the importer takes from it, so those are what it reaches:
+#     cold.py copies the whole directory in its `main`, and the forty
+#     harnesses that take `ROOT, edit, run` from it never call `main`;
+#   * the files their code names inside the directory: `HERE / "x.dawn.txt"`,
+#     `Path(__file__).with_name("x")`, `"$here/x"`, or a literal that is a
+#     path relative to the directory (`("A.java", "B.java")`, a sibling
+#     script handed to a subprocess). A named script is followed too, since
+#     naming a sibling script is how a harness runs it.
+#
+# Whatever the reader cannot bound falls back to the old answer for that
+# script, the whole directory: the directory used as a value (`copytree(HERE,
+# ...)`, `cwd=HERE`, `HERE.glob(...)`, `cd "$here"`), a join whose name is
+# computed (`HERE / f"{name}.txt"`, `"$here/$x"`), a file that does not parse,
+# or a language this has no reader for. The fallback is per script, so one
+# harness that walks its directory does not widen the forty that do not.
+#
+# A file in a harness directory that no step reaches after all of that is
+# `unread`: every script that runs from that directory has been read and none
+# of them names it. That is a README, a benchmark nobody runs in CI, or the
+# template only that benchmark reads. It is still recorded in unseen.txt,
+# under its own kind, and plan.py lets it select no job rather than every job,
+# because here the empty answer is the measured one rather than a gap.
+
+HARNESS_PARENT = "scripts/"
+_PY_ALL = "*"
+
+
+def harness_dir(path):
+    """The directory under scripts/ a harness file lives in, or None."""
+    parent = posixpath.dirname(path)
+    return parent if parent.startswith(HARNESS_PARENT) else None
+
+
+def _inside(path, directory):
+    return path.startswith(directory + "/")
+
+
+def _up(path, levels):
+    parts = path.split("/") if path else []
+    if levels > len(parts):
+        return None
+    return "/".join(parts[: len(parts) - levels])
+
+
+def _join(base, segment):
+    segment = segment.strip()
+    if not segment or segment.startswith("/") or "\n" in segment:
+        return None
+    joined = posixpath.normpath(posixpath.join(base, segment) if base else segment)
+    if joined == ".":
+        return ""
+    if joined == ".." or joined.startswith("../"):
+        return None
+    return joined
+
+
+@lru_cache(maxsize=512)
+def _py_parse(text):
+    import ast
+
+    try:
+        return ast.parse(text)
+    except (SyntaxError, ValueError):
+        return None
+
+
+class _Reach:
+    """What one harness file reaches: files it reads, directories it reads as
+    a whole (with the reason), and the script files whose text is its code."""
+
+    def __init__(self):
+        self.reads = {}
+        self.whole = {}
+        self.code = set()
+
+    def merge(self, other, how=None):
+        for path, why in other.reads.items():
+            self.reads.setdefault(path, why if how is None else how)
+        for path, why in other.whole.items():
+            self.whole.setdefault(path, why)
+        self.code |= other.code
+
+
+class _PyModule:
+    """One Python harness file, split into the units an importer can reach."""
+
+    def __init__(self, reader, script):
+        import ast
+
+        self.script = script
+        self.dir = posixpath.dirname(script)
+        self.error = None
+        self.env = {}
+        self.defs = set()
+        self.units = {}
+        text = reader.tree.read(script)
+        tree_ast = _py_parse(text)
+        if tree_ast is None:
+            self.error = "does not parse as Python"
+            return
+        self.ast = tree_ast
+        parents = {}
+        for node in ast.walk(tree_ast):
+            for child in ast.iter_child_nodes(node):
+                parents[id(child)] = node
+        self.parents = parents
+        # Top-level units: each def or class, the `__main__` guard, and the
+        # rest of the module, which an import always executes.
+        self.unit_of = {}
+        for stmt in tree_ast.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                unit = stmt.name
+                self.defs.add(stmt.name)
+            elif (
+                isinstance(stmt, ast.If)
+                and isinstance(stmt.test, ast.Compare)
+                and isinstance(stmt.test.left, ast.Name)
+                and stmt.test.left.id == "__name__"
+            ):
+                unit = "<main>"
+            else:
+                unit = "<module>"
+            for node in ast.walk(stmt):
+                self.unit_of[id(node)] = unit
+            self.units.setdefault(unit, []).append(stmt)
+        self.imports = []
+        self.syspath_nodes = set()
+        for node in ast.walk(tree_ast):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    self.imports.append((self.unit_of.get(id(node)), alias.name,
+                                         None, alias.asname or alias.name))
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names = [a.name for a in node.names]
+                self.imports.append((self.unit_of.get(id(node)), node.module,
+                                     None if "*" in names else names, None))
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("insert", "append")
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == "path"
+                and isinstance(node.func.value.value, ast.Name)
+                and node.func.value.value.id == "sys"
+            ):
+                for arg in node.args:
+                    for sub in ast.walk(arg):
+                        self.syspath_nodes.add(id(sub))
+        # Loop variables over a literal tuple, so `HERE / n for n in ("A",
+        # "B")` names A and B rather than reading as a computed join.
+        self.loop_literals = {}
+        for node in ast.walk(tree_ast):
+            gens = []
+            if isinstance(node, ast.For):
+                gens.append((node.target, node.iter))
+            elif isinstance(node, ast.comprehension):
+                gens.append((node.target, node.iter))
+            for target, it in gens:
+                if (
+                    isinstance(target, ast.Name)
+                    and isinstance(it, (ast.Tuple, ast.List))
+                    and it.elts
+                    and all(
+                        isinstance(e, ast.Constant) and isinstance(e.value, str)
+                        for e in it.elts
+                    )
+                ):
+                    self.loop_literals.setdefault(target.id, set()).update(
+                        e.value for e in it.elts
+                    )
+        # Top-level functions whose every `return` is a string literal (or a
+        # conditional between two), so `HERE / matrix_name(scope)` names
+        # what matrix_name can return rather than reading as computed.
+        self.literal_returns = {}
+        for stmt in tree_ast.body:
+            if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            values = set()
+            returns = [n for n in ast.walk(stmt) if isinstance(n, ast.Return)]
+            for ret in returns:
+                options = (
+                    [ret.value.body, ret.value.orelse]
+                    if isinstance(ret.value, ast.IfExp) else [ret.value]
+                )
+                if not all(
+                    isinstance(o, ast.Constant) and isinstance(o.value, str)
+                    for o in options
+                ):
+                    values = None
+                    break
+                values |= {o.value for o in options}
+            if returns and values:
+                self.literal_returns[stmt.name] = values
+        self.module_files = {}
+
+    def resolve_imports(self, reader):
+        """Bind imported names, then this module's own path names."""
+        import ast
+
+        if self.error:
+            return
+        search = [self.dir]
+        # sys.path entries need the env, and the env needs the imports; a
+        # first pass over local bindings is enough for every spelling here.
+        self._bind()
+        for node in ast.walk(self.ast):
+            if id(node) in self.syspath_nodes and isinstance(node, ast.expr):
+                for path in self.value(node) or ():
+                    if path in reader.tree.dirs and path not in search:
+                        search.append(path)
+        for unit, module, names, alias in self.imports:
+            rel = module.replace(".", "/") + ".py"
+            target = next(
+                (f"{d}/{rel}" for d in search if f"{d}/{rel}" in reader.tree.fileset),
+                None,
+            )
+            if target is None:
+                continue
+            self.module_files[module] = target
+            other = reader.py_module(target)
+            if other.error:
+                continue
+            for name in names or ():
+                if name in other.env:
+                    self.env[name] = self.env.get(name, frozenset()) | other.env[name]
+        self._bind()
+
+    def _bind(self):
+        import ast
+
+        for _ in range(3):
+            for node in ast.walk(self.ast):
+                if isinstance(node, ast.Assign):
+                    targets, value = node.targets, node.value
+                elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                    targets, value = [node.target], node.value
+                else:
+                    continue
+                paths = self.value(value)
+                if not paths:
+                    continue
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        self.env[target.id] = self.env.get(target.id, frozenset()) | paths
+
+    def value(self, node):
+        """-> the repository paths an expression can denote, or None."""
+        import ast
+
+        if isinstance(node, ast.Name):
+            if node.id == "__file__":
+                return frozenset([self.script])
+            return self.env.get(node.id)
+        if isinstance(node, ast.Attribute):
+            if node.attr == "parent":
+                base = self.value(node.value)
+                return self._each(base, lambda p: _up(p, 1))
+            return None
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute):
+            if node.value.attr == "parents" and isinstance(node.slice, ast.Constant):
+                k = node.slice.value
+                if isinstance(k, int):
+                    base = self.value(node.value.value)
+                    return self._each(base, lambda p: _up(p, k + 1))
+            return None
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            base = self.value(node.left)
+            if not base:
+                return None
+            right = node.right
+            if isinstance(right, ast.Constant) and isinstance(right.value, str):
+                return self._each(base, lambda p: _join(p, right.value))
+            if (
+                isinstance(right, ast.IfExp)
+                and all(
+                    isinstance(b, ast.Constant) and isinstance(b.value, str)
+                    for b in (right.body, right.orelse)
+                )
+            ):
+                return frozenset(
+                    j for p in base for b in (right.body, right.orelse)
+                    if (j := _join(p, b.value)) is not None
+                ) or None
+            literals = None
+            if isinstance(right, ast.Name) and right.id in self.loop_literals:
+                literals = self.loop_literals[right.id]
+            elif (
+                isinstance(right, ast.Call)
+                and isinstance(right.func, ast.Name)
+                and right.func.id in self.literal_returns
+            ):
+                literals = self.literal_returns[right.func.id]
+            if literals:
+                return frozenset(
+                    j for p in base for s in literals
+                    if (j := _join(p, s)) is not None
+                ) or None
+            return None
+        if isinstance(node, ast.Call):
+            func = node.func
+            args = node.args
+            if isinstance(func, ast.Name) and func.id in ("Path", "PurePath", "str"):
+                if len(args) == 1 and not node.keywords:
+                    return self.value(args[0])
+                return None
+            if not isinstance(func, ast.Attribute):
+                return None
+            if (
+                func.attr in ("Path", "PurePath")
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "pathlib"
+                and len(args) == 1
+            ):
+                return self.value(args[0])
+            if func.attr in ("resolve", "absolute", "expanduser") and not args:
+                return self.value(func.value)
+            literal = (
+                args[0].value
+                if len(args) == 1
+                and isinstance(args[0], ast.Constant)
+                and isinstance(args[0].value, str)
+                else None
+            )
+            if func.attr == "with_name" and literal is not None:
+                base = self.value(func.value)
+                return self._each(base, lambda p: _join(_up(p, 1) or "", literal))
+            if func.attr == "with_suffix" and literal is not None:
+                base = self.value(func.value)
+                return self._each(
+                    base, lambda p: posixpath.splitext(p)[0] + literal if p else None
+                )
+            if func.attr == "joinpath" and args and all(
+                isinstance(a, ast.Constant) and isinstance(a.value, str) for a in args
+            ):
+                base = self.value(func.value)
+                return self._each(base, lambda p: _join(p, "/".join(a.value for a in args)))
+            is_os_path = (
+                isinstance(func.value, ast.Attribute)
+                and func.value.attr == "path"
+                and isinstance(func.value.value, ast.Name)
+                and func.value.value.id == "os"
+            )
+            if is_os_path and len(args) >= 1:
+                if func.attr in ("abspath", "realpath", "normpath") and len(args) == 1:
+                    return self.value(args[0])
+                if func.attr == "dirname" and len(args) == 1:
+                    return self._each(self.value(args[0]), lambda p: _up(p, 1))
+                if func.attr == "join" and all(
+                    isinstance(a, ast.Constant) and isinstance(a.value, str)
+                    for a in args[1:]
+                ):
+                    base = self.value(args[0])
+                    return self._each(
+                        base, lambda p: _join(p, "/".join(a.value for a in args[1:]))
+                    )
+        return None
+
+    @staticmethod
+    def _each(base, step):
+        if not base:
+            return None
+        out = frozenset(r for p in base if (r := step(p)) is not None)
+        return out or None
+
+    def facts(self, reader, unit):
+        """-> (reads {path: line}, whole {dir: reason}, refs) for one unit."""
+        import ast
+
+        reads, whole, refs = {}, {}, set()
+        tree = reader.tree
+        stmts = self.units.get(unit, [])
+        for stmt in stmts:
+            for node in ast.walk(stmt):
+                line = getattr(node, "lineno", 0)
+                if isinstance(node, ast.Name) and node.id in self.defs:
+                    refs.add(node.id)
+                if not isinstance(node, ast.expr):
+                    continue
+                parent = self.parents.get(id(node))
+                if isinstance(node, ast.JoinedStr):
+                    self._computed(node, line, reads, whole, tree)
+                    continue
+                if (
+                    isinstance(node, ast.Constant)
+                    and isinstance(node.value, str)
+                    and not isinstance(parent, ast.JoinedStr)
+                ):
+                    # A literal used as a join segment is the join's business.
+                    joined = isinstance(parent, ast.BinOp) and parent.right is node
+                    called = isinstance(parent, ast.Call) and isinstance(
+                        parent.func, ast.Attribute
+                    ) and parent.func.attr in ("with_name", "with_suffix", "joinpath", "join")
+                    if not joined and not called:
+                        self._literal(node.value, line, reads, whole, tree)
+                    continue
+                if id(node) in self.syspath_nodes:
+                    continue
+                if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+                    continue
+                paths = self.value(node)
+                if not paths:
+                    continue
+                # Only the outermost expression that is still a path counts:
+                # `HERE` inside `HERE / "x"` is the join's base, and
+                # `Path(__file__)` inside `.with_name("x")` is the call's.
+                if self._inner(node):
+                    continue
+                binding = isinstance(parent, (ast.Assign, ast.AnnAssign)) and parent.value is node
+                walker = (
+                    isinstance(parent, ast.Attribute)
+                    and parent.attr in ("glob", "rglob", "iterdir", "walk", "with_name",
+                                        "with_suffix", "joinpath")
+                )
+                for path in paths:
+                    if path == self.dir or (walker and path == self.script):
+                        if binding and path == self.dir:
+                            continue
+                        whole.setdefault(
+                            self.dir,
+                            f"{self.script}:{line} uses its directory as a value "
+                            f"(`{ast.unparse(parent if walker else node)[:60]}`)",
+                        )
+                    elif _inside(path, self.dir) and tree.exists(path):
+                        reads.setdefault(path, line)
+        return reads, whole, refs
+
+    def _inner(self, node):
+        """Whether an enclosing expression is still a path, so `node` is a
+        base rather than the thing read: `HERE` in `HERE / "x"`, in
+        `HERE.parents[1]`, and `Path(__file__)` in `.with_name("x")`."""
+        import ast
+
+        child = node
+        parent = self.parents.get(id(node))
+        while isinstance(parent, ast.expr):
+            if self.value(parent):
+                return True
+            chained = (
+                (isinstance(parent, ast.Attribute) and parent.value is child)
+                or (isinstance(parent, ast.Subscript) and parent.value is child)
+                or (isinstance(parent, ast.Call) and parent.func is child)
+            )
+            if not chained:
+                return False
+            child, parent = parent, self.parents.get(id(parent))
+        return False
+
+    def _computed(self, node, line, reads, whole, tree):
+        """`ROOT / f"scripts/x/sam_{name}.dawn"`: a name computed under a
+        constant prefix reads the directory that prefix ends in."""
+        import ast
+
+        prefix = ""
+        for part in node.values:
+            if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                prefix += part.value
+            else:
+                break
+        parent = self.parents.get(id(node))
+        head = prefix.rsplit("/", 1)[0] if "/" in prefix else ""
+        if isinstance(parent, ast.BinOp) and parent.right is node:
+            bases = self.value(parent.left) or ()
+        elif head and _join("", head):
+            # Standalone, it is a path only if its constant head is one.
+            bases = ("", self.dir)
+        else:
+            return
+        for base in bases:
+            where = _join(base, head) if head else base
+            if where is None:
+                continue
+            if where == self.dir:
+                whole.setdefault(
+                    self.dir, f"{self.script}:{line} computes a name in its "
+                    f"directory (`{ast.unparse(node)[:60]}`)"
+                )
+            elif _inside(where, self.dir) and tree.exists(where):
+                reads.setdefault(where, line)
+
+    def _literal(self, text, line, reads, whole, tree):
+        text = text.strip()
+        if not text or len(text) > 200 or "\n" in text:
+            return
+        for cand in (_join(self.dir, text), _join("", text)):
+            if cand is None:
+                continue
+            if cand == self.dir and cand == _join("", text):
+                whole.setdefault(
+                    self.dir, f"{self.script}:{line} names its own directory, "
+                    f"`{text}`, as a value"
+                )
+            elif _inside(cand, self.dir) and tree.exists(cand):
+                reads.setdefault(cand, line)
+
+
+class HarnessReader:
+    """File-level rule A over one Tree. Memoised per tree, because a mutant
+    Tree is a different tree even where its text is the same."""
+
+    def __init__(self, tree):
+        self.tree = tree
+        self._py = {}
+        self._reach = {}
+
+    def py_module(self, script):
+        mod = self._py.get(script)
+        if mod is None:
+            mod = self._py[script] = _PyModule(self, script)
+            mod.resolve_imports(self)
+        return mod
+
+    def reach(self, script, units=_PY_ALL, stack=()):
+        key = (script, units if units == _PY_ALL else frozenset(units))
+        if key in self._reach:
+            return self._reach[key]
+        out = _Reach()
+        if script in stack:
+            return out
+        stack = stack + (script,)
+        out.code.add(script)
+        directory = posixpath.dirname(script)
+        suffix = Path(script).suffix
+        if suffix == ".py":
+            self._reach_py(script, units, out, stack)
+        elif suffix == ".sh":
+            self._reach_sh(script, out, stack)
+        else:
+            out.whole.setdefault(
+                directory, f"{script} is `{suffix or 'extensionless'}`, which "
+                "this map has no reader for"
+            )
+        self._reach[key] = out
+        return out
+
+    C_INCLUDE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.M)
+
+    def _follow(self, path, out, stack, how):
+        """A named file: read it, run it if it is a script, and take the
+        headers a C file includes by quoted name."""
+        if path in out.reads:
+            return
+        out.reads[path] = how
+        if path not in self.tree.fileset:
+            return
+        suffix = Path(path).suffix
+        if suffix in SCRIPT_SUFFIXES:
+            out.merge(self.reach(path, _PY_ALL, stack), how)
+        elif suffix in (".c", ".h"):
+            base = posixpath.dirname(path)
+            for header in self.C_INCLUDE.findall(self.tree.read(path)):
+                target = _join(base, header)
+                if target and target in self.tree.fileset:
+                    self._follow(
+                        target, out, stack,
+                        f"{posixpath.basename(path)} includes it",
+                    )
+
+    def _reach_py(self, script, units, out, stack):
+        mod = self.py_module(script)
+        name = posixpath.basename(script)
+        if mod.error:
+            out.whole.setdefault(mod.dir, f"{script} {mod.error}")
+            return
+        if units == _PY_ALL:
+            todo = set(mod.units)
+        else:
+            todo = {"<module>"} | {u for u in units if u in mod.units}
+        done = set()
+        while todo:
+            unit = todo.pop()
+            if unit in done:
+                continue
+            done.add(unit)
+            reads, whole, refs = mod.facts(self, unit)
+            for path, line in reads.items():
+                self._follow(path, out, stack, f"{name}:{line} names it")
+            for path, why in whole.items():
+                out.whole.setdefault(path, why)
+            todo |= {r for r in refs if r in mod.units} - done
+        for unit, module, names, alias in mod.imports:
+            if unit not in done:
+                continue
+            target = mod.module_files.get(module)
+            if target is None:
+                continue
+            out.reads.setdefault(target, f"{name} imports `{module}`")
+            other = self.py_module(target)
+            take = _PY_ALL if names is None else (
+                [n for n in names if n in other.defs] or ["<module>"]
+            )
+            out.merge(self.reach(target, take, stack), f"{name} imports `{module}`")
+
+    SH_ASSIGN = re.compile(
+        r"^\s*(?:local\s+|readonly\s+|export\s+|declare\s+(?:-\w+\s+)?)?(\w+)=(.*)$"
+    )
+    SH_SELF_DIR = re.compile(
+        r"dirname\s+\$\{?(?:BASH_SOURCE(?:\[0\])?|0)\}?\s*\)((?:/\.\.)*)"
+    )
+    SH_USE = re.compile(r"\$(?:\{(\w+)\}|(\w+))")
+    SH_SEGMENT = re.compile(r"/([\w.@+,=-]+(?:/[\w.@+,=-]+)*)(/?)(.?)")
+
+    def _reach_sh(self, script, out, stack):
+        tree = self.tree
+        directory = posixpath.dirname(script)
+        name = posixpath.basename(script)
+        text = strip_comments(tree.read(script))
+        lines = [ln.replace('"', "").replace("'", "") for ln in text.splitlines()]
+        env = {}
+        binding_lines = set()
+        for _ in range(2):
+            for n, ln in enumerate(lines):
+                m = self.SH_ASSIGN.match(ln)
+                if not m:
+                    continue
+                var, rhs = m.group(1), m.group(2).strip()
+                value = None
+                self_dir = self.SH_SELF_DIR.search(rhs)
+                if self_dir:
+                    value = _up(directory, self_dir.group(1).count("/.."))
+                else:
+                    ref = re.match(r"^\$\{?(\w+)\}?(?:/([\w.@+/-]+))?/?$", rhs)
+                    if ref and ref.group(1) in env:
+                        value = next(iter(env[ref.group(1)]))
+                        if ref.group(2):
+                            value = _join(value, ref.group(2))
+                    elif re.fullmatch(r"(?:\./)?[\w.@+-]+(?:/[\w.@+-]+)*/?", rhs):
+                        literal = _join("", rhs)
+                        if literal is not None and literal in tree.dirs:
+                            value = literal
+                if value is not None:
+                    env[var] = env.get(var, frozenset()) | {value}
+                    binding_lines.add(n)
+        for n, ln in enumerate(lines):
+            line_no = n + 1
+            spans = []
+            for m in self.SH_USE.finditer(ln):
+                var = m.group(1) or m.group(2)
+                if var in env:
+                    spans.append((m.end(), env[var]))
+            for m in re.finditer(
+                r"\$\(dirname\s+\$\{?(?:BASH_SOURCE(?:\[0\])?|0)\}?\)|\$\{BASH_SOURCE(?:\[0\])?%/\*\}",
+                ln,
+            ):
+                spans.append((m.end(), frozenset([directory])))
+            for end, values in spans:
+                seg = self.SH_SEGMENT.match(ln, end)
+                for base in values:
+                    if seg:
+                        path = _join(base, seg.group(1))
+                        dynamic = seg.group(3) in ("$", "*", "?", "[", "{") or (
+                            seg.group(2) == "/" and seg.group(3) in ("$", "*", "?", "[", "{")
+                        )
+                    else:
+                        path, dynamic = base, False
+                    if path is None:
+                        continue
+                    if path == directory:
+                        if n in binding_lines:
+                            continue
+                        out.whole.setdefault(
+                            directory,
+                            f"{script}:{line_no} uses its directory as a value "
+                            f"(`{ln.strip()[:60]}`)",
+                        )
+                    elif _inside(path, directory) and tree.exists(path):
+                        if dynamic and path in tree.fileset:
+                            path = posixpath.dirname(path)
+                            if path == directory:
+                                out.whole.setdefault(
+                                    directory,
+                                    f"{script}:{line_no} computes a name in its "
+                                    f"directory (`{ln.strip()[:60]}`)",
+                                )
+                                continue
+                        self._follow(path, out, stack, f"{name}:{line_no} names it")
+                    elif (
+                        re.match(r"^\s*(?:source|\.)\s", ln)
+                        and path in tree.fileset
+                        and Path(path).suffix == ".sh"
+                    ):
+                        self._follow(path, out, stack, f"{name}:{line_no} sources it")
+            # Literal paths: repository-relative tokens, and words that are a
+            # path relative to this directory.
+            for word in re.findall(r"[\w.@+-]+(?:/[\w.@+-]+)*", SH_VAR_PREFIX.sub("", ln)):
+                for cand in (_join(directory, word), _join("", word)):
+                    if cand is None:
+                        continue
+                    if cand == directory and cand == _join("", word):
+                        if n not in binding_lines:
+                            out.whole.setdefault(
+                                directory,
+                                f"{script}:{line_no} names its own directory "
+                                f"as a value (`{ln.strip()[:60]}`)",
+                            )
+                    elif _inside(cand, directory) and tree.exists(cand):
+                        self._follow(cand, out, stack, f"{name}:{line_no} names it")
+
+
+SH_VAR_PREFIX = re.compile(r"\$\{?\w+\}?/")
+
+
 class Observation:
     def __init__(self, level, gate_id, why, tag_only=False):
         self.level = level
@@ -1188,6 +1920,14 @@ class Map:
         self.problems = []
         self.std_modules = std_module_paths(tree.read(STD_MODULE_INDEX))
         self.std_module_observation = None
+        self.harness = HarnessReader(tree)
+        # harness directory -> the steps that run a script from it
+        self.harness_users = {}
+        # harness directory -> {script: why it fell back to the whole directory}
+        self.fallback = {}
+        # files some step's scripts reach, and the harness files none does
+        self.reached = set()
+        self.unread = {}
         self._build()
 
     def add(self, path, obs):
@@ -1196,6 +1936,38 @@ class Map:
     def add_under(self, prefix, obs):
         for f in self.tree.under(prefix):
             self.add(f, obs)
+
+    def project_inputs(self, token, command):
+        """The SourcePlan inputs of a harness directory the toolchain is
+        handed as a project, or None to read the whole path.
+
+        `./bin/dawn test scripts/incremental-semantics-contract` compiles that
+        directory's manifest and src tree and the local projects they reach,
+        which is what `compiler_input_records` says a SourcePlan project
+        contributes; the fifty Python harnesses beside them are not its input.
+        Limited to directories under scripts/, where the directory is also a
+        harness's own; anywhere else the old whole-path answer stands. A
+        closure that cannot be derived keeps the whole path too.
+        """
+        tree = self.tree
+        if (
+            not token.startswith(HARNESS_PARENT)
+            or token not in tree.dirs
+            or f"{token}/{MANIFEST}" not in tree.fileset
+            or not re.search(r"(^|[\s/])bin/dawn\b", command)
+        ):
+            return None
+        projects, problems = compiler_project_closure(
+            tree, token, f"project inputs of {token}"
+        )
+        if problems:
+            return None
+        inputs = []
+        for project in projects:
+            inputs += [f"{project}/{MANIFEST}", f"{project}/src"]
+            if f"{project}/dawn.lock" in tree.fileset:
+                inputs.append(f"{project}/dawn.lock")
+        return inputs
 
     # ---- rule A + B ---------------------------------------------------
     def _rule_ab(self):
@@ -1217,42 +1989,63 @@ class Map:
                         "the file moved or this parser cannot read the step"
                     )
             for script in sorted(scripts):
-                # A: the gate runs this script, so the script's own directory
-                # is the gate's code. `scripts/foo/run.sh` owns `scripts/foo`;
-                # `scripts/doc-check.py` owns only itself.
-                # `scripts/foo/run.sh` owns `scripts/foo`, fixtures included:
-                # that directory is one gate's code and nothing else's.
-                # `site/build.sh` owns only itself; site/ is the subject it
-                # builds, not the gate, and marking the whole directory exact
-                # would say a page's text is recorded byte for byte somewhere.
+                # A: the gate runs this script. Outside scripts/ it owns only
+                # itself: `site/build.sh` is not site/'s code, and marking the
+                # whole directory exact would say a page's text is recorded
+                # byte for byte somewhere. Under scripts/ it owns what the
+                # script reaches, file by file (see HarnessReader), and the
+                # whole directory only where the reader cannot bound that.
                 owner = str(Path(script).parent)
-                target = owner if owner.startswith("scripts/") else script
-                self.owned[gate.id].add(target)
-                self.add_under(
-                    target,
-                    Observation(
-                        "exact",
-                        gate.id,
-                        f"{gate.where()} runs {script}",
-                        gate.tag_only,
-                    ),
+                harness = owner.startswith(HARNESS_PARENT)
+                self.owned[gate.id].add(owner if harness else script)
+                runs = f"{gate.where()} runs {script}"
+                if harness:
+                    reach = self.harness.reach(script)
+                    self.harness_users.setdefault(owner, set()).add(gate.id)
+                    exact = {script: runs}
+                    for path, how in sorted(reach.reads.items()):
+                        for f in tree.under(path):
+                            exact.setdefault(f, f"{runs}; {how}")
+                    for directory, why in sorted(reach.whole.items()):
+                        self.fallback.setdefault(directory, {}).setdefault(script, why)
+                        for f in tree.under(directory):
+                            exact.setdefault(
+                                f, f"{runs}; {why}, so the whole directory is "
+                                "its code"
+                            )
+                    code = set(reach.code)
+                    for directory in reach.whole:
+                        code |= {
+                            f for f in tree.under(directory)
+                            if Path(f).suffix in SCRIPT_SUFFIXES
+                        }
+                    # A harness's own directory is read by the reader above;
+                    # rule B below must not hand it back whole.
+                    own = {posixpath.dirname(c) for c in code if harness_dir(c)}
+                else:
+                    exact = {script: runs}
+                    code = {script}
+                    own = set()
+                for path, why in exact.items():
+                    self.reached.add(path)
+                    self.add(path, Observation("exact", gate.id, why, gate.tag_only))
+                # B: whatever that code names.
+                body = "".join(
+                    strip_comments(tree.read(c)) + "\n"
+                    for c in sorted(code)
+                    if c not in UNSCRAPED and Path(c).suffix in SCRIPT_SUFFIXES
                 )
-                # B: whatever that script names. Helpers it calls are inside
-                # its own directory, so reading them is reading the gate.
-                body = ""
-                for sibling in tree.under(target):
-                    if sibling in UNSCRAPED:
-                        continue
-                    if Path(sibling).suffix in SCRIPT_SUFFIXES:
-                        body += strip_comments(tree.read(sibling)) + "\n"
                 names = path_tokens(body, tree) | shell_targets(body, tree)
-                if Path(script).suffix == ".py":
-                    names |= python_inputs(tree.read(script), tree)
+                for c in sorted(code):
+                    if Path(c).suffix == ".py" and c not in UNSCRAPED:
+                        names |= python_inputs(tree.read(c), tree)
                 if Path(script).suffix in JS_SUFFIXES:
                     named, unreadable = js_inputs(tree.read(script), tree, script)
                     names |= named
                     self.problems += unreadable
                 for token in sorted(names):
+                    if any(token == d or _inside(token, d) for d in own):
+                        continue
                     self.add_under(
                         token,
                         Observation(
@@ -1267,15 +2060,19 @@ class Map:
                 for token in sorted(named):
                     if token in tree.fileset and Path(token).suffix in SCRIPT_SUFFIXES:
                         continue
-                    self.add_under(
-                        token,
-                        Observation(
-                            "coarse",
-                            gate.id,
-                            f"{gate.where()} runs `{command.strip()}`",
-                            gate.tag_only,
-                        ),
+                    obs = Observation(
+                        "coarse",
+                        gate.id,
+                        f"{gate.where()} runs `{command.strip()}`",
+                        gate.tag_only,
                     )
+                    inputs = self.project_inputs(token, command)
+                    if inputs is None:
+                        self.add_under(token, obs)
+                    else:
+                        for path in inputs:
+                            self.add_under(path, obs)
+                            self.reached.update(tree.under(path))
             if SELF in scripts:
                 # Rule B cannot read this file (see SELF), so the evidence it
                 # does read is attributed from the declaration instead.
@@ -1649,12 +2446,29 @@ class Map:
 
     def _build(self):
         self._rule_ab()
+        self._harness_unread()
         self._rule_c()
         self._rule_d()
         self._rule_e()
         self._rule_f()
         self._rule_g()
         self._rule_h()
+
+    def _harness_unread(self):
+        """Files in a harness directory that no step's scripts reach.
+
+        Every script a step runs from that directory has been read, and none
+        of them names these. They are not attributed to anybody: a README, a
+        benchmark CI does not run, the template only that benchmark reads.
+        """
+        for directory, users in sorted(self.harness_users.items()):
+            for path in self.tree.under(directory):
+                if path in self.reached or path in self.unread:
+                    continue
+                self.unread[path] = (
+                    f"{len(users)} step(s) run scripts from {directory}, and "
+                    "no script they run imports, sources or names this file"
+                )
 
     def _rule_h(self):
         """Propagate observed example inputs through their manifest closure.
@@ -2029,7 +2843,9 @@ def report(gm, paths, additional_std_modules=None, stream=sys.stdout):
         else:
             print(path, file=stream)
             obs = gm.verdict(path, additional_std_modules)
-        if not obs:
+        if not obs and path in gm.unread:
+            print(f"  unread  {gm.unread[path]}", file=stream)
+        elif not obs:
             print("  none    no gate reads, runs or records this file", file=stream)
         # One line per (level, gate). A driver module can share a dozen usage
         # strings with one differential; twelve identical verdicts is a wall,
@@ -2175,13 +2991,21 @@ def check_structure(gm):
 # The reasons a path can be unwatched, and the shape of each reason as a
 # question about the map. A free-text note would be a comment; these are
 # checked, so a line cannot go on claiming a reason the tree stopped having.
+#
+# Each test is asked (map, path, observations). `unread` and `no-gate` are
+# disjoint on purpose: plan.py lets an `unread` path select no job, so a line
+# that says `unread` about a path the harness reader never cleared, or
+# `no-gate` about one it did, is refused rather than trusted.
 UNSEEN_KINDS = {
+    # a file in a harness directory that no script run from it reaches
+    "unread": lambda gm, path, obs: not obs and path in gm.unread,
     # nothing in any workflow, at any strength, reaches this path
-    "no-gate": lambda obs: not obs,
+    "no-gate": lambda gm, path, obs: not obs and path not in gm.unread,
     # gates reach it, but rule D says each of them cancels its content out
-    "blind-only": lambda obs: bool(obs) and all(o.level == "blind" for o in obs),
+    "blind-only": lambda gm, path, obs: bool(obs)
+    and all(o.level == "blind" for o in obs),
     # watched, but only by a workflow that runs on a tag rather than on a push
-    "tag-only": lambda obs: bool(obs)
+    "tag-only": lambda gm, path, obs: bool(obs)
     and any(o.tag_only for o in obs)
     and all(o.tag_only for o in obs if o.level in ("exact", "coarse")),
 }
@@ -2242,7 +3066,7 @@ def ratchet_problems(gm, record_text):
                 f"unseen.txt gives {path} the kind `{kind}`, which is not one "
                 f"of {sorted(UNSEEN_KINDS)}"
             )
-        elif not test(gm.by_path.get(path, [])):
+        elif not test(gm, path, gm.by_path.get(path, [])):
             problems.append(
                 f"unseen.txt calls {path} `{kind}`, and the map contradicts "
                 "it. The reason is checked, not decorative; re-derive it"
@@ -2966,9 +3790,9 @@ def rewrite_signature_coupling(base):
     return apply
 
 
-def kind_for(obs):
+def kind_for(gm, path):
     for kind, test in UNSEEN_KINDS.items():
-        if test(obs):
+        if test(gm, path, gm.by_path.get(path, [])):
             return kind
     return None
 
@@ -2982,7 +3806,7 @@ def regenerate_record(gm, note="regenerated by the selftest"):
     """
     lines = []
     for path in gm.unseen():
-        kind = kind_for(gm.by_path.get(path, [])) or "no-gate"
+        kind = kind_for(gm, path) or "no-gate"
         lines.append(f"{path}  {kind}: {note}")
     return "\n".join(lines) + "\n"
 
@@ -3919,10 +4743,109 @@ def selftest_example_dependencies():
     return problems
 
 
+def selftest_harness_reader():
+    """File-level rule A on a synthetic tree small enough to read whole.
+
+    Every edge kind the reader follows, the per-script fallback, the project
+    handed to the toolchain, and `unread`; then the same tree with one import
+    removed, which must take the shared module away from exactly that step.
+    """
+    text = {
+        ".github/workflows/gates.yml": (
+            "jobs:\n"
+            "  one:\n    steps:\n      - name: a\n        run: python3 scripts/h/a.py\n"
+            "  two:\n    steps:\n      - name: b\n        run: python3 scripts/h/b.py\n"
+            "  three:\n    steps:\n      - name: c\n        run: bash scripts/h/c.sh\n"
+            "  four:\n    steps:\n      - name: d\n        run: ./bin/dawn test scripts/h\n"
+            "  five:\n    steps:\n      - name: w\n        run: python3 scripts/w/walk.py\n"
+        ),
+        "bin/dawn": "#!/bin/sh\n",
+        "scripts/h/a.py": (
+            "from pathlib import Path\nfrom common import helper\n"
+            "HERE = Path(__file__).resolve().parent\n"
+            "TEXT = (HERE / \"only-a.txt\").read_text()\n"
+        ),
+        "scripts/h/b.py": "from common import SHARED\nprint(SHARED.read_text())\n",
+        "scripts/h/common.py": (
+            "import shutil\nfrom pathlib import Path\n"
+            "HERE = Path(__file__).resolve().parent\n"
+            "SHARED = HERE / \"shared.dawn.txt\"\n"
+            "def helper():\n    return 1\n"
+            "def main():\n    shutil.copytree(HERE, \"elsewhere\")\n"
+        ),
+        "scripts/h/c.sh": (
+            "here=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\n"
+            "source \"$here/lib.sh\"\ncc -o probe \"$here/probe.c\"\n"
+        ),
+        "scripts/h/lib.sh": "echo lib\n",
+        "scripts/h/probe.c": "#include \"probe.h\"\nint main(void) { return 0; }\n",
+        "scripts/h/probe.h": "#define PROBE 1\n",
+        "scripts/h/only-a.txt": "a\n",
+        "scripts/h/shared.dawn.txt": "fn shared() -> Int = 1\n",
+        "scripts/h/dawn.toml": 'schema = 1\nname = "h"\n',
+        "scripts/h/src/main.dawn": "pub fn main() -> Unit = ()\n",
+        "scripts/h/README.md": "# h\n",
+        "scripts/w/walk.py": (
+            "import shutil\nfrom pathlib import Path\n"
+            "shutil.copytree(Path(__file__).parent, \"elsewhere\")\n"
+        ),
+        "scripts/w/README.md": "# w\n",
+    }
+    tree = Tree(ROOT, files=list(text), overrides=text)
+
+    def jobs(gm, path):
+        return sorted({o.gate_id.split(" / ")[0] for o in gm.verdict(path)
+                       if o.level in ("exact", "coarse")})
+
+    want = {
+        "scripts/h/common.py": ["one", "two"],
+        "scripts/h/shared.dawn.txt": ["one", "two"],
+        "scripts/h/only-a.txt": ["one"],
+        "scripts/h/a.py": ["one"],
+        "scripts/h/lib.sh": ["three"],
+        "scripts/h/probe.c": ["three"],
+        "scripts/h/probe.h": ["three"],
+        "scripts/h/dawn.toml": ["four"],
+        "scripts/h/src/main.dawn": ["four"],
+        "scripts/h/README.md": [],
+        "scripts/w/README.md": ["five"],
+    }
+    problems = []
+    good = Map(tree)
+    for path, expected in want.items():
+        got = jobs(good, path)
+        if got != expected:
+            problems.append(f"harness reader probe: {path} is seen by {got}, "
+                            f"expected {expected}")
+    if sorted(good.unread) != ["scripts/h/README.md"]:
+        problems.append(f"harness reader probe: unread is {sorted(good.unread)}, "
+                        "expected only scripts/h/README.md")
+    if set(good.fallback) != {"scripts/w"}:
+        problems.append(f"harness reader probe: fell back for {sorted(good.fallback)}, "
+                        "expected only scripts/w (walk.py copies its directory; "
+                        "common.main does too, but nobody imports main)")
+    dropped = Map(tree.mutate(overrides={
+        "scripts/h/a.py": text["scripts/h/a.py"].replace("from common import helper\n", ""),
+    }))
+    for path, expected in (("scripts/h/common.py", ["two"]),
+                           ("scripts/h/shared.dawn.txt", ["two"]),
+                           ("scripts/h/only-a.txt", ["one"])):
+        got = jobs(dropped, path)
+        if got != expected:
+            problems.append(f"harness reader probe, import dropped: {path} is "
+                            f"seen by {got}, expected {expected}")
+    for problem in problems:
+        print(f"SELFTEST FAIL: {problem}", file=sys.stderr)
+    if not problems:
+        print("  harness reader: imports, templates, source, includes, project, "
+              "per-script fallback, unread and a dropped import OK")
+    return problems
+
+
 def selftest(record_path=None, record_mode=False):
     record_path = record_path or (HERE / "mutants.txt")
     failures = (selftest_matrix() + selftest_content_caches()
-                + selftest_example_dependencies())
+                + selftest_example_dependencies() + selftest_harness_reader())
     if failures:
         return 1
 
@@ -3978,6 +4901,8 @@ UNSEEN_HEADER = """\
 # a reason cannot go on claiming something the tree stopped supporting:
 #
 #   no-gate     nothing in any workflow reaches this path at any strength
+#   unread      a file in a harness directory that no script run from there
+#               imports, sources or names (plan.py selects no job for it)
 #   blind-only  gates reach it, and rule D says each of them cancels it out
 #   tag-only    watched, but only by a workflow that runs on a tag
 #
@@ -3997,7 +4922,7 @@ def record_unseen(gm, path):
     width = max((len(p) for p in computed), default=0) + 2
     lines = []
     for rel in computed:
-        kind, why = entries.get(rel, (kind_for(gm.by_path.get(rel, [])) or "no-gate",
+        kind, why = entries.get(rel, (kind_for(gm, rel) or "no-gate",
                                       NEEDS_A_REASON))
         lines.append(f"{rel.ljust(width)}{kind}: {why}")
     path.write_text(UNSEEN_HEADER + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
