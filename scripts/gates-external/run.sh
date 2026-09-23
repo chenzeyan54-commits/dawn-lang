@@ -15,6 +15,12 @@
 #   run.sh --sha <sha> --backend local --out <dir> [--jobs N] [--keep-going]
 #          [--only job1,job2] [--backend-opt KEY=VALUE ...] [--repo DIR]
 #   run.sh --sha <sha> --backend local --out <dir> --dry-run   # the plan only
+#   run.sh --sha <sha> --backend local --prefix DIR [--only ...]   # inside a prefix
+#   run.sh --sha <sha> --backend crun --prefix DIR --jobs 16       # on the cluster
+#
+# --prefix DIR runs every job inside the prefix prefix.py lays out and
+# inputs.py fills: its JDK, python, node and seed, an environment built from
+# nothing, and every write under DIR. --out then defaults to DIR/out/<sha>.
 #
 # Local backend options (--backend-opt):
 #   workdir=DIR        where per-job worktrees go (default: a sibling
@@ -39,7 +45,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --keep-going) args+=(--backend-opt keep-going=1); shift ;;
     --dry-run) args+=(--dry-run); shift ;;
-    --sha|--backend|--out|--jobs|--only|--backend-opt|--repo)
+    --sha|--backend|--out|--jobs|--only|--backend-opt|--repo|--prefix)
       [ $# -ge 2 ] || { echo "run.sh: $1 needs a value" >&2; exit 2; }
       args+=("$1" "$2"); shift 2 ;;
     -h|--help)
@@ -47,4 +53,6 @@ while [ $# -gt 0 ]; do
     *) echo "run.sh: unknown argument $1" >&2; exit 2 ;;
   esac
 done
-exec python3 "$here/runner.py" "${args[@]}"
+# -B: the runner's own bytecode would otherwise land in this directory, which is
+# outside a prefix and would fail check-isolation for a reason not the run's.
+exec python3 -B "$here/runner.py" "${args[@]}"
