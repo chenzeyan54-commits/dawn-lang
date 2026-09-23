@@ -10,6 +10,8 @@ scripts/gate-map/gatemap.py --compiler-inputs # stable selfhost compiler input m
 scripts/gate-map/gatemap.py --labels        # which differential owns which label
 scripts/gate-map/gatemap.py --unseen        # paths no gate watches
 scripts/gate-map/gatemap.py --check         # what CI runs
+scripts/gate-map/plan.py --event pull_request --base <sha>  # which gates.yml jobs a PR runs
+scripts/gate-map/plan.py --check-wiring --selftest          # what tree-policy runs for it
 ```
 
 ## Why it exists
@@ -33,14 +35,32 @@ rules, the four verdicts (`exact`, `coupled`, `coarse`, `blind`) and the file
 each rule reads are documented in the module docstring of `gatemap.py`, which
 is the authority; this page does not restate them.
 
-## Four files
+## Five files
 
 | file | what it is |
 |------|------------|
 | `gatemap.py` | the tool: derivation rules, the mutant set, `--check` |
+| `plan.py` | the pull-request tier: the gates.yml jobs a diff can reach |
 | `mutants.txt` | which assertion each mutant reddens, and which one owns it |
 | `unseen.txt` | a ratchet of the paths no gate watches, with a checked reason each |
 | `fixtures.txt` | the failures above, replayed on the trees they happened on |
+
+## The pull-request tier
+
+Since 2026-09-23 a pull request runs only the gates.yml jobs this map says
+can see its diff; a push to main still runs all of them, and a release only
+reads main. `plan.py` imports the Map rather than parsing the report above,
+and falls back to every job whenever the map's premise is not known to hold:
+a non-PR event, no base, a failed or empty diff, a path under the compiler,
+std, packages, launcher, workflows, this directory or the seed and bootstrap
+scripts, a map that fails or times out, an unseen path, or a deleted one. Its
+module docstring gives the reason for each; its self-test removes each one in
+turn and requires a case to go red. `--check-wiring` holds every gates.yml
+job to `needs: [plan]` and an `if:` that tests its own id.
+
+Like `gatemap.py`, `plan.py` is exempt from rules A and B: it names paths to
+describe them, and scraping it would record the plan job as reading every
+seed pin.
 
 ## Changing it
 

@@ -78,6 +78,12 @@ jobs:
           fi
           python3 scripts/check-no-claude-trailer.py --range "$range"
 
+  # The event and base sha are what gates.yml's `plan` job decides from: a
+  # pull request runs the gate jobs that can see its diff, anything else runs
+  # them all (see gates.yml's header and scripts/gate-map/plan.py).
   test:
     uses: ./.github/workflows/gates.yml
     secrets: inherit
+    with:
+      event: ${{ github.event_name }}
+      base: ${{ github.event.pull_request.base.sha }}
