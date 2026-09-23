@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "downloads": [
+    {
+      "name": "graalvm",
+      "version": "21.0.2",
+      "url": "https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-21.0.2/graalvm-community-jdk-21.0.2_linux-x64_bin.tar.gz",
+      "sha256": "b048069aaa3a99b84f5b957b162cc181a32a4330cbc35402766363c5be76ae48",
+      "dir": "graalvm-ce-21.0.2",
+      "bin": "bin",
+      "why": "the JDK graalvm/setup-graalvm@v1 installs for java-version 21, distribution graalvm-community: jdk-21.0.2 is the newest jdk-21 tag of graalvm-ce-builds"
+    },
+    {
+      "name": "node",
+      "version": "20.20.2",
+      "url": "https://nodejs.org/dist/v20.20.2/node-v20.20.2-linux-x64.tar.xz",
+      "sha256": "df770b2a6f130ed8627c9782c988fda9669fa23898329a61a871e32f965e007d",
+      "dir": "node-v20.20.2",
+      "bin": "bin",
+      "why": "node >= 20 for node:wasi (wasm-target) and the docs job; the 20 LTS line from nodejs.org"
+    },
+    {
+      "name": "wasi-sdk",
+      "version": "34",
+      "url": "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz",
+      "sha256": "b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4",
+      "dir": "wasi-sdk-34",
+      "bin": null,
+      "why": "the version and digest the wasm-target job of gates.yml pins"
+    },
+    {
+      "name": "python",
+      "version": "3.12.3",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20240415/cpython-3.12.3%2B20240415-x86_64-unknown-linux-gnu-install_only.tar.gz",
+      "sha256": "a73ba777b5d55ca89edef709e6b8521e3f3d4289581f174c8699adfb608d09d6",
+      "dir": "python-3.12.3",
+      "bin": "bin",
+      "why": "the python3 of ubuntu-latest (24.04) is 3.12.3; a relocatable python-build-standalone build of the same version, because the host's 3.14 changes a gate's result"
+    }
+  ]
+}

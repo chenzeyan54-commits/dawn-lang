@@ -72,7 +72,9 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--backend", required=True)
-    parser.add_argument("--out", required=True)
+    parser.add_argument("--out", help="default with --prefix: <prefix>/out/<full sha>")
+    parser.add_argument("--prefix", help="run inside this prefix (prefix.py); passed to the "
+                        "backend as --backend-opt prefix=DIR")
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--repo", default=str(HERE.parents[1]))
     parser.add_argument("--only", default="",
@@ -83,10 +85,9 @@ def main():
     args = parser.parse_args()
 
     started = time.monotonic()
-    out = Path(args.out).resolve()
-    out.mkdir(parents=True, exist_ok=True)
-    artifacts = out / "artifacts"
-    artifacts.mkdir(exist_ok=True)
+    if not args.out and not args.prefix:
+        print("gates-external: --out is required without --prefix", file=sys.stderr)
+        return 2
     log_lock = threading.Lock()
 
     def log(message):
@@ -99,6 +100,10 @@ def main():
         print(f"gates-external: refusing to run: {error}", file=sys.stderr)
         return 2
     jobs = plan["jobs"]
+    out = Path(args.out or Path(args.prefix) / "out" / plan["tree"]).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    artifacts = out / "artifacts"
+    artifacts.mkdir(exist_ok=True)
     if args.dry_run:
         print(f"tree {plan['tree']}  gates.yml blob {plan['gates_blob']}")
         rows = gatesplan.substitution_rows(jobs)
@@ -123,6 +128,8 @@ def main():
             print(f"gates-external: --backend-opt wants KEY=VALUE, got {item!r}", file=sys.stderr)
             return 2
         options[key] = value
+    if args.prefix:
+        options.setdefault("prefix", str(Path(args.prefix).resolve()))
     try:
         module = importlib.import_module(f"backend_{args.backend}")
     except ImportError as error:

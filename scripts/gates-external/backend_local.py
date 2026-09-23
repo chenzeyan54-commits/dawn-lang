@@ -46,6 +46,15 @@ job's workspace, with GITHUB_ENV and GITHUB_PATH honoured between steps. Each
 step is its own session so that whatever it leaves running is killed when it
 ends, which is what the runner does at the end of a job and what a shared
 machine needs sooner.
+
+With `--backend-opt prefix=DIR` (run.sh --prefix DIR) the same backend runs
+inside a prefix (prefix.py): the JDK, python, node and the seed come from the
+prefix's input pack, a job's environment is prefix.job_env (nothing inherited
+from the caller), its checkout is a `git clone --shared` under
+prefix/jobs/<sha> rather than a worktree (a worktree writes into the source
+repository's .git), and the lock files for literal /tmp paths live under
+prefix/tmp/locks. Without the option nothing changes: the #171 acceptance ran
+the host-environment path and still does.
 """
 
 import fcntl
@@ -65,6 +74,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gatesplan  # noqa: E402
+import prefix as prefix_mod  # noqa: E402
 
 TMP_LITERAL = re.compile(r"/tmp/[A-Za-z0-9._-]+")
 HOST_ENV_DROP = re.compile(r"^(GITHUB_|RUNNER_|DAWN_|ACTIONS_)")
@@ -80,9 +90,9 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
-def java_major(java):
+def java_major(java, extra=()):
     try:
-        out = subprocess.run([java, "-version"], capture_output=True, text=True,
+        out = subprocess.run([java, *extra, "-version"], capture_output=True, text=True,
                              timeout=60).stderr
     except (OSError, subprocess.TimeoutExpired):
         return None, ""
@@ -107,7 +117,13 @@ class LocalBackend:
         self.out = Path(ctx["out"])
         self.log = ctx["log"]
         opts = ctx["options"]
-        self.workdir = Path(opts.get("workdir") or self.repo.parent / "gates-external-jobs")
+        self.prefix = Path(opts["prefix"]).resolve() if opts.get("prefix") else None
+        # Where checkouts clone from in prefix mode: the repository itself here,
+        # a bare repository made from a shipped bundle on a cluster.
+        self.git_source = Path(opts.get("git-source") or self.repo)
+        default_workdir = (self.prefix / "jobs" / self.tree if self.prefix
+                           else self.repo.parent / "gates-external-jobs")
+        self.workdir = Path(opts.get("workdir") or default_workdir)
         self.keep_going = opts.get("keep-going", "0") == "1"
         self.keep_worktrees = opts.get("keep-worktrees", "0") == "1"
         self.timeout_scale = float(opts.get("timeout-scale", "2"))
@@ -122,6 +138,8 @@ class LocalBackend:
     # ------------------------------------------------------------- lifecycle
 
     def prepare(self):
+        if self.prefix:
+            return self._prepare_prefix()
         self.workdir.mkdir(parents=True, exist_ok=True)
         if self.seed_cache is None:
             common = subprocess.run(
@@ -141,6 +159,25 @@ class LocalBackend:
         self.log(f"local backend: run {self.run_id}, workdir {self.workdir}, "
                  f"seed cache {self.seed_cache}, JDK {self.jdk}, playground port {self.port}")
 
+    def _prepare_prefix(self):
+        prefix = self.prefix
+        prefix_mod.ensure_layout(prefix)
+        self.workdir.mkdir(parents=True, exist_ok=True)
+        missing = [item["dir"] for item in prefix_mod.load_lock()["downloads"]
+                   if not (prefix / "toolchain" / item["dir"]).is_dir()]
+        if missing:
+            raise SystemExit(f"local backend: the prefix {prefix} lacks toolchain/"
+                             f"{', toolchain/'.join(missing)}; run inputs.py build first")
+        self.jdk = str(prefix_mod.java_home(prefix))
+        self.seed_cache = None  # the prefix's inputs/seeds and inputs/std-seeds
+        prefix_mod.restore_coursier(prefix)
+        self.port = free_port()
+        env = prefix_mod.job_env(prefix)
+        env["PLAY_TEST_PORT"] = str(self.port)
+        self.base_env = env
+        self.log(f"local backend (prefix {prefix}): run {self.run_id}, JDK {self.jdk}, "
+                 f"playground port {self.port}")
+
     def _find_jdk(self):
         candidates = [self.jdk] if self.jdk else []
         home = Path.home() / "tools"
@@ -154,12 +191,15 @@ class LocalBackend:
         raise SystemExit("local backend: no JDK 21 found (pass --backend-opt jdk=<JAVA_HOME>)")
 
     def cleanup(self):
+        if self.prefix:
+            return
         subprocess.run(["git", "-C", str(self.repo), "worktree", "prune"],
                        capture_output=True)
 
     def toolchain(self):
         env = dict(self.base_env)
-        env["PATH"] = f"{self.jdk}/bin:{env.get('PATH', '')}"
+        if not self.prefix:
+            env["PATH"] = f"{self.jdk}/bin:{env.get('PATH', '')}"
 
         def first_line(args, stream="stdout"):
             try:
@@ -169,7 +209,12 @@ class LocalBackend:
             text = (done.stdout if stream == "stdout" else done.stderr).strip()
             return text.splitlines()[0].strip() if text else None
 
-        _, java_out = java_major(f"{self.jdk}/bin/java")
+        # In a prefix the probe must not write /tmp/hsperfdata_<user>, which
+        # HotSpot puts in a hardcoded /tmp whatever TMPDIR says; a flag on the
+        # command line does not print the "Picked up" note an environment
+        # variable would.
+        extra = ["-XX:-UsePerfData"] if self.prefix else []
+        _, java_out = java_major(f"{self.jdk}/bin/java", extra)
         build = re.search(r"Runtime Environment.*\(build ([^)]+)\)", java_out)
         python = first_line(["python3", "--version"])
         seeds = sorted(self.seed_hashes)
@@ -244,7 +289,7 @@ class LocalBackend:
                         self.seed_hashes.add(sha256_file(seed))
         if self.keep_worktrees:
             return
-        if state["checked_out"]:
+        if state["checked_out"] and not self.prefix:
             subprocess.run(["git", "-C", str(self.repo), "worktree", "remove", "--force",
                             str(ws)], capture_output=True)
         shutil.rmtree(ws.parent, ignore_errors=True)
@@ -266,7 +311,8 @@ class LocalBackend:
             # it; it cannot protect against anything else using that path.
             for literal in sorted(set(lock_paths)):
                 name = literal.strip("/").replace("/", "-")
-                handle = open(f"/tmp/gates-external-{name}.lock", "w")
+                lock_dir = self.prefix / "tmp" / "locks" if self.prefix else Path("/tmp")
+                handle = open(lock_dir / f"gates-external-{name}.lock", "w")
                 fcntl.flock(handle, fcntl.LOCK_EX)
                 held.append(handle)
             remaining = state["deadline"] - time.monotonic()
@@ -377,8 +423,23 @@ class LocalBackend:
             return False, "a second checkout in one job is not modelled"
         ws = state["ws"]
         ws.rmdir()
-        done = subprocess.run(["git", "-C", str(self.repo), "worktree", "add", "--detach",
-                               str(ws), self.tree], capture_output=True, text=True)
+        if self.prefix:
+            # Everything the clone writes is under ws; the source's objects are
+            # borrowed through alternates, read-only. Tags come along, as with
+            # a worktree; origin is the source path, not GitHub.
+            env = state["env"]
+            done = subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout",
+                                   str(self.git_source), str(ws)],
+                                  capture_output=True, text=True, env=env)
+            if done.returncode == 0:
+                more = subprocess.run(["git", "-C", str(ws), "checkout", "-q", "--detach",
+                                       self.tree], capture_output=True, text=True, env=env)
+                done = subprocess.CompletedProcess(more.args, more.returncode,
+                                                   done.stdout + more.stdout,
+                                                   done.stderr + more.stderr)
+        else:
+            done = subprocess.run(["git", "-C", str(self.repo), "worktree", "add", "--detach",
+                                   str(ws), self.tree], capture_output=True, text=True)
         (state["logs"] / f"step-{number}.checkout").write_text(done.stdout + done.stderr)
         if done.returncode != 0:
             ws.mkdir(exist_ok=True)
@@ -405,8 +466,12 @@ class LocalBackend:
         self._use_jdk(state)
         ws = state["ws"]
         tag = (ws / "scripts/seed-release.txt").read_text().strip()
-        for name in (tag, f"std-{tag}"):
-            src = Path(self.seed_cache) / name
+        if self.prefix:
+            pairs = [(self.prefix / "inputs/seeds" / tag, tag),
+                     (self.prefix / "inputs/std-seeds" / tag, f"std-{tag}")]
+        else:
+            pairs = [(Path(self.seed_cache) / name, name) for name in (tag, f"std-{tag}")]
+        for src, name in pairs:
             dst = ws / ".dawn/seeds" / name
             if src.is_dir() and not dst.exists():
                 shutil.copytree(src, dst, symlinks=True)
