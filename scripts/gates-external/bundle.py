@@ -285,32 +285,59 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
-def verify(path, repo):
-    """Re-derive everything checkable from git; print why it is not complete."""
-    bundle = json.loads(Path(path).read_text())
-    tree = bundle.get("tree", "")
+def check(bundle, repo, identities=None):
+    """Everything checkable about a bundle, recomputed from git at its tree.
+
+    -> (plan or None, errors, complete, reasons). `errors` are reasons the
+    bundle is invalid (schema, leaks, a blob or table that is not this tree's,
+    a `complete` claim that recomputation contradicts); `complete` and
+    `reasons` are the recomputed verdict and why it is false. This is the one
+    implementation: `verify` below prints it, publish.py refuses on it, and
+    verify_note.py runs it on GitHub after checking the signature.
+
+    `identities` is the set of host and user names the leak filter refuses.
+    The producer passes None (this machine's own); a verifier on another
+    machine passes an empty set, because it cannot know the producer's names
+    and its own would only make the check depend on where it runs. The shape
+    rules (paths, host names, addresses) apply either way.
+    """
+    if not isinstance(bundle, dict):
+        return None, ["bundle: not an object"], False, []
     try:
-        plan = gatesplan.plan_at(repo, tree)
+        plan = gatesplan.plan_at(repo, str(bundle.get("tree", "")))
     except gatesplan.PlanError as error:
-        print(f"verify: {error}", file=sys.stderr)
-        return 2
-    errors = validate(bundle, plan["jobs"])
+        return None, [f"tree: {error}"], False, []
+    errors = validate(bundle, plan["jobs"], identities)
     if bundle.get("gates_blob") != plan["gates_blob"]:
         errors.append(f"gates_blob: bundle says {bundle.get('gates_blob')}, "
                       f"the tree has {plan['gates_blob']}")
     want_subs = gatesplan.substitution_rows(plan["jobs"])
     if bundle.get("substitutions") != want_subs:
         errors.append("substitutions: not the table this tree's gates.yml produces")
-    complete, reasons = completeness(plan["jobs"], bundle.get("steps") or [])
+    steps = bundle.get("steps")
+    if not isinstance(steps, list) or not all(isinstance(s, dict) for s in steps):
+        errors.append("steps: not a list of objects, completeness not computed")
+        return plan, errors, False, []
+    complete, reasons = completeness(plan["jobs"], steps)
     if bundle.get("complete") != complete:
         errors.append(f"complete: bundle says {bundle.get('complete')}, recomputed {complete}")
+    return plan, errors, complete, reasons
+
+
+def verify(path, repo):
+    """Re-derive everything checkable from git; print why it is not complete."""
+    bundle = json.loads(Path(path).read_text())
+    plan, errors, complete, reasons = check(bundle, repo)
+    if plan is None:
+        print(f"verify: {errors[0]}", file=sys.stderr)
+        return 2
     for line in errors:
         print(f"INVALID {line}", file=sys.stderr)
     for line in reasons:
         print(f"INCOMPLETE {line}")
     if errors:
         return 2
-    print(f"{'COMPLETE' if complete else 'NOT COMPLETE'}: tree {tree}, "
+    print(f"{'COMPLETE' if complete else 'NOT COMPLETE'}: tree {plan['tree']}, "
           f"{sum(1 for s in bundle['steps'] if s['executed'])} of "
           f"{len(gatesplan.run_commands(plan['jobs']))} run steps executed")
     return 0 if complete else 1
@@ -318,8 +345,10 @@ def verify(path, repo):
 
 # ------------------------------------------------------------------ self-test
 
-def _fixture_plan():
-    text = """
+# A gates.yml small enough to read, with one command repeated across jobs and
+# one multi-line block. verify_note.py commits it to a scratch repository for
+# its own self-test, so it is a module constant rather than a local.
+FIXTURE_GATES_YML = """
 name: gates
 on:
   workflow_call:
@@ -345,7 +374,10 @@ jobs:
           ./scripts/second/run.sh
           ./scripts/second/run.sh --more
 """
-    jobs = gatesplan.parse(text)
+
+
+def _fixture_plan():
+    jobs = gatesplan.parse(FIXTURE_GATES_YML)
     return {"tree": "1" * 40, "gates_blob": "2" * 40, "jobs": jobs}
 
 
