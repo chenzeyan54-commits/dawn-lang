@@ -405,7 +405,7 @@ Product仍记录alias_resolved变化作为显式写集，不声称正常body必�
 | 2 | workspace 前缀缓存、生命周期、基本逐出 | #107已合并；[验收报告](history/incremental-semantics-p2-report.md) |
 | 3 | 稳定身份、具名产物及准入 | 声明/树/状态迁移已分批实现，完整生产接线未完成 |
 | 4 | Query runtime, dependency invalidation, and header integration | Real checker facts are recorded and revalidated; the opt-in body executor shares candidate-local query verdicts. Cross-revision input invalidation and production scheduling remain incomplete. |
-| 5 | 函数 body 增量、standalone/Playground | 未开始；验收后报告 |
+| 5 | 函数 body 增量、standalone/Playground | 部分：opt-in 切片已合并，生产不启用（calls #155、inferred #157、bounded generic #162、session body replay #158、prepared loader 与 LSP 会话 #159/#160/#161）；生产调度未接线，本期报告未写，G3 未达标 |
 | 6 | comptime/Java/索引与工具消费者收口 | 未开始 |
 | 7 | 长会话内存、完整差分、性能与发布验收 | 未开始；验收后报告 |
 
