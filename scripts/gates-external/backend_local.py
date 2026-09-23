@@ -1,0 +1,423 @@
+"""The local backend: run one gates.yml job on this machine.
+
+THE BACKEND CONTRACT (every backend module implements exactly this):
+
+    create(ctx) -> backend object, where ctx is a dict with
+        repo      Path   the repository whose object store holds the tree
+        tree      str    the full commit sha every job runs on
+        out       Path   a local directory for logs and artifacts
+        options   dict   `--backend-opt key=value` pairs, backend-defined
+        log       callable(str) for progress lines
+
+    backend.prepare()                 once, before any job
+    backend.run_job(job, artifacts)   once per job, possibly concurrently
+        job        one entry of gatesplan's plan: id, timeout_minutes and the
+                   ordered actions ({"kind": "run", ...} or
+                   {"kind": "use", "replacement": <id>, ...})
+        artifacts  Path, the run's artifact store (upload writes a directory
+                   per artifact name there, download reads from it)
+        returns    {"steps": [one dict per run action, in order, with
+                    executed, exit_code, stdout_sha256, stderr_sha256],
+                    "ok": bool}
+    backend.toolchain()               the bundle's toolchain fields
+    backend.cleanup()                 once, after every job
+
+In words: given a tree and inputs, run the command list in order, and hand
+back an exit code and an output digest per command. A backend decides WHERE
+things run and HOW each replacement id is realised; it does not decide WHAT
+runs (gatesplan does) or what counts as complete (bundle.py does). A second
+backend (crun) is a new backend_<name>.py beside this one, selected with
+`--backend <name>`, and changes no existing file.
+
+Why every job gets its own worktree: CI gives every job a fresh checkout, and
+running several jobs in one tree collides on things gates.yml writes to fixed
+places (`/tmp/gate-emit`, the playground's port and its `fuser -k`). The only
+things shared between jobs here are the toolchain caches: the seed cache is
+copied in, as actions/cache would restore it (seedjar.sh re-verifies it on
+every hit), and coursier's cache is the user's own, as on a runner.
+
+Run steps run as GitHub runs a step with no `shell:`: `bash -e <file>`, in the
+job's workspace, with GITHUB_ENV and GITHUB_PATH honoured between steps. Each
+step is its own session so that whatever it leaves running is killed when it
+ends, which is what the runner does at the end of a job and what a shared
+machine needs sooner.
+"""
+
+import fcntl
+import fnmatch
+import hashlib
+import os
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import threading
+import time
+import uuid
+from pathlib import Path
+
+TMP_LITERAL = re.compile(r"/tmp/[A-Za-z0-9._-]+")
+HOST_ENV_DROP = re.compile(r"^(GITHUB_|RUNNER_|DAWN_|ACTIONS_)")
+HOST_ENV_DROP_EXACT = {"JAVA_HOME", "GRAALVM_HOME", "TMPDIR", "CI", "PLAY_TEST_PORT",
+                       "PLAY_PORT", "MUTANT_COVERAGE_DIR", "DAWNC_BIN"}
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def java_major(java):
+    try:
+        out = subprocess.run([java, "-version"], capture_output=True, text=True,
+                             timeout=60).stderr
+    except (OSError, subprocess.TimeoutExpired):
+        return None, ""
+    match = re.search(r'version "(\d+)', out)
+    return (int(match.group(1)) if match else None), out
+
+
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def create(ctx):
+    return LocalBackend(ctx)
+
+
+class LocalBackend:
+    def __init__(self, ctx):
+        self.repo = Path(ctx["repo"])
+        self.tree = ctx["tree"]
+        self.out = Path(ctx["out"])
+        self.log = ctx["log"]
+        opts = ctx["options"]
+        self.workdir = Path(opts.get("workdir") or self.repo.parent / "gates-external-jobs")
+        self.keep_going = opts.get("keep-going", "0") == "1"
+        self.keep_worktrees = opts.get("keep-worktrees", "0") == "1"
+        self.timeout_scale = float(opts.get("timeout-scale", "2"))
+        self.seed_cache = opts.get("seed-cache")
+        self.jdk = opts.get("jdk")
+        self.run_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+        self.seed_hashes = set()
+        self.lock = threading.Lock()
+        self.port = None
+        self.base_env = None
+
+    # ------------------------------------------------------------- lifecycle
+
+    def prepare(self):
+        self.workdir.mkdir(parents=True, exist_ok=True)
+        if self.seed_cache is None:
+            common = subprocess.run(
+                ["git", "-C", str(self.repo), "rev-parse", "--path-format=absolute",
+                 "--git-common-dir"], check=True, capture_output=True, text=True).stdout.strip()
+            self.seed_cache = str(Path(common).parent / ".dawn" / "seeds")
+        self.jdk = self._find_jdk()
+        self.port = free_port()
+        env = {k: v for k, v in os.environ.items()
+               if not HOST_ENV_DROP.match(k) and k not in HOST_ENV_DROP_EXACT}
+        env["CI"] = "true"
+        # Only the docs job's playground contract reads it. A port chosen per
+        # run keeps two runs (or a developer's server) from meeting on 8097,
+        # and keeps the contract's `fuser -k` pointed at this run's own port.
+        env["PLAY_TEST_PORT"] = str(self.port)
+        self.base_env = env
+        self.log(f"local backend: run {self.run_id}, workdir {self.workdir}, "
+                 f"seed cache {self.seed_cache}, JDK {self.jdk}, playground port {self.port}")
+
+    def _find_jdk(self):
+        candidates = [self.jdk] if self.jdk else []
+        home = Path.home() / "tools"
+        candidates += sorted(str(p) for p in home.glob("graalvm-*") if (p / "bin/java").exists())
+        candidates += sorted(str(p / "Contents/Home") for p in home.glob("graalvm-*")
+                             if (p / "Contents/Home/bin/java").exists())
+        for candidate in candidates:
+            major, _ = java_major(str(Path(candidate) / "bin/java"))
+            if major == 21:
+                return candidate
+        raise SystemExit("local backend: no JDK 21 found (pass --backend-opt jdk=<JAVA_HOME>)")
+
+    def cleanup(self):
+        subprocess.run(["git", "-C", str(self.repo), "worktree", "prune"],
+                       capture_output=True)
+
+    def toolchain(self):
+        env = dict(self.base_env)
+        env["PATH"] = f"{self.jdk}/bin:{env.get('PATH', '')}"
+
+        def first_line(args, stream="stdout"):
+            try:
+                done = subprocess.run(args, capture_output=True, text=True, env=env, timeout=60)
+            except (OSError, subprocess.TimeoutExpired):
+                return None
+            text = (done.stdout if stream == "stdout" else done.stderr).strip()
+            return text.splitlines()[0].strip() if text else None
+
+        _, java_out = java_major(f"{self.jdk}/bin/java")
+        build = re.search(r"Runtime Environment.*\(build ([^)]+)\)", java_out)
+        python = first_line(["python3", "--version"])
+        seeds = sorted(self.seed_hashes)
+        return {
+            "seed_jar_sha256": seeds[0] if len(seeds) == 1 else None,
+            "java": build.group(1) if build else None,
+            "cc": first_line(["cc", "--version"]),
+            "python": python.split()[-1] if python else None,
+            "node": first_line(["node", "--version"]),
+        }
+
+    # ------------------------------------------------------------------ jobs
+
+    def run_job(self, job, artifacts):
+        jid = job["id"]
+        base = self.workdir / f"{self.run_id}-{jid}"
+        ws = base / "ws"
+        tmp = base / "tmp"
+        logs = self.out / "logs" / jid
+        for d in (ws, tmp / "runner", tmp / "tmp", logs):
+            d.mkdir(parents=True, exist_ok=True)
+        env = dict(self.base_env)
+        env.update(GITHUB_WORKSPACE=str(ws), RUNNER_TEMP=str(tmp / "runner"),
+                   TMPDIR=str(tmp / "tmp"))
+        state = {"env": env, "ws": ws, "tmp": tmp, "logs": logs, "checked_out": False,
+                 "deadline": time.monotonic() + job["timeout_minutes"] * 60 * self.timeout_scale,
+                 "artifacts": Path(artifacts), "job": jid}
+        steps, failed, index = [], False, 0
+        try:
+            for number, action in enumerate(job["actions"], 1):
+                label = f"{jid}#{number}"
+                if action["kind"] == "run":
+                    if failed and not self.keep_going:
+                        steps.append({"executed": False, "exit_code": None,
+                                      "stdout_sha256": None, "stderr_sha256": None})
+                        continue
+                    result = self._run_step(state, action, number)
+                    steps.append(result)
+                    index += 1
+                    self.log(f"{label} exit {result['exit_code']}: "
+                             f"{(action['name'] or action['command'].strip().splitlines()[0])[:70]}")
+                    if result["exit_code"] != 0:
+                        failed = True
+                    continue
+                if failed and not self.keep_going:
+                    continue
+                ok, why = self._substitute(state, action, number)
+                self.log(f"{label} {action['replacement']}: {'ok' if ok else 'FAILED ' + why}")
+                if not ok:
+                    failed = True
+        finally:
+            self._finish(state)
+        return {"steps": steps, "ok": not failed}
+
+    def _finish(self, state):
+        ws = state["ws"]
+        if state["checked_out"]:
+            tag_file = ws / "scripts/seed-release.txt"
+            if tag_file.exists():
+                seed = ws / ".dawn/seeds" / tag_file.read_text().strip() / "seed.jar"
+                if seed.exists():
+                    with self.lock:
+                        self.seed_hashes.add(sha256_file(seed))
+        if self.keep_worktrees:
+            return
+        if state["checked_out"]:
+            subprocess.run(["git", "-C", str(self.repo), "worktree", "remove", "--force",
+                            str(ws)], capture_output=True)
+        shutil.rmtree(ws.parent, ignore_errors=True)
+
+    # ------------------------------------------------------------- run steps
+
+    def _expand(self, state, value):
+        return re.sub(r"\$\{\{\s*runner\.temp\s*\}\}", state["env"]["RUNNER_TEMP"], value)
+
+    def _run_process(self, state, argv, env, stem, lock_paths=()):
+        """Run one process in its own session; (exit code, out sha, err sha)."""
+        out_path = state["logs"] / f"{stem}.out"
+        err_path = state["logs"] / f"{stem}.err"
+        held = []
+        try:
+            # Literal /tmp paths in a step are shared by every checkout on the
+            # machine. A lock per path serialises two runs of this script on
+            # it; it cannot protect against anything else using that path.
+            for literal in sorted(set(lock_paths)):
+                name = literal.strip("/").replace("/", "-")
+                handle = open(f"/tmp/gates-external-{name}.lock", "w")
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                held.append(handle)
+            remaining = state["deadline"] - time.monotonic()
+            if remaining <= 0:
+                out_path.write_bytes(b"")
+                err_path.write_bytes(b"gates-external: job timeout reached before this step\n")
+                return 124, sha256_file(out_path), sha256_file(err_path)
+            with open(out_path, "wb") as out, open(err_path, "wb") as err:
+                proc = subprocess.Popen(argv, cwd=state["ws"], env=env, stdout=out,
+                                        stderr=err, stdin=subprocess.DEVNULL,
+                                        start_new_session=True)
+                try:
+                    code = proc.wait(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    self._kill_group(proc.pid, signal.SIGTERM)
+                    try:
+                        proc.wait(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    self._kill_group(proc.pid, signal.SIGKILL)
+                    proc.wait()
+                    code = 124
+                    err.write(b"\ngates-external: job timeout reached, step killed\n")
+                self._kill_group(proc.pid, signal.SIGKILL)
+        finally:
+            for handle in held:
+                handle.close()
+        return code, sha256_file(out_path), sha256_file(err_path)
+
+    @staticmethod
+    def _kill_group(pgid, sig):
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    def _run_step(self, state, action, number):
+        tmp = state["tmp"]
+        script = tmp / f"step-{number}.sh"
+        script.write_text(action["command"])
+        files = {}
+        for key in ("GITHUB_ENV", "GITHUB_PATH", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY"):
+            path = tmp / f"{key.lower()}-{number}"
+            path.write_text("")
+            files[key] = path
+        env = dict(state["env"])
+        env.update({k: self._expand(state, v) for k, v in action["env"].items()})
+        env.update({k: str(v) for k, v in files.items()})
+        code, out_sha, err_sha = self._run_process(
+            state, ["bash", "-e", str(script)], env, f"step-{number}",
+            TMP_LITERAL.findall(action["command"]))
+        self._apply_env_files(state, files)
+        return {"executed": True, "exit_code": code,
+                "stdout_sha256": out_sha, "stderr_sha256": err_sha}
+
+    @staticmethod
+    def _apply_env_files(state, files):
+        """GITHUB_ENV (`K=V` and `K<<DELIM` blocks) and GITHUB_PATH, as the runner does."""
+        lines = files["GITHUB_ENV"].read_text().splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if "<<" in line and ("=" not in line or line.index("<<") < line.index("=")):
+                key, delim = line.split("<<", 1)
+                body = []
+                i += 1
+                while i < len(lines) and lines[i] != delim:
+                    body.append(lines[i])
+                    i += 1
+                state["env"][key] = "\n".join(body)
+            elif "=" in line:
+                key, value = line.split("=", 1)
+                state["env"][key] = value
+            i += 1
+        for entry in reversed(files["GITHUB_PATH"].read_text().splitlines()):
+            if entry.strip():
+                state["env"]["PATH"] = f"{entry.strip()}:{state['env']['PATH']}"
+
+    # --------------------------------------------------------- substitutions
+
+    def _substitute(self, state, action, number):
+        handler = {
+            "tree-worktree": self._checkout,
+            "dawn-toolchain-local": self._toolchain,
+            "noop": lambda s, a, n: (True, ""),
+            "artifact-store-local": self._upload,
+            "artifact-fetch-local": self._download,
+            "node-host": self._node,
+            "jdk21-host": self._jdk,
+        }.get(action["replacement"])
+        if handler is None:
+            return False, f"the local backend does not implement {action['replacement']}"
+        try:
+            return handler(state, action, number)
+        except Exception as error:  # a failed substitution fails the job, visibly
+            return False, f"{type(error).__name__}: {error}"
+
+    def _checkout(self, state, action, number):
+        if state["checked_out"]:
+            return False, "a second checkout in one job is not modelled"
+        ws = state["ws"]
+        ws.rmdir()
+        done = subprocess.run(["git", "-C", str(self.repo), "worktree", "add", "--detach",
+                               str(ws), self.tree], capture_output=True, text=True)
+        (state["logs"] / f"step-{number}.checkout").write_text(done.stdout + done.stderr)
+        if done.returncode != 0:
+            ws.mkdir(exist_ok=True)
+            return False, done.stderr.strip()
+        state["checked_out"] = True
+        return True, ""
+
+    def _use_jdk(self, state):
+        env = state["env"]
+        env["JAVA_HOME"] = self.jdk
+        env["GRAALVM_HOME"] = self.jdk
+        env["PATH"] = f"{self.jdk}/bin:{env['PATH']}"
+
+    def _jdk(self, state, action, number):
+        self._use_jdk(state)
+        return True, ""
+
+    def _node(self, state, action, number):
+        if shutil.which("node", path=state["env"]["PATH"]) is None:
+            return False, "no node on PATH"
+        return True, ""
+
+    def _toolchain(self, state, action, number):
+        self._use_jdk(state)
+        ws = state["ws"]
+        tag = (ws / "scripts/seed-release.txt").read_text().strip()
+        for name in (tag, f"std-{tag}"):
+            src = Path(self.seed_cache) / name
+            dst = ws / ".dawn/seeds" / name
+            if src.is_dir() and not dst.exists():
+                shutil.copytree(src, dst, symlinks=True)
+        if action["with"].get("build", "true") == "false":
+            return True, ""
+        code, _, _ = self._run_process(state, ["./bin/dawn", "--version"], dict(state["env"]),
+                                       f"step-{number}.toolchain")
+        return code == 0, f"./bin/dawn --version exited {code}"
+
+    def _upload(self, state, action, number):
+        name = action["with"]["name"]
+        src = Path(self._expand(state, action["with"]["path"]))
+        if not src.is_absolute():
+            src = state["ws"] / src
+        dst = state["artifacts"] / name
+        empty = not src.exists() or (src.is_dir() and not any(src.rglob("*")))
+        if empty:
+            policy = action["with"].get("if-no-files-found", "warn")
+            return (policy != "error"), f"no files at the upload path for {name}"
+        if dst.exists():
+            return False, f"artifact {name} was already uploaded in this run"
+        if src.is_dir():
+            shutil.copytree(src, dst)
+        else:
+            dst.mkdir(parents=True)
+            shutil.copy2(src, dst / src.name)
+        return True, ""
+
+    def _download(self, state, action, number):
+        pattern = action["with"].get("pattern", "*")
+        dest = state["ws"] / self._expand(state, action["with"].get("path", "."))
+        found = sorted(p for p in state["artifacts"].iterdir()
+                       if p.is_dir() and fnmatch.fnmatchcase(p.name, pattern)) \
+            if state["artifacts"].exists() else []
+        # download-artifact@v4 with a pattern and no merge-multiple puts each
+        # artifact in a directory of its own name under `path`.
+        for artifact in found:
+            shutil.copytree(artifact, dest / artifact.name, dirs_exist_ok=True)
+        (state["logs"] / f"step-{number}.download").write_text(
+            "\n".join(p.name for p in found) + "\n")
+        return True, ""
