@@ -215,8 +215,14 @@ jobs:
   # on it at 40s and answers `all`.
   plan:
     runs-on: ubuntu-latest
-    # budget: 3x 60s planning value (checkout, one depth-1 fetch, the gate map; restate after three runs)
-    timeout-minutes: 3
+    # 2026-09-24, restated: 7s worst (run 35895759154) over its five
+    # successful main runs of 09-23 (gate-observations --since
+    # 2026-09-23T00:00:00Z). 3x is 21s and would allow a 1-minute timeout,
+    # but plan.py gives up on the map at 40s and answers `all` by design, a
+    # path no observed run took; a kill there turns that fallback into a red
+    # run. 2 minutes holds 40s plus 3x the observation.
+    # budget: 3x 7s worst observed (run 35895759154)
+    timeout-minutes: 2
     outputs:
       all: ${{ steps.plan.outputs.all }}
       jobs: ${{ steps.plan.outputs.jobs }}
@@ -1576,7 +1582,9 @@ jobs:
     if: ${{ needs.plan.outputs.all == 'true' || contains(fromJSON(needs.plan.outputs.jobs), 'incremental-7-1') }}
     runs-on: ubuntu-latest
     # provenance.py 440s + 50s fixed overhead = 490s.
-    # budget: 3x 490s planning value (provenance.py's worst observation plus setup; restate after three main runs)
+    # 2026-09-24, restated: 481s worst (run 35866197071) over its 5 successful
+    # main runs of 09-23 (gate-observations --since 2026-09-23T00:00:00Z).
+    # budget: 3x 481s worst observed (run 35866197071)
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -1597,7 +1605,9 @@ jobs:
     runs-on: ubuntu-latest
     # allocation.py 133s + diagnostic self-test 3s + diagnostic shard 1 382s
     # + 50s fixed overhead = 568s.
-    # budget: 3x 568s planning value (allocation and diagnostic shard 1 worst observations plus setup; restate after three main runs)
+    # 2026-09-24, restated: 572s worst (run 35860976205) over its 4 successful
+    # main runs of 09-23 (gate-observations --since 2026-09-23T00:00:00Z).
+    # budget: 3x 572s worst observed (run 35860976205)
     timeout-minutes: 29
     steps:
       - uses: actions/checkout@v4
@@ -1735,7 +1745,9 @@ jobs:
     runs-on: ubuntu-latest
     # executor 129 + configured LSP 92 + scheduler 48 + consumers 67 = 336s,
     # plus 50s fixed overhead = 386s.
-    # budget: 3x 386s planning value (moved steps' worst observations plus setup; restate after three main runs)
+    # 2026-09-24, restated: 385s worst (run 35882535196) over its 5 successful
+    # main runs of 09-23 (gate-observations --since 2026-09-23T00:00:00Z).
+    # budget: 3x 385s worst observed (run 35882535196)
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -1757,8 +1769,10 @@ jobs:
     runs-on: ubuntu-latest
     # journal 77 + ownership inventory 1 + scalar oracle 52 + prefix shard 2
     # 232 = 362s, plus 50s fixed overhead = 412s.
-    # budget: 3x 412s planning value (moved steps' worst observations plus setup; restate after three main runs)
-    timeout-minutes: 21
+    # 2026-09-24, restated: 429s worst (run 35890458801) over its 4 successful
+    # main runs of 09-23 (gate-observations --since 2026-09-23T00:00:00Z).
+    # budget: 3x 429s worst observed (run 35890458801)
+    timeout-minutes: 22
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -1826,8 +1840,10 @@ jobs:
     # collections 6 + path 3 + JSON 8 + table freight 7 + dict owner 5 +
     # dict shapes 32 + intrinsic parity 1 + builtin mirror 6 + error model 3
     # = 457s, plus 50s fixed overhead = 507s.
-    # budget: 3x 507s planning value (moved steps' worst observations plus setup; restate after three main runs)
-    timeout-minutes: 26
+    # 2026-09-24, restated: 475s worst (run 35866197071) over its 5 successful
+    # main runs of 09-23 (gate-observations --since 2026-09-23T00:00:00Z).
+    # budget: 3x 475s worst observed (run 35866197071)
+    timeout-minutes: 24
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -1997,8 +2013,10 @@ jobs:
     # map reuse 48 + tea reconciler 105 + atomic write 98 + RC 24 + ctl-live
     # 12 + RC mode 64 + source loop label 46 + range bound order 31 +
     # display layering 37 = 465s, plus 50s fixed overhead = 515s.
-    # budget: 3x 515s planning value (moved steps' worst observations plus setup; restate after three main runs)
-    timeout-minutes: 26
+    # 2026-09-24, restated: 488s worst (run 35860976205) over its 4 successful
+    # main runs of 09-23 (gate-observations --since 2026-09-23T00:00:00Z).
+    # budget: 3x 488s worst observed (run 35860976205)
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
