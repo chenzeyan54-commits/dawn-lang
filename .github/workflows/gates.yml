@@ -2920,8 +2920,11 @@ jobs:
     # replay controls 81.81s, entry oracle 14.79s, source controls 13.85s.
     # Reserve 30s for the original generic trace and 29s for toolchain setup;
     # double the rounded contract sum: 2 * (67 + 82 + 15 + 14 + 30) + 29 = 445s.
-    # budget: 3x 445s planning value (bounded admission and exact source proof)
-    timeout-minutes: 23
+    # 2026-09-23: the real-edit matrix, measured locally: self-test 0.07s,
+    # controls 57.5s (the controls run ends with the full restored matrix, so
+    # there is no separate default run): 445 + 58 + 1 = 504s.
+    # budget: 3x 504s planning value (bounded admission, exact source proof and the real-edit matrix)
+    timeout-minutes: 26
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/dawn-toolchain
@@ -2937,6 +2940,10 @@ jobs:
         run: python3 scripts/incremental-semantics-contract/bounded-replay.py
       - name: Exact raw source equality controls
         run: python3 scripts/incremental-semantics-contract/source-equality.py
+      - name: Real-edit matrix self-test
+        run: python3 scripts/incremental-semantics-contract/edit-matrix.py --self-test
+      - name: Real-edit matrix controls and restored matrix
+        run: python3 scripts/incremental-semantics-contract/edit-matrix.py --controls
 
   # Phase 2 measures process semantics, not runner hardware. The complete
   # contract measured 60s locally, and the reused toolchain setup has a 29s
