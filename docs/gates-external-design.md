@@ -182,7 +182,11 @@ prefix 模式下一个 job 的环境等价于 `env -i` 加白名单：`PATH` = p
 
 `prefix.py check-isolation` 在 prefix 里放一个 marker，跑命令，再对 `/` 与 prefix 所在文件系统各做一次 `find -xdev`（剪掉 `/proc` `/sys` `/dev` `/run`、prefix 本身与 `--exclude` 列出的路径），列出 mtime 或 ctime 新于 marker 的一切。
 
-实测中查出并修掉的一处：HotSpot 把 `hsperfdata_<用户>` 写在写死的 `/tmp`，不看 `TMPDIR`。后端探测 JDK 版本的那次 `java -version` 因此在 prefix 外留了痕迹。改为在命令行上加 `-XX:-UsePerfData`；不用 `JAVA_TOOL_OPTIONS`，因为它会让每个 JVM 往 stderr 打一行 `Picked up ...`，改变被测输出。门禁步骤里自己起的 JVM 仍会写 `/tmp/hsperfdata_<用户>`，全套运行时它会出现在清单里，这是已知的一条，见「不做的」。
+实测中查出并修掉的一处：HotSpot 把 `hsperfdata_<用户>` 写在写死的 `/tmp`，不看 `TMPDIR`。第 3 刀只在后端探测 JDK 版本的那次 `java -version` 命令行上加了 `-XX:-UsePerfData`，门禁步骤自己起的 JVM 仍然写，集群全套运行后 `/tmp/hsperfdata_root` 的 mtime 落在运行窗口里。
+
+第 3b′ 刀改成 prefix 布局的一部分：`inputs.py` 解包 GraalVM 之后把 `bin/java` 改名 `bin/java.real`，在原位置写一个 shim，`exec` 同目录的 `java.real` 并把 `-XX:-UsePerfData` 放在调用者参数之前。shim 的内容与 prefix 在哪无关（它按自己的位置找 `java.real`），所以工具链的目录树摘要在本机与集群上相同。锁里的 GraalVM 条目不变：原件还是那些字节，shim 是 `build`/`install` 解包后写的；`MANIFEST.json` 记下原件里 `bin/java` 的 sha256，`verify` 核 `java.real` 等于它、shim 逐字节等于 `inputs.py` 里的那份。不用 `JAVA_TOOL_OPTIONS`/`JDK_JAVA_OPTIONS`：它们让每个 JVM 往 stderr 打一行 `Picked up ...`，改变被测输出。只包 `java` 一个启动器：门禁里起 JVM 的都是 `java`（`bin/dawn`、`java -jar`，以及 JVM 按 `java.home` 找到的 `bin/java`），`javac`、`jar` 之类没有步骤直接调用。
+
+负控（本机，`bwrap` 给命令一个私有 `/tmp`，在 prefix 里的新检出上跑会触发重建的 `./bin/dawn --version`）：没有 shim 时私有 `/tmp` 里出现 `hsperfdata_dawn`；有 shim 时为空。把 `java.real` 改一个字节，`inputs.py verify` 红（目录树摘要与「不是原件的 `bin/java`」两条），复原后绿。
 
 共享工作站上 `find` 不可能为空：本机同时有别的写者、编辑器、定时任务（零点的 dpkg 备份与 logrotate 就撞进过一次窗口）。所以本机的证明分两层：
 
@@ -300,5 +304,4 @@ prefix 模式下一个 job 的环境等价于 `env -i` 加白名单：`PATH` = p
 - **prefix 里的 cc。** C 编译器仍来自 `/usr/bin`（本机 gcc 13.3，集群 gcc 11.4），证据包的 `toolchain.cc` 会随机器变化。把 gcc 连同 libasan 打进输入包是另一件事；集群上又不允许 apt。
 - **node 版本与 `lts/*`。** `docs` job 在 CI 上用 `setup-node` 的 `lts/*`，按任务单这里钉的是 20 LTS；两者不一定相同，证据包如实记录 `node` 字段。
 - **wasi-sdk 步骤离线。** `wasm-target` 的步骤自己 `curl` wasi-sdk。prefix 里已经有同一个钉住的包，但让步骤用它要改 `gates.yml`（例如「预置目录存在且摘要对就不下载」），不在本刀范围；离线机器上这一步会红，照实记录。`docs` 的 `npm install` 同理。
-- **JVM 的 `/tmp/hsperfdata_<用户>`。** HotSpot 的这个路径写死为 `/tmp`。能关掉它的只有 JVM 参数，放进 `JAVA_TOOL_OPTIONS` 会改 stderr；给 prefix 的 `java` 套一层包装又会让工具链不再是 CI 的那个。全套运行的隔离清单会列出这一条。
 - **覆盖 `tile.yml`、`editor-grammar.yml`、`nightly.yml`。** 任务单的范围是 `gates.yml`。前两个是按路径触发的门禁工作流，`tile.yml` 需要 GPU；把它们纳入是 crun 后端那一刀的事。

@@ -90,9 +90,9 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
-def java_major(java, extra=()):
+def java_major(java):
     try:
-        out = subprocess.run([java, *extra, "-version"], capture_output=True, text=True,
+        out = subprocess.run([java, "-version"], capture_output=True, text=True,
                              timeout=60).stderr
     except (OSError, subprocess.TimeoutExpired):
         return None, ""
@@ -209,12 +209,9 @@ class LocalBackend:
             text = (done.stdout if stream == "stdout" else done.stderr).strip()
             return text.splitlines()[0].strip() if text else None
 
-        # In a prefix the probe must not write /tmp/hsperfdata_<user>, which
-        # HotSpot puts in a hardcoded /tmp whatever TMPDIR says; a flag on the
-        # command line does not print the "Picked up" note an environment
-        # variable would.
-        extra = ["-XX:-UsePerfData"] if self.prefix else []
-        _, java_out = java_major(f"{self.jdk}/bin/java", extra)
+        # In a prefix, bin/java is inputs.py's shim, which turns off the
+        # /tmp/hsperfdata_<user> HotSpot would otherwise write for this probe.
+        _, java_out = java_major(f"{self.jdk}/bin/java")
         build = re.search(r"Runtime Environment.*\(build ([^)]+)\)", java_out)
         python = first_line(["python3", "--version"])
         seeds = sorted(self.seed_hashes)

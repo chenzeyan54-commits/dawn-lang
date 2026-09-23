@@ -93,6 +93,13 @@ restore does, copied into `.dawn/seeds`. A job's checkout is a
 `git clone --shared` under the prefix, not a worktree, because a worktree
 writes into the source repository's `.git`.
 
+One change is made to an unpacked toolchain: GraalVM's `bin/java` is a shim
+that execs `bin/java.real` with `-XX:-UsePerfData` first, because HotSpot
+writes `/tmp/hsperfdata_<user>` for every JVM whatever `TMPDIR` says, and the
+environment variables that could carry the flag print `Picked up ...` on
+stderr. The lock entry is the archive and does not change; `verify` checks the
+shim's bytes and that `java.real` is the archive's `bin/java`.
+
 `inputs.py` trusts only the digests in `inputs.lock.json`. The seed jar and std
 are checked against `scripts/seed-checksums.txt` and `seed-std-checksums.txt`,
 the tables `seedjar.sh` reads, and the coursier jars against
