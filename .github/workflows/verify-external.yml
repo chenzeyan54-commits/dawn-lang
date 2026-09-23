@@ -1,0 +1,102 @@
+name: verify-external
+
+# Check the maintainer's signed evidence of an external gate run on one
+# commit, and write the verdict as the commit status `gates/maintainer`.
+#
+# Why it exists: scripts/gates-external/run.sh runs every job of gates.yml on
+# a machine that is not GitHub and writes bundle.json; publish.py signs it
+# with the maintainer's gate key and pushes it as a note on
+# refs/notes/gates. A note is just bytes anyone with push access could have
+# written. This job is the part the maintainer does not run: a GitHub-hosted
+# runner checks the signature against the one key pinned in
+# scripts/gates-external/allowed_signers and recomputes the bundle against the
+# commit (verify_note.py, whose docstring has the checklist). All of it is
+# outbound from the maintainer's machine: publish.py pushes the note and asks
+# for this run; GitHub never connects back.
+#
+# Why the verifier is not the commit under test: `actions/checkout` takes the
+# ref the run was dispatched on (the default branch, unless someone passes
+# --ref, which the first step refuses), and the commit under test is fetched
+# only as objects to read. allowed_signers and the verifier therefore come
+# from the default branch. A commit that edits allowed_signers or
+# verify_note.py cannot vouch for itself.
+#
+# Why a failure still writes a status: a verification that fails and says
+# nothing looks the same as one that never ran. So the status step runs
+# `if: always()` and writes `failure` whenever the verify step did not
+# succeed, including when the fetch before it failed. The one case with no
+# status is an input that is not a 40-hex sha, which names no commit to write
+# it on.
+#
+# What a green `gates/maintainer` means, and no more: the holder of the gate
+# key ran the full gate set of that commit's gates.yml off GitHub and every
+# run step exited 0. It is the maintainer's own evidence, not an independent
+# run; anyone can re-check the signature and the recomputation with
+# verify_note.py, nobody can re-check that the steps really ran. Pull requests
+# from forks do not take this path, and release.yml's guard does not accept it
+# yet (docs/gates-external-design.md).
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'The full 40-hex commit whose refs/notes/gates note to verify'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    # Measured on a local rehearsal: the checkout and a depth-1 fetch are a
+    # few seconds, verify_note.py under one against gates.yml at 2f678c25.
+    # budget: floor (seconds-scale job; 3x its own time is unmeetable)
+    timeout-minutes: 5
+    env:
+      SHA: ${{ inputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: fetch the commit under test and the gates notes
+        env:
+          DEFAULT_REF: refs/heads/${{ github.event.repository.default_branch }}
+        run: |
+          if [[ ! "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "sha must be 40 lowercase hex, got '$SHA'" >&2
+            exit 1
+          fi
+          if [ "$GITHUB_REF" != "$DEFAULT_REF" ]; then
+            echo "the verifier must run from $DEFAULT_REF, not $GITHUB_REF" >&2
+            exit 1
+          fi
+          git fetch --no-tags --depth=1 origin "$SHA" "+refs/notes/gates:refs/notes/gates"
+
+      - name: verify the signed note
+        id: verify
+        run: python3 scripts/gates-external/verify_note.py --sha "$SHA"
+
+      - name: write the gates/maintainer status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.verify.outcome }}
+          REPO: ${{ github.repository }}
+          TARGET: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [[ ! "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "no status: '$SHA' is not a commit name" >&2
+            exit 1
+          fi
+          if [ "$OUTCOME" = success ]; then
+            state=success
+            description="Signed external run of the full gate set verified"
+          else
+            state=failure
+            description="External gate evidence did not verify (verify step: $OUTCOME)"
+          fi
+          gh api --method POST "repos/$REPO/statuses/$SHA" \
+            -f state="$state" -f context=gates/maintainer \
+            -f target_url="$TARGET" -f description="$description" > /dev/null
+          echo "gates/maintainer: $state on $SHA"
